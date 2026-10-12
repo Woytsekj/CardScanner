@@ -521,7 +521,11 @@ def security_gate():
             return "Bad Request", 400
 
     path = request.path
-    if path.startswith("/static/") or request.endpoint in {"login", "login_post"}:
+    if (
+        path == "/api/health"
+        or path.startswith("/static/")
+        or request.endpoint in {"login", "login_post"}
+    ):
         pass
     elif path.startswith("/api/"):
         # Browser APIs require a logged-in user. Only the explicitly listed scanner
