@@ -21,7 +21,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Build web Docker image
-        run: docker build -t mtg-scanner-web:test .
+        run: docker build --pull -t mtg-scanner-web:test .
 
       - name: Scan Docker image for HIGH and CRITICAL vulnerabilities (report only)
         uses: aquasecurity/trivy-action@v0.36.0
