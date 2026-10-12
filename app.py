@@ -2224,7 +2224,13 @@ def api_price_history(tcg_id: str):
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
     conn = connect_inventory()
-    owned = conn.execute("SELECT COUNT(*) FROM inventory WHERE tcgplayer_id = ?", (tcg_id,)).fetchone()[0]
+    join_sql = attach_art_join(conn)
+    owned = conn.execute(
+        f"""SELECT COUNT(*) FROM inventory i
+            {join_sql}
+            WHERE COALESCE(NULLIF(TRIM(i.tcgplayer_id), ''), a.tcgplayer_id) = ?""",
+        (tcg_id,),
+    ).fetchone()[0]
     if not owned:
         conn.close()
         return jsonify({"success": False, "error": "That card is not in the inventory"}), 404
@@ -2536,25 +2542,33 @@ def decks_import():
             if not conn.execute("SELECT 1 FROM people WHERE name=? AND active=1",(owner,)).fetchone():
                 raise ValueError(f"Owner '{owner}' is not active")
             now_iso=datetime.now(timezone.utc).isoformat()
+            price_snapshot=get_tcg_prices()
             for c in cards:
                 sid=c.get("scryfall_id"); finish=normalize_finish(c.get("finish")); existing=None
                 if sid:
                     existing=conn.execute(
-                        """SELECT id FROM inventory WHERE scryfall_id=? AND owner=?
+                        """SELECT id,price,tcgplayer_id FROM inventory WHERE scryfall_id=? AND owner=?
                            AND IFNULL(NULLIF(finish,''),'normal')=? AND COALESCE(location,'Free')=? LIMIT 1""",
                         (sid,owner,finish,target_location),
                     ).fetchone()
+                tcgplayer_id=_normalize_tcgplayer_id(c.get("tcgplayer_id"))
+                if existing and not tcgplayer_id:
+                    tcgplayer_id=_normalize_tcgplayer_id(existing["tcgplayer_id"])
+                current_prices=price_snapshot.get(tcgplayer_id, {}) if tcgplayer_id else {}
+                snapshot_price=current_prices.get(finish)
+                if snapshot_price is not None:
+                    snapshot_price=f"{to_float(snapshot_price):.2f}"
                 if existing:
                     conn.execute(
-                        """UPDATE inventory SET quantity=quantity+?,scan_time=?,collector_number=COALESCE(?,collector_number),
-                           tcgplayer_id=COALESCE(?,tcgplayer_id),deck_id=? WHERE id=?""",
-                        (int(c["quantity"]),now_iso,c.get("collector_number"),c.get("tcgplayer_id"),deck_db_id if not store_free and target_location.casefold() != "free" else None,existing["id"])
+                        """UPDATE inventory SET quantity=quantity+?,scan_time=?,price=COALESCE(?,price),
+                           collector_number=COALESCE(?,collector_number),tcgplayer_id=COALESCE(?,tcgplayer_id),deck_id=? WHERE id=?""",
+                        (int(c["quantity"]),now_iso,snapshot_price,c.get("collector_number"),tcgplayer_id,deck_db_id if not store_free and target_location.casefold() != "free" else None,existing["id"])
                     )
                 else:
                     conn.execute(
                         """INSERT INTO inventory(scryfall_id,name,set_code,rarity,price,owner,quantity,scan_time,finish,collector_number,tcgplayer_id,location,deck_id)
                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (sid,c["name"],c.get("set_code") or "",c.get("rarity") or "Common","0.00",owner,int(c["quantity"]),now_iso,finish,c.get("collector_number"),c.get("tcgplayer_id"),target_location,deck_db_id if not store_free and target_location.casefold() != "free" else None)
+                        (sid,c["name"],c.get("set_code") or "",c.get("rarity") or "Common",snapshot_price or "0.00",owner,int(c["quantity"]),now_iso,finish,c.get("collector_number"),tcgplayer_id,target_location,deck_db_id if not store_free and target_location.casefold() != "free" else None)
                     )
             conn.commit(); conn.close()
         return redirect(url_for("deck_view",deck_id=deck_db_id,owner=owner,message=f"Imported {deck_name}."))
