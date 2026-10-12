@@ -41,21 +41,45 @@ jobs:
             -v "$RUNNER_TEMP/mtg-test-data:/data" \
             mtg-scanner-web:test
 
+
       - name: Wait for health endpoint
         run: |
           for i in $(seq 1 30); do
-            if curl --fail --silent \
+            if curl --silent --show-error \
+              --max-time 3 \
+              -D health-headers.txt \
               http://127.0.0.1:5000/api/health \
               -o health.json; then
+              cat health-headers.txt
               cat health.json
-              exit 0
+
+              if python -c '
+          import json
+          d = json.load(open("health.json"))
+          assert d.get("success") is True, d
+          assert d.get("service") == "mtg-scanner-inventory", d
+          '; then
+                exit 0
+              fi
             fi
+
+            if [ "$(docker inspect -f '{{.State.Running}}' mtg-scanner-test)" != "true" ]; then
+              echo "Container stopped unexpectedly."
+              docker inspect mtg-scanner-test \
+                --format 'Exit code: {{.State.ExitCode}}; Error: {{.State.Error}}'
+              docker logs mtg-scanner-test
+              exit 1
+            fi
+
             sleep 2
           done
 
-          echo "Health check failed. Container logs:"
+          echo "Health check timed out."
+          cat health-headers.txt 2>/dev/null || true
+          cat health.json 2>/dev/null || true
           docker logs mtg-scanner-test
           exit 1
+
 
       - name: Verify health response
         run: |
