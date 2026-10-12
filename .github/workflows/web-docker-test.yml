@@ -92,6 +92,56 @@ jobs:
           print("Web application health check passed.")
           '
 
+      - name: Test login and authentication
+        env:
+          BASE_URL: http://127.0.0.1:5000
+        run: |
+          set -eu
+
+          echo "Testing public login page..."
+          login_status=$(curl -sS -o login.html -w "%{http_code}" "$BASE_URL/login")
+          test "$login_status" = "200"
+          grep -qi '<form' login.html
+          echo "PASS: Login page returns HTTP 200."
+
+          echo "Testing protected page..."
+          protected_status=$(curl -sS -o /dev/null -w "%{http_code}" "$BASE_URL/admin")
+          test "$protected_status" = "302"
+          echo "PASS: Unauthenticated admin access redirects to login."
+
+          echo "Testing protected API..."
+          api_status=$(curl -sS -o protected-api.json -w "%{http_code}" "$BASE_URL/api/price-history/123")
+          test "$api_status" = "401"
+          echo "PASS: Protected API rejects unauthenticated requests."
+
+      - name: Test scanner API key
+        env:
+          BASE_URL: http://127.0.0.1:5000
+          SCANNER_API_KEY: ci-test-scanner-key-0123456789-abcdefghijklmnopqrstuvwxyz
+        run: |
+          set -eu
+
+          echo "Testing scanner API with valid key..."
+          valid_status=$(curl -sS \
+            -H "X-Scanner-API-Key: $SCANNER_API_KEY" \
+            -o scanner-valid.json \
+            -w "%{http_code}" \
+            "$BASE_URL/api/people")
+
+          test "$valid_status" = "200"
+          python -c 'import json; d=json.load(open("scanner-valid.json")); assert d.get("success") is True, d; assert isinstance(d.get("people"), list), d'
+          echo "PASS: Valid scanner API key is accepted."
+
+          echo "Testing scanner API with invalid key..."
+          invalid_status=$(curl -sS \
+            -H "X-Scanner-API-Key: definitely-not-the-correct-key" \
+            -o scanner-invalid.json \
+            -w "%{http_code}" \
+            "$BASE_URL/api/people")
+
+          test "$invalid_status" = "401"
+          echo "PASS: Invalid scanner API key is rejected."
+
       - name: Show logs if test fails
         if: failure()
         run: docker logs mtg-scanner-test
