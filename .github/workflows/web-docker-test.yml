@@ -13,15 +13,26 @@ permissions:
 
 jobs:
   docker-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Build web Docker image
         run: docker build -t mtg-scanner-web:test .
+
+      - name: Scan Docker image for HIGH and CRITICAL vulnerabilities (report only)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: mtg-scanner-web:test
+          format: table
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+
 
       - name: Start test container
         run: |
@@ -34,6 +45,8 @@ jobs:
             -e REQUIRE_LOGIN=1 \
             -e SESSION_SECRET=ci-test-session-secret-0123456789-abcdefghijklmnopqrstuvwxyz \
             -e SCANNER_API_KEY=ci-test-scanner-key-0123456789-abcdefghijklmnopqrstuvwxyz \
+            -e ADMIN_USERNAME=ci-admin \
+            -e ADMIN_PASSWORD=ci-test-admin-password-0123456789-abcdef \
             -e TRUSTED_HOSTS=127.0.0.1,localhost \
             -e LOCAL_HOSTS=127.0.0.1,localhost \
             -e PUBLIC_HOSTNAME=localhost \
@@ -113,6 +126,78 @@ jobs:
           api_status=$(curl -sS -o protected-api.json -w "%{http_code}" "$BASE_URL/api/price-history/123")
           test "$api_status" = "401"
           echo "PASS: Protected API rejects unauthenticated requests."
+
+      - name: Test CSRF protection
+        env:
+          BASE_URL: http://127.0.0.1:5000
+          CI_ADMIN_USERNAME: ci-admin
+          CI_ADMIN_PASSWORD: ci-test-admin-password-0123456789-abcdef
+        run: |
+          set -eu
+          cookie_jar="$RUNNER_TEMP/csrf-cookies.txt"
+
+          echo "Testing login rejects a POST without a CSRF token..."
+          curl -sS -c "$cookie_jar" "$BASE_URL/login" -o login-initial.html
+
+          missing_status=$(curl -sS -b "$cookie_jar" -c "$cookie_jar" \
+            -o /dev/null -w "%{http_code}" \
+            --data-urlencode "username=$CI_ADMIN_USERNAME" \
+            --data-urlencode "password=$CI_ADMIN_PASSWORD" \
+            "$BASE_URL/login")
+          test "$missing_status" = "302"
+
+          still_unauthenticated=$(curl -sS -b "$cookie_jar" -c "$cookie_jar" \
+            -o /dev/null -w "%{http_code}" "$BASE_URL/admin")
+          test "$still_unauthenticated" = "302"
+          echo "PASS: Missing login CSRF token does not authenticate."
+
+          echo "Obtaining a login CSRF token..."
+          curl -sS -b "$cookie_jar" -c "$cookie_jar" \
+            "$BASE_URL/login" -o login.html
+          login_csrf=$(sed -n \
+            's/.*<meta name="csrf-token" content="\([^"]*\)".*/\1/p' \
+            login.html | head -n 1)
+          test -n "$login_csrf"
+
+          login_status=$(curl -sS -b "$cookie_jar" -c "$cookie_jar" \
+            -o /dev/null -w "%{http_code}" \
+            --data-urlencode "username=$CI_ADMIN_USERNAME" \
+            --data-urlencode "password=$CI_ADMIN_PASSWORD" \
+            --data-urlencode "csrf_token=$login_csrf" \
+            "$BASE_URL/login")
+          test "$login_status" = "302"
+
+          admin_status=$(curl -sS -b "$cookie_jar" -c "$cookie_jar" \
+            -o admin.html -w "%{http_code}" "$BASE_URL/admin")
+          test "$admin_status" = "200"
+          echo "PASS: Valid credentials and CSRF token authenticate."
+
+          admin_csrf=$(sed -n \
+            's/.*<meta name="csrf-token" content="\([^"]*\)".*/\1/p' \
+            admin.html | head -n 1)
+          test -n "$admin_csrf"
+
+          echo "Testing invalid CSRF token on logout..."
+          invalid_status=$(curl -sS -b "$cookie_jar" -c "$cookie_jar" \
+            -X POST -H "X-CSRFToken: invalid-ci-token" \
+            -o /dev/null -w "%{http_code}" "$BASE_URL/logout")
+          test "$invalid_status" = "400"
+
+          still_authenticated=$(curl -sS -b "$cookie_jar" -c "$cookie_jar" \
+            -o /dev/null -w "%{http_code}" "$BASE_URL/admin")
+          test "$still_authenticated" = "200"
+          echo "PASS: Invalid CSRF token is rejected without logging out."
+
+          echo "Testing logout with a valid CSRF token..."
+          logout_status=$(curl -sS -b "$cookie_jar" -c "$cookie_jar" \
+            -X POST -H "X-CSRFToken: $admin_csrf" \
+            -o /dev/null -w "%{http_code}" "$BASE_URL/logout")
+          test "$logout_status" = "302"
+
+          after_logout=$(curl -sS -b "$cookie_jar" -c "$cookie_jar" \
+            -o /dev/null -w "%{http_code}" "$BASE_URL/admin")
+          test "$after_logout" = "302"
+          echo "PASS: Valid CSRF token permits logout and clears the session."
 
       - name: Test scanner API key
         env:
