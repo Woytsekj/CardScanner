@@ -18,6 +18,7 @@ PRICES_FILE = DATA_DIR / "tcg_prices.json"
 META_FILE = DATA_DIR / "price_sync.json"
 LAST_SEEN_FILE = DATA_DIR / "tcgcsv_last_updated.txt"
 DB_INV = DATA_DIR / "mtg_inventory.db"
+DB_ART = DATA_DIR / "mtg_art_hashes.db"
 USER_AGENT = os.environ.get("TCGCSV_USER_AGENT", "MTGScannerInventory/1.1")
 REQUEST_DELAY = float(os.environ.get("TCGCSV_REQUEST_DELAY", "0.12"))
 CHECK_INTERVAL = int(os.environ.get("TCGCSV_CHECK_INTERVAL", "3600"))
@@ -108,17 +109,30 @@ def ensure_history_tables(conn: sqlite3.Connection) -> None:
 
 
 def owned_products(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    join_sql = "LEFT JOIN (SELECT NULL AS scryfall_id, NULL AS tcgplayer_id) a ON 1=0"
+    if DB_ART.exists():
+        try:
+            conn.execute("ATTACH DATABASE ? AS art_db", (str(DB_ART),))
+            conn.execute("SELECT 1 FROM art_db.card_art LIMIT 1").fetchone()
+            join_sql = "LEFT JOIN art_db.card_art a ON i.scryfall_id = a.scryfall_id"
+        except sqlite3.Error:
+            try:
+                conn.execute("DETACH DATABASE art_db")
+            except sqlite3.Error:
+                pass
+    tcg_id_sql = "COALESCE(NULLIF(TRIM(i.tcgplayer_id), ''), a.tcgplayer_id)"
     rows = conn.execute(
-        """SELECT tcgplayer_id,
+        f"""SELECT {tcg_id_sql} AS tcgplayer_id,
                   MAX(scryfall_id) AS scryfall_id,
                   MAX(name) AS name,
                   MAX(set_code) AS set_code,
                   MAX(collector_number) AS collector_number,
                   SUM(CASE WHEN IFNULL(NULLIF(finish,''),'normal')='normal' THEN IFNULL(quantity,1) ELSE 0 END) AS normal_qty,
                   SUM(CASE WHEN IFNULL(NULLIF(finish,''),'normal')='foil' THEN IFNULL(quantity,1) ELSE 0 END) AS foil_qty
-           FROM inventory
-           WHERE tcgplayer_id IS NOT NULL AND TRIM(tcgplayer_id) <> ''
-           GROUP BY tcgplayer_id"""
+           FROM inventory i
+           {join_sql}
+           WHERE {tcg_id_sql} IS NOT NULL AND TRIM({tcg_id_sql}) <> ''
+           GROUP BY {tcg_id_sql}"""
     ).fetchall()
     return [dict(r) for r in rows]
 
