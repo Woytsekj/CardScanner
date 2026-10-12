@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="csrf-token" content="{{ csrf_token }}"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ deck.name }} · MTG Scanner Inventory</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+<script src="{{ url_for('static', filename='security.js') }}" defer></script>
+</head><body>
+<header class="topbar">
+  <div><h1>{{ deck.name }}</h1><div class="subtle">{{ deck.source|capitalize }}{% if deck.source_url %} · <a href="{{ deck.source_url }}" target="_blank" rel="noopener">Source deck</a>{% endif %}</div></div>
+  <div class="actions"><a class="button secondary" href="{{ url_for('decks_page') }}">All Decks</a><a class="button secondary" href="{{ url_for('index') }}">Inventory</a></div>
+</header>
+<main>
+{% if message %}<div class="status admin-message">{{ message }}</div>{% endif %}
+<section class="summary-grid">
+  <div class="summary-card"><span>Required</span><strong>{{ stats.required }}</strong></div>
+  <div class="summary-card summary-have"><span>Assigned to deck</span><strong>{{ stats.assigned }}</strong></div>
+  <div class="summary-card summary-have"><span>Free copies available</span><strong>{{ stats.free_available }}</strong></div>
+  <div class="summary-card summary-buy"><span>Still need</span><strong>{{ stats.missing }}</strong></div>
+</section>
+<section class="toolbar deck-owner-bar">
+  <form method="get" action="{{ url_for('deck_view', deck_id=deck.id) }}" class="owner-filter deck-compare-controls">
+    <label>Compare against owner<select name="owner" onchange="this.form.submit()">{% for owner in owners %}<option value="{{ owner }}" {% if selected_owner == owner %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select></label>
+    <label class="check-row"><input type="checkbox" name="fuzzy" value="1" {% if fuzzy %}checked{% endif %} onchange="this.form.submit()"> Fuzzy mode — any printing of the same card</label>
+  </form>
+  {% if session.get('is_admin') %}
+  <form method="post" action="{{ url_for('assign_free_to_deck', deck_id=deck.id) }}" class="inline-form" onsubmit="return confirm('Move available matching cards from Free into this deck location?');"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="owner" value="{{ selected_owner }}"><input type="hidden" name="fuzzy" value="{{ '1' if fuzzy else '0' }}">
+    <button class="button" type="submit">Move Matching Free Cards to Deck</button>
+  </form>
+  {% endif %}
+  <a class="button secondary" href="{{ url_for('deck_missing_csv', deck_id=deck.id, owner=selected_owner, fuzzy='1' if fuzzy else '0') }}">Export Buy List CSV</a>
+</section>
+
+{% if session.get('is_admin') %}
+<section class="admin-panel deck-editor-panel">
+  <div class="section-heading"><div><h2>Edit decklist</h2><p class="subtle">Changing set + collector tries to select the exact local printing. Finish controls whether the deck requires a normal or foil copy.</p></div></div>
+  <form id="addDeckCardForm" method="post" action="{{ url_for('add_deck_card', deck_id=deck.id) }}" class="deck-add-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <strong>Add card</strong>
+    <input name="name" placeholder="Card name" required>
+    <input class="small-number" type="number" name="quantity" min="1" value="1" aria-label="Quantity">
+    <input class="small-text" name="set_code" placeholder="Set" maxlength="20">
+    <input class="small-text" name="collector_number" placeholder="Collector #" maxlength="30">
+    <input class="small-text" name="category" value="Mainboard" placeholder="Category" maxlength="100">
+    <select name="finish"><option value="normal">Normal</option><option value="foil">Foil</option></select>
+    <button class="button" type="submit">Add to deck</button>
+  </form>
+  <div class="table-wrap">
+    <table class="deck-editor-table"><thead><tr><th>Card</th><th>Qty</th><th>Set</th><th>Collector #</th><th>Category</th><th>Finish</th><th></th></tr></thead><tbody>
+    {% for card in deck_cards %}
+    {% set form_id = 'edit-deck-' ~ card.id %}
+    <tr class="{% if (card.category or '')|lower == 'commander' %}commander-row{% endif %}">
+      <td>
+        <form id="{{ form_id }}" method="post" action="{{ url_for('edit_deck_card', deck_id=deck.id, card_id=card.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
+        <div class="name-with-thumb">
+          {% if card.scryfall_id %}<img src="{{ 'https://cards.scryfall.io/normal/front/' ~ card.scryfall_id[0] ~ '/' ~ card.scryfall_id[1] ~ '/' ~ card.scryfall_id ~ '.jpg' }}" class="thumb" alt="" loading="lazy">{% else %}<div class="thumb placeholder-thumb">—</div>{% endif %}
+          <input name="name" form="{{ form_id }}" value="{{ card.name }}" aria-label="Card name">
+        </div>
+        <input type="hidden" name="scryfall_id" form="{{ form_id }}" value="{{ card.scryfall_id or '' }}">
+        <input type="hidden" name="tcgplayer_id" form="{{ form_id }}" value="{{ card.tcgplayer_id or '' }}">
+      </td>
+      <td><input class="small-number" type="number" name="quantity" form="{{ form_id }}" min="1" value="{{ card.quantity }}"></td>
+      <td><input class="small-text" name="set_code" form="{{ form_id }}" value="{{ card.set_code or '' }}" maxlength="20"></td>
+      <td><input class="small-text" name="collector_number" form="{{ form_id }}" value="{{ card.collector_number or '' }}" maxlength="30"></td>
+      <td><input class="small-text" name="category" form="{{ form_id }}" value="{{ card.category or 'Mainboard' }}" maxlength="100"></td>
+      <td><select name="finish" form="{{ form_id }}"><option value="normal" {% if (card.finish or 'normal') == 'normal' %}selected{% endif %}>Normal</option><option value="foil" {% if card.finish == 'foil' %}selected{% endif %}>Foil</option></select></td>
+      <td class="row-actions"><button class="button" form="{{ form_id }}" type="submit">Save</button>
+        <form method="post" action="{{ url_for('delete_deck_card', deck_id=deck.id, card_id=card.id) }}" onsubmit="return confirm('Remove this card from the deck?');"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Remove</button></form>
+      </td>
+    </tr>
+    {% else %}<tr><td colspan="7" class="empty">No cards in this deck.</td></tr>{% endfor %}
+    </tbody></table>
+  </div>
+</section>
+{% endif %}
+
+<section class="table-card">
+  <div class="section-heading"><div><h2>Deck comparison</h2><p class="subtle">A card is satisfied by copies already assigned to this deck plus matching copies still in Free.{% if fuzzy %} <strong>Fuzzy mode is ON:</strong> set, collector number, finish, and printing are ignored; any printing of the same Oracle card counts.{% else %} Exact mode respects the requested printing and finish.{% endif %}</p></div></div>
+  <div class="table-wrap">
+    <table><thead><tr><th>Card</th><th>Category</th><th>Finish</th><th>Required</th><th>Assigned</th><th>Free available</th><th>Missing</th><th>Set</th><th>Collector #</th><th></th></tr></thead><tbody>
+    {% for item in comparison %}
+      <tr class="{% if item.missing %}needs-row{% else %}have-row{% endif %}">
+        <td class="name-cell"><div class="name-with-thumb">{% if item.image_url %}<img src="{{ item.image_url }}" class="thumb" alt="" loading="lazy">{% else %}<div class="thumb placeholder-thumb">—</div>{% endif %}<div><div class="card-title">{{ item.name }}</div>{% if item.tcgplayer_id %}<div class="subtle">TCGplayer #{{ item.tcgplayer_id }}</div>{% endif %}</div></div></td>
+        <td>{{ item.category }}</td><td><span class="finish-pill {{ item.finish }}">{{ item.finish|capitalize }}</span></td><td>{{ item.required }}</td><td>{{ item.assigned }}</td><td>{{ item.free_available }}</td><td><strong>{{ item.missing }}</strong></td><td>{{ item.set_code or '—' }}</td><td>{{ item.collector_number or '—' }}</td>
+        <td>{% if item.missing %}<span class="badge deck-buy-badge">BUY</span>{% else %}<span class="badge deck-have-badge">HAVE</span>{% endif %}</td>
+      </tr>
+    {% else %}<tr><td colspan="10" class="empty">No cards in this deck.</td></tr>{% endfor %}
+    </tbody></table>
+  </div>
+</section>
+</main>
+</body></html>

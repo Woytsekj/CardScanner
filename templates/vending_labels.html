@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Print Vendor Labels · MTG Scanner Inventory</title>
+<style>
+*{box-sizing:border-box} body{margin:0;background:#202020;color:#eee;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.screen-tools{padding:16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#151515;border-bottom:1px solid #3a3a3a;position:sticky;top:0;z-index:10}
+.screen-tools label{display:flex;flex-direction:column;gap:4px;color:#aaa;font-size:13px}.screen-tools select,.screen-tools input,.screen-tools button{font:inherit;background:#252525;border:1px solid #444;color:#eee;border-radius:6px;padding:8px 10px}.screen-tools button{cursor:pointer}.screen-tools .primary{background:#218c5f;border-color:#2eaa75;font-weight:700}.screen-tools .muted{color:#aaa;font-size:13px}.page-wrap{padding:20px}
+.sheet{background:#fff;color:#111;margin:0 auto 20px;box-shadow:0 2px 14px rgba(0,0,0,.45);display:grid;overflow:hidden}
+.sheet.label-5160{width:8.5in;height:11in;padding:.5in .1875in;grid-template-columns:repeat(3,2.625in);grid-template-rows:repeat(10,1in);column-gap:.125in;row-gap:0}
+.sheet.label-5164{width:11in;height:8.5in;padding:.25in .438in;grid-template-columns:repeat(3,3.333in);grid-template-rows:repeat(2,4in);column-gap:.125in;row-gap:0}
+.label{overflow:hidden;border:0;display:flex;flex-direction:column;justify-content:center;padding:.07in .09in;line-height:1.05;position:relative}.label-price{font-size:.26in;font-weight:900;line-height:1;white-space:nowrap;margin-bottom:.025in}.label-name{font-weight:800;font-size:.115in;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.label-meta{font-size:.085in;color:#444;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:.02in}.label-owner{font-size:.075in;color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:.025in}.label-empty{visibility:hidden}.label-5164 .label-price{font-size:.42in}.label-5164 .label-name{font-size:.18in}.label-5164 .label-meta{font-size:.12in}.label-5164 .label-owner{font-size:.11in}.print-note{max-width:8.5in;margin:10px auto 20px;color:#aaa;font-size:13px;line-height:1.45}.summary{color:#ddd;font-size:14px}.danger-note{color:#e99}
+@media print{body{background:#fff;color:#000}.screen-tools,.print-note{display:none}.page-wrap{padding:0}.sheet{box-shadow:none;margin:0;page-break-after:always}.sheet:last-child{page-break-after:auto}.label{border:0}.label-5160{break-after:page}.label-5164{break-after:page}}
+@page{size:Letter portrait;margin:0}
+@page label5164{size:Letter landscape;margin:0}
+</style></head><body>
+<div class="screen-tools">
+  <button class="primary" onclick="window.print()">Print labels</button>
+  <label>Template<select id="templateSelect"><option value="5160" {% if template=='5160' %}selected{% endif %}>Avery 5160 · 1 × 2-5/8 · 30/sheet</option><option value="5164" {% if template=='5164' %}selected{% endif %}>Avery 5164 · 3-1/3 × 4 · 6/sheet</option></select></label>
+  <label>Labels to make<select id="repeatSelect"><option value="one" {% if repeat_mode=='one' %}selected{% endif %}>One per selected card row</option><option value="qty" {% if repeat_mode=='qty' %}selected{% endif %}>One per physical copy (uses Qty)</option></select></label>
+  <label>Start at label<input id="startInput" type="number" min="1" max="{{ 30 if template=='5160' else 6 }}" value="{{ start_label }}" style="width:80px"></label>
+  <span class="summary">Selected {{ selected_count }} · Printing {{ printed_label_count }} label(s)</span>
+  {% if skipped %}<span class="danger-note">Some selected cards are no longer in Free storage and were skipped.</span>{% endif %}
+</div>
+<div class="print-note">For best alignment use 100% / Actual size, Letter paper, no browser margins or headers/footers, and do not use “Fit to page.” Avery 5160 is 1 × 2-5/8 inches with 30 labels per sheet; Avery 5164 is 3-1/3 × 4 inches with 6 per sheet.</div>
+<div class="page-wrap">
+{% for sheet in sheets %}<section class="sheet label-{{ template }}" data-sheet-template="{{ template }}">{% for item in sheet %}{% if item %}<div class="label"><div class="label-price">${{ '%.2f'|format(item.price) }}</div><div class="label-name">{{ item.name }}</div><div class="label-meta">{{ item.set_code or '—' }} #{{ item.collector_number or '—' }}{% if item.finish|lower != 'normal' %} · FOIL{% endif %}</div><div class="label-owner">{{ item.owner }}</div></div>{% else %}<div class="label label-empty"></div>{% endif %}{% endfor %}</section>{% endfor %}
+</div>
+<script>
+function reloadWithSettings(){ const p=new URLSearchParams(location.search); p.set('template',document.getElementById('templateSelect').value); p.set('repeat',document.getElementById('repeatSelect').value); p.set('start',document.getElementById('startInput').value||'1'); location.search=p.toString(); }
+document.getElementById('templateSelect').addEventListener('change',reloadWithSettings);document.getElementById('repeatSelect').addEventListener('change',reloadWithSettings);document.getElementById('startInput').addEventListener('change',reloadWithSettings);
+</script></body></html>

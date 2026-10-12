@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="csrf-token" content="{{ csrf_token }}"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Admin · MTG Inventory</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+<script src="{{ url_for('static', filename='security.js') }}" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <div><h1>Admin</h1><div class="subtle">Signed in as {{ admin_user }}</div></div>
+  <div class="actions">
+    <a class="button secondary" href="{{ url_for('index') }}">Back to inventory</a><a class="button secondary" href="{{ url_for('decks_page') }}">Decks</a><a class="button secondary" href="{{ url_for('vending_view') }}">Vending</a>
+    <form method="post" action="{{ url_for('logout') }}" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary">Log out</button></form>
+  </div>
+</header>
+<main>
+{% if message %}<div class="status admin-message">{{ message }}</div>{% endif %}
+<section class="admin-grid">
+
+<div class="admin-panel">
+  <h2>Add Card Manually</h2>
+  <p class="subtle">Search your local card catalog first. Selecting a result fills the metadata automatically. You can still type everything by hand for a card that is not in the catalog.</p>
+
+  <div class="manual-search">
+    <label>Search card catalog
+      <div class="search-inline catalog-search-box">
+        <input id="catalogSearch" type="search" placeholder="Start typing a card name, set, or collector #" autocomplete="off" aria-autocomplete="list" aria-controls="catalogSuggestions">
+        <button class="button secondary" type="button" id="catalogSearchButton">Search</button>
+        <div id="catalogSuggestions" class="autocomplete-menu" role="listbox" hidden></div>
+      </div>
+    </label>
+    <div id="catalogStatus" class="status"></div>
+    <div id="catalogResults" class="catalog-results"></div>
+  </div>
+
+  <form method="post" action="{{ url_for('manual_add') }}" class="manual-form" id="manualAddForm"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-grid-2">
+      <label>Card name<input id="manualName" name="name" maxlength="200" required></label>
+      <label>Set code<input id="manualSet" name="set_code" maxlength="20" placeholder="SPG"></label>
+      <label>Collector number<input id="manualCollector" name="collector_number" maxlength="40" placeholder="106"></label>
+      <label>Rarity<input id="manualRarity" name="rarity" maxlength="40" placeholder="Mythic"></label>
+      <label>Scryfall ID<input id="manualScryfall" name="scryfall_id" maxlength="80" placeholder="Optional"></label>
+      <label>TCGplayer ID<input id="manualTCG" name="tcgplayer_id" maxlength="40" placeholder="Optional"></label>
+      <label>Scanned price<input id="manualPrice" name="price" value="0.00" inputmode="decimal"></label>
+      <label>Quantity<input name="quantity" type="number" min="1" step="1" value="1" required></label>
+      <label>Owner<select name="owner" required>{% for owner in people if owner.active %}<option value="{{ owner.name }}">{{ owner.name }}</option>{% endfor %}</select></label>
+      <label>Finish<select name="finish"><option value="normal">Normal</option><option value="foil">Foil</option></select></label>
+      <label>Location<input name="location" value="Free" placeholder="Free or deck name"></label>
+    </div>
+    <div class="manual-preview"><img id="manualPreviewImage" src="" alt="" hidden><span id="manualPreviewText">Select a catalog card to preview its image.</span></div>
+    <button class="button" type="submit">Add to Inventory</button>
+  </form>
+
+  <div class="alias-manager">
+    <h3>Alternate names / search aliases</h3>
+    <p class="subtle">Give a card another name that should find it on the main inventory search. This is useful for Secret Lair or other re-themed cards, such as <strong>Miku, Child of Song</strong> → <strong>Child of Alara</strong>.</p>
+    <div class="alias-selected" id="aliasSelected">Select a catalog card above to manage its aliases.</div>
+    <form method="post" action="{{ url_for('add_alias') }}" id="aliasForm" class="search-inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="scryfall_id" id="aliasScryfall">
+      <input type="text" name="alias" id="aliasInput" maxlength="200" placeholder="Alternate name, e.g. Miku, Child of Song" disabled required>
+      <button class="button secondary" id="aliasAddButton" type="submit" disabled>Add alias</button>
+    </form>
+    <div id="aliasList" class="alias-list"></div>
+  </div>
+</div>
+
+<div class="admin-panel">
+  <h2>People</h2>
+  <p class="subtle">These names appear in every scanner's owner dropdown. You can deactivate a person, or permanently delete them. Deleting a person never silently destroys inventory: if they still own cards, choose another active owner to receive those cards.</p>
+  <form method="post" action="{{ url_for('add_person') }}" class="add-person-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input name="name" placeholder="New person name" maxlength="100" required><button class="button">Add person</button>
+  </form>
+  <div class="person-list">
+    {% for person in people %}
+    <div class="person-row person-row-rich">
+      <div class="person-main">
+        <form method="post" action="{{ url_for('rename_person', person_id=person.id) }}" class="person-name-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input name="name" value="{{ person.name }}" maxlength="100"><button class="button secondary">Rename</button>
+        </form>
+        <span class="badge">{{ 'Active' if person.active else 'Inactive' }}</span>
+        <span class="subtle">{{ person.card_count|int }} card(s) owned</span>
+      </div>
+      <div class="person-actions">
+        <form method="post" action="{{ url_for('toggle_person', person_id=person.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary">{{ 'Deactivate' if person.active else 'Activate' }}</button></form>
+        {% set transfer_choices = people|rejectattr('id','equalto',person.id)|selectattr('active')|list %}
+        <form method="post" action="{{ url_for('delete_person', person_id=person.id) }}" class="delete-person-form" data-person="{{ person.name|e }}" data-count="{{ person.card_count|int }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          {% if person.card_count|int > 0 %}
+          <select name="transfer_to" aria-label="Transfer {{ person.name }} cards to"><option value="">Transfer cards to…</option>{% for target in transfer_choices %}<option value="{{ target.name }}">{{ target.name }}</option>{% endfor %}</select>
+          {% endif %}
+          <button class="button danger" type="submit">Delete permanently</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="admin-panel">
+  <h2>Price History & Discord Alerts</h2>
+  <p class="subtle">The updater records one history point per owned TCGplayer product whenever TCGCSV publishes a new build. History is retained for <strong>{{ price_history_days }} days</strong>.</p>
+  <div class="settings-list">
+    <div><span>Display timezone</span><strong>{{ display_timezone }}</strong></div>
+    <div><span>Discord webhook</span><strong>{{ 'Configured' if discord_configured else 'Not configured' }}</strong></div>
+    <div><span>Alerts</span><strong>{{ 'Enabled' if price_alert_enabled and discord_configured else 'Disabled' }}</strong></div>
+    <div><span>Comparison window</span><strong>{{ alert_lookback_days }} days</strong></div>
+    <div><span>Cooldown</span><strong>{{ alert_cooldown_days }} days</strong></div>
+    <div><span>Price threshold</span><strong>${{ '%.2f'|format(alert_min_dollars) }} or {{ '%.1f'|format(alert_min_percent) }}%</strong></div>
+    <div><span>Owned-value threshold</span><strong>{% if alert_min_owned_gain > 0 %}${{ '%.2f'|format(alert_min_owned_gain) }}{% else %}Disabled{% endif %}</strong></div>
+  </div>
+  {% if discord_configured %}
+  <form method="post" action="{{ url_for('test_discord') }}" style="margin-top:14px"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button" type="submit">Send Test Discord Message</button>
+  </form>
+  {% else %}
+  <p class="subtle">Set <code>DISCORD_WEBHOOK_URL</code> in the server <code>.env</code> file and restart the updater to enable alerts.</p>
+  {% endif %}
+</div>
+
+<div class="admin-panel">
+  <h2>Card metadata, Oracle text & legality</h2>
+  <p class="subtle">Metadata is cached locally. Use the bulk refresh to update Oracle text, card types, colors, and format legality without repeatedly pinging Scryfall.</p>
+  <form method="post" action="{{ url_for('enrich_metadata') }}" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>Cards to enrich<input type="number" name="limit" min="1" max="1000" value="500"></label><button class="button secondary" type="submit">Enrich missing metadata (API)</button></form>
+  <form method="post" action="{{ url_for('admin_refresh_scryfall_bulk') }}" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button" type="submit">Download / Refresh Scryfall Bulk Metadata</button></form>
+  {% if scryfall_bulk_meta %}<p class="subtle">Last bulk refresh: {{ scryfall_bulk_meta.get('synced_at','—')|localdt }} · {{ scryfall_bulk_meta.get('found',0) }}/{{ scryfall_bulk_meta.get('needed',0) }} owned printings updated.</p>{% else %}<p class="subtle">No Scryfall bulk metadata snapshot has been downloaded yet.</p>{% endif %}
+</div>
+
+<div class="admin-panel">
+  <h2>Web users</h2>
+  <p class="subtle">The <strong>Superadmin</strong> is the highest-power account. Only a superadmin can create/delete web users, change usernames, or change their roles. Admin accounts can manage the collection; Vendor accounts can access only Vending.</p>
+
+  {% if admin_is_superadmin %}
+  <form method="post" action="{{ url_for('add_user') }}" class="manual-form">
+    <div class="form-grid-2">
+      <label>Username<input name="username" maxlength="150" required></label>
+      <label>Password<input type="password" name="password" minlength="12" autocomplete="new-password" required></label>
+      <label>Role<select name="role"><option value="vendor">Vendor</option><option value="admin">Admin</option></select></label>
+    </div>
+    <button class="button" type="submit">Create User</button>
+  </form>
+  {% else %}
+  <div class="status">You are a regular admin. User-account management is restricted to the superadmin.</div>
+  {% endif %}
+
+  <div class="person-list">
+    {% for user in users %}
+    <div class="person-row user-row">
+      <div style="flex:1">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <strong>{{ user.username }}</strong>
+          {% if user.is_superadmin %}<span class="badge">Superadmin</span>{% endif %}
+        </div>
+        <div class="subtle">{{ user.role|capitalize }} · {{ 'Active' if user.active else 'Inactive' }}{% if user.last_login_at %} · Last login {{ user.last_login_at|localdt }}{% endif %}</div>
+      </div>
+
+      {% if admin_is_superadmin %}
+      <form method="post" action="{{ url_for('rename_user', username=user.username) }}" class="search-inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input name="new_username" value="{{ user.username }}" maxlength="150" required aria-label="New username for {{ user.username }}">
+        <button class="button secondary" type="submit">Change username</button>
+      </form>
+
+      {% if not user.is_superadmin %}
+      <form method="post" action="{{ url_for('change_user_role', username=user.username) }}" class="search-inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <select name="role" aria-label="Role for {{ user.username }}">
+          <option value="vendor"{% if user.role|lower == 'vendor' %} selected{% endif %}>Vendor</option>
+          <option value="admin"{% if user.role|lower == 'admin' %} selected{% endif %}>Admin</option>
+        </select>
+        <button class="button secondary" type="submit">Set role</button>
+      </form>
+      {% else %}
+      <span class="subtle">Highest power</span>
+      {% endif %}
+
+      {% if user.username|lower != admin_user|lower %}
+      <form method="post" action="{{ url_for('toggle_user', username=user.username) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button secondary" type="submit">{{ 'Deactivate' if user.active else 'Activate' }}</button>
+      </form>
+      <form method="post" action="{{ url_for('admin_reset_user_password', username=user.username) }}" class="search-inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="password" name="password" minlength="12" placeholder="New password" required>
+        <button class="button secondary" type="submit">Reset password</button>
+      </form>
+      <form method="post" action="{{ url_for('delete_user', username=user.username) }}" class="delete-user-form" data-user="{{ user.username|e }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button danger" type="submit">Delete user</button>
+      </form>
+      {% else %}
+      <span class="subtle">Current account</span>
+      {% endif %}
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="admin-panel">
+  <h2>Admin password</h2>
+  <p class="subtle">Passwords are stored as a one-way hash. Use 12 or more characters.</p>
+  <form method="post" action="{{ url_for('change_password') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>New password<input type="password" name="password" minlength="12" autocomplete="new-password" required></label>
+    <button class="button" type="submit">Change password</button>
+  </form>
+</div>
+
+</section>
+</main>
+<script>
+const q = document.getElementById('catalogSearch');
+const suggestions = document.getElementById('catalogSuggestions');
+const results = document.getElementById('catalogResults');
+const status = document.getElementById('catalogStatus');
+const fields = {
+  name: document.getElementById('manualName'), set: document.getElementById('manualSet'),
+  collector: document.getElementById('manualCollector'), rarity: document.getElementById('manualRarity'),
+  scryfall: document.getElementById('manualScryfall'), tcg: document.getElementById('manualTCG')
+};
+const preview = document.getElementById('manualPreviewImage');
+const previewText = document.getElementById('manualPreviewText');
+const aliasScryfall = document.getElementById('aliasScryfall');
+const aliasInput = document.getElementById('aliasInput');
+const aliasAddButton = document.getElementById('aliasAddButton');
+const aliasSelected = document.getElementById('aliasSelected');
+const aliasList = document.getElementById('aliasList');
+let suggestionCards = [];
+let highlightedSuggestion = -1;
+let suggestTimer = null;
+
+function esc(s) { return String(s ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
+function hideSuggestions() { suggestions.hidden = true; suggestions.innerHTML = ''; suggestionCards = []; highlightedSuggestion = -1; }
+function showSuggestions(items) {
+  suggestionCards = items || [];
+  highlightedSuggestion = -1;
+  if (!suggestionCards.length) { hideSuggestions(); return; }
+  suggestions.innerHTML = suggestionCards.map((card, i) => `
+    <button type="button" class="autocomplete-item" role="option" aria-selected="false" data-index="${i}">
+      ${card.image_url ? `<img src="${esc(card.image_url)}" alt="">` : '<span class="autocomplete-thumb-placeholder">—</span>'}
+      <span class="autocomplete-copy"><strong>${esc(card.name)}</strong><small>${esc(card.set_code || '—')} · #${esc(card.collector_number || '—')} · ${esc(card.rarity || '')}</small></span>
+    </button>`).join('');
+  suggestions.hidden = false;
+  suggestions.querySelectorAll('.autocomplete-item').forEach(btn => btn.addEventListener('mousedown', e => { e.preventDefault(); selectCatalogCard(suggestionCards[Number(btn.dataset.index)]); }));
+}
+function highlightSuggestion(index) {
+  const buttons = [...suggestions.querySelectorAll('.autocomplete-item')];
+  buttons.forEach((btn, i) => {
+    const active = i === index;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    if (active) btn.scrollIntoView({block:'nearest'});
+  });
+  highlightedSuggestion = index;
+}
+async function fetchSuggestions() {
+  const term = q.value.trim();
+  if (term.length < 2) { hideSuggestions(); return; }
+  try {
+    const r = await fetch('{{ url_for('catalog_suggest') }}?q=' + encodeURIComponent(term));
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.success) { hideSuggestions(); return; }
+    showSuggestions(data.results || []);
+  } catch (_) { hideSuggestions(); }
+}
+function queueSuggestions() {
+  clearTimeout(suggestTimer);
+  suggestTimer = setTimeout(fetchSuggestions, 180);
+}
+async function loadAliases(scryfallId, card) {
+  aliasScryfall.value = scryfallId || '';
+  aliasInput.value = '';
+  const enabled = !!scryfallId;
+  aliasInput.disabled = !enabled;
+  aliasAddButton.disabled = !enabled;
+  aliasSelected.innerHTML = card && card.image_url ? `<img src="${esc(card.image_url)}" alt=""><strong>${esc(card.name)}</strong><span class="subtle">${esc(card.set_code || '—')} #${esc(card.collector_number || '—')}</span>` : (card ? `<strong>${esc(card.name)}</strong>` : 'Select a catalog card above to manage its aliases.');
+  aliasList.innerHTML = '';
+  if (!scryfallId) return;
+  try {
+    const r = await fetch('{{ url_for('list_aliases') }}?scryfall_id=' + encodeURIComponent(scryfallId));
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.success) return;
+    aliasList.innerHTML = (data.aliases || []).map(a => `<div class="alias-row"><span>${esc(a.alias)}</span><button type="button" class="button secondary alias-delete" data-id="${a.id}">Remove</button></div>`).join('');
+    aliasList.querySelectorAll('.alias-delete').forEach(btn => btn.addEventListener('click', async () => {
+      const rr = await fetch('/admin/aliases/' + btn.dataset.id, {method:'DELETE'});
+      if (rr.ok) loadAliases(scryfallId, card);
+    }));
+  } catch (_) {}
+}
+function selectCatalogCard(card) {
+  fields.name.value = card.name || '';
+  fields.set.value = card.set_code || '';
+  fields.collector.value = card.collector_number || '';
+  fields.rarity.value = card.rarity || '';
+  fields.scryfall.value = card.scryfall_id || '';
+  fields.tcg.value = card.tcgplayer_id || '';
+  q.value = card.name || q.value;
+  if (card.image_url) { preview.src = card.image_url; preview.hidden = false; previewText.hidden = true; }
+  else { preview.hidden = true; previewText.hidden = false; }
+  status.textContent = 'Selected ' + card.name + ' [' + (card.set_code || '—') + ' #' + (card.collector_number || '—') + '].';
+  hideSuggestions();
+  loadAliases(card.scryfall_id || '', card);
+}
+async function doCatalogSearch() {
+  const term = q.value.trim();
+  if (!term) { results.innerHTML = ''; status.textContent = 'Enter a card name, set code, or collector number.'; return; }
+  hideSuggestions();
+  status.textContent = 'Searching local card catalog…';
+  const r = await fetch('{{ url_for('catalog_search') }}?q=' + encodeURIComponent(term));
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok || !data.success) { status.textContent = data.error || 'Search failed.'; return; }
+  if (!data.results.length) { results.innerHTML = ''; status.textContent = 'No matching cards found.'; return; }
+  status.textContent = data.results.length + ' matching printing(s).';
+  results.innerHTML = data.results.map((card, i) => `
+    <button type="button" class="catalog-result" data-index="${i}">
+      ${card.image_url ? `<img src="${esc(card.image_url)}" alt="">` : '<div class="catalog-thumb-placeholder">—</div>'}
+      <span><strong>${esc(card.name)}</strong><small>${esc(card.set_code || '—')} · #${esc(card.collector_number || '—')} · ${esc(card.rarity || '')}</small></span>
+    </button>`).join('');
+  results.querySelectorAll('.catalog-result').forEach((el, i) => el.addEventListener('click', () => selectCatalogCard(data.results[i])));
+}
+document.getElementById('catalogSearchButton').addEventListener('click', doCatalogSearch);
+q.addEventListener('input', queueSuggestions);
+q.addEventListener('focus', queueSuggestions);
+q.addEventListener('keydown', e => {
+  const count = suggestionCards.length;
+  if (e.key === 'ArrowDown' && count) { e.preventDefault(); highlightSuggestion((highlightedSuggestion + 1) % count); }
+  else if (e.key === 'ArrowUp' && count) { e.preventDefault(); highlightSuggestion((highlightedSuggestion - 1 + count) % count); }
+  else if (e.key === 'Enter') {
+    if (!suggestions.hidden && highlightedSuggestion >= 0) { e.preventDefault(); selectCatalogCard(suggestionCards[highlightedSuggestion]); }
+    else { e.preventDefault(); doCatalogSearch(); }
+  } else if (e.key === 'Escape') hideSuggestions();
+});
+document.addEventListener('click', e => { if (!e.target.closest('.catalog-search-box')) hideSuggestions(); });
+</script>
+<script>
+document.querySelectorAll('.delete-user-form').forEach(form => {
+  form.addEventListener('submit', e => {
+    const name = form.dataset.user || 'this user';
+    if (!confirm('Permanently delete web user ' + name + '? They will immediately lose access. This cannot be undone.')) e.preventDefault();
+  });
+});
+
+document.querySelectorAll('.delete-person-form').forEach(form => {
+  form.addEventListener('submit', e => {
+    const name = form.dataset.person || 'this person';
+    const count = Number(form.dataset.count || 0);
+    const transfer = form.querySelector('[name="transfer_to"]');
+    if (count > 0 && (!transfer || !transfer.value)) {
+      e.preventDefault();
+      alert('Choose another active owner for the ' + count + ' card(s) before deleting ' + name + '.');
+      return;
+    }
+    const extra = count > 0 ? ' Their cards will be transferred to ' + transfer.value + '.' : ' They own no cards.';
+    if (!confirm('Permanently delete ' + name + '?' + extra + ' This cannot be undone.')) e.preventDefault();
+  });
+});
+</script>
+</body></html>

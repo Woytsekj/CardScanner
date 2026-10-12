@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="csrf-token" content="{{ csrf_token }}"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vending · MTG Scanner Inventory</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+<script src="{{ url_for('static', filename='security.js') }}" defer></script>
+</head><body>
+<header class="topbar">
+  <div><h1>Vending View</h1><div class="subtle">Free-storage cards only · {{ result_count }} matching rows</div></div>
+  <div class="actions"><a class="button secondary" href="{{ url_for('index') }}">Inventory</a><a class="button secondary" href="{{ url_for('decks_page') }}">Decks</a><a class="button" href="{{ url_for('vending_export_csv', owner=selected_owner, q=search, min_value=min_value) }}">Export Vendor CSV</a></div>
+</header>
+<main>
+<section class="toolbar vending-toolbar">
+  <form method="get" action="{{ url_for('vending_view') }}" class="search-form" id="vendingSearchForm">
+    <div class="inventory-search-box vending-search-box">
+      <input id="vendingSearchInput" type="search" name="q" value="{{ search }}" placeholder="Search cards…" autocomplete="off" aria-autocomplete="list" aria-controls="vendingSearchSuggestions">
+      <div id="vendingSearchSuggestions" class="autocomplete-menu" role="listbox" hidden></div>
+    </div>
+    <label>Owner<select name="owner"><option value="">All owners</option>{% for owner in owners %}<option value="{{ owner }}" {% if selected_owner == owner %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select></label>
+    <label>Minimum row value<input type="number" name="min_value" min="0" step="0.01" value="{{ '%.2f'|format(min_value) }}"></label>
+    <button class="button" type="submit">Filter</button>
+  </form>
+</section>
+<p class="subtle">Use <strong>Free</strong> for cards that can be sold. Named-deck locations stay out of this view automatically, so your vending helper won't accidentally sell a card currently assigned to a deck.</p>
+<section class="vendor-selection-toolbar">
+  <div><strong><span id="vendorSelectedCount">0</span> selected</strong><span class="subtle" id="vendorSelectedLabelCount"> · 0 labels</span></div>
+  <div class="actions">
+    <button type="button" class="button secondary" id="vendorSelectAll">Select all visible</button>
+    <button type="button" class="button secondary" id="vendorClearSelected">Clear selection</button>
+    <button type="button" class="button" id="vendorPrintLabels" disabled>Print selected labels</button>
+  </div>
+</section>
+<section class="vending-grid grid-view">
+{% for item in inventory %}
+<article class="grid-card vending-card" data-item-id="{{ item.id }}">
+  <label class="vendor-card-select"><input type="checkbox" class="vendor-select-checkbox" value="{{ item.id }}" aria-label="Select {{ item.name }} for printing"><span>Select</span></label>
+  <div class="grid-image-wrap">{% if item.image_url %}<img src="{{ item.image_url }}" class="grid-card-image" alt="{{ item.name }}" loading="lazy">{% else %}<div class="grid-card-image placeholder-thumb">—</div>{% endif %}</div>
+  <div class="grid-card-body">
+    <h3>{{ item.name }}</h3>
+    {% if item.alternate_names %}<div class="alternate-name">{{ item.alternate_names }}</div>{% endif %}
+    <div class="subtle">{{ item.set_code or '—' }} #{{ item.collector_number or '—' }} · {{ item.finish|capitalize }}</div>
+    <div class="vending-price"><div class="vending-unit-price">${{ '%.2f'|format(item.calculated_unit_price) }}</div></div>
+    <div class="vending-price-meta"><span>Qty {{ item.quantity }}</span><span>${{ '%.2f'|format(item.calculated_total_value) }} total</span></div>
+    <div class="vending-owner">Owner: <strong>{{ item.owner }}</strong></div>
+  </div>
+</article>
+{% else %}<div class="empty">No vending cards match the current filters.</div>{% endfor %}
+</section>
+</main>
+<script>
+const vendingSearchInput = document.getElementById('vendingSearchInput');
+const vendingSearchSuggestions = document.getElementById('vendingSearchSuggestions');
+const vendingSearchForm = document.getElementById('vendingSearchForm');
+const vendingSearchIndex = {{ inventory_search_index|tojson }};
+let vendingSuggestionCards = [];
+let vendingSuggestionIndex = -1;
+let vendingSuggestionVisible = false;
+
+function escVending(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function normalizeVendingSearch(s) {
+  return String(s ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
+function hideVendingSuggestions() {
+  if (!vendingSearchSuggestions) return;
+  vendingSearchSuggestions.hidden = true;
+  vendingSearchSuggestions.innerHTML = '';
+  vendingSuggestionCards = [];
+  vendingSuggestionIndex = -1;
+  vendingSuggestionVisible = false;
+}
+function scoreVendingSuggestion(card, term) {
+  const q = normalizeVendingSearch(term);
+  const name = normalizeVendingSearch(card.name);
+  const aliases = (card.alternate_names || []).map(normalizeVendingSearch).filter(Boolean);
+  const set = normalizeVendingSearch(card.set_code);
+  const cn = normalizeVendingSearch(card.collector_number);
+  const checks = [];
+  if (name.startsWith(q)) checks.push([0, name.length]);
+  aliases.forEach(a => { if (a.startsWith(q)) checks.push([1, a.length]); });
+  if (cn.startsWith(q)) checks.push([2, cn.length]);
+  if (set.startsWith(q)) checks.push([3, set.length]);
+  if (name.includes(q)) checks.push([4, name.length]);
+  aliases.forEach(a => { if (a.includes(q)) checks.push([5, a.length]); });
+  if (cn.includes(q)) checks.push([6, cn.length]);
+  if (set.includes(q)) checks.push([7, set.length]);
+  if (!checks.length) return null;
+  checks.sort((a,b) => a[0]-b[0] || a[1]-b[1]);
+  const [rank, len] = checks[0];
+  const matchedAlias = aliases.find(a => a.startsWith(q) || a.includes(q));
+  return {rank, len, matchedAlias};
+}
+function renderVendingSuggestions(items) {
+  vendingSuggestionCards = items || [];
+  vendingSuggestionIndex = -1;
+  if (!vendingSuggestionCards.length) { hideVendingSuggestions(); return; }
+  vendingSearchSuggestions.innerHTML = vendingSuggestionCards.map((card, i) => `
+    <button type="button" class="autocomplete-item" role="option" aria-selected="false" data-index="${i}">
+      ${card.image_url ? `<img src="${escVending(card.image_url)}" alt="">` : '<span class="autocomplete-thumb-placeholder">—</span>'}
+      <span class="autocomplete-copy"><strong>${escVending(card.name)}</strong><small>${escVending(card.set_code || '—')} · #${escVending(card.collector_number || '—')} · ${Number(card.quantity || 0)} owned${card.matchedAlias ? ` · also: ${escVending(card.matchedAlias)}` : ''}</small></span>
+    </button>`).join('');
+  vendingSearchSuggestions.hidden = false;
+  vendingSuggestionVisible = true;
+  vendingSearchSuggestions.querySelectorAll('.autocomplete-item').forEach(btn => btn.addEventListener('mousedown', e => {
+    e.preventDefault();
+    const card = vendingSuggestionCards[Number(btn.dataset.index)];
+    vendingSearchInput.value = card.matchedAlias || card.name || '';
+    hideVendingSuggestions();
+    vendingSearchForm.requestSubmit();
+  }));
+}
+function fetchVendingSuggestions() {
+  const term = vendingSearchInput.value.trim();
+  if (term.length < 2) { hideVendingSuggestions(); return; }
+  const results = [];
+  for (const card of vendingSearchIndex) {
+    const scored = scoreVendingSuggestion(card, term);
+    if (scored) results.push({...card, _rank: scored.rank, _len: scored.len, matchedAlias: scored.matchedAlias});
+  }
+  results.sort((a,b) => a._rank-b._rank || a._len-b._len || String(a.name).localeCompare(String(b.name), undefined, {sensitivity:'base'}) || String(a.set_code).localeCompare(String(b.set_code), undefined, {sensitivity:'base'}));
+  renderVendingSuggestions(results.slice(0, 12));
+}
+function highlightVendingSuggestion(index) {
+  const buttons = [...vendingSearchSuggestions.querySelectorAll('.autocomplete-item')];
+  if (!buttons.length) return;
+  index = ((index % buttons.length) + buttons.length) % buttons.length;
+  buttons.forEach((btn, i) => {
+    const active = i === index;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    if (active) btn.scrollIntoView({block:'nearest'});
+  });
+  vendingSuggestionIndex = index;
+}
+if (vendingSearchInput) {
+  vendingSearchInput.addEventListener('input', fetchVendingSuggestions);
+  vendingSearchInput.addEventListener('focus', fetchVendingSuggestions);
+  vendingSearchInput.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown' && vendingSuggestionVisible) { e.preventDefault(); highlightVendingSuggestion(vendingSuggestionIndex + 1); }
+    else if (e.key === 'ArrowUp' && vendingSuggestionVisible) { e.preventDefault(); highlightVendingSuggestion(vendingSuggestionIndex - 1); }
+    else if (e.key === 'Enter') {
+      if (vendingSuggestionVisible && vendingSuggestionIndex >= 0 && vendingSuggestionCards[vendingSuggestionIndex]) {
+        e.preventDefault();
+        const card = vendingSuggestionCards[vendingSuggestionIndex];
+        vendingSearchInput.value = card.matchedAlias || card.name || '';
+        hideVendingSuggestions();
+      }
+      vendingSearchForm.requestSubmit();
+    } else if (e.key === 'Escape') hideVendingSuggestions();
+  });
+  document.addEventListener('click', e => { if (!e.target.closest('.vending-search-box')) hideVendingSuggestions(); });
+}
+
+const vendorSelectionKey = 'mtg-vendor-selected-v1';
+const vendorSelectedCount = document.getElementById('vendorSelectedCount');
+const vendorSelectedLabelCount = document.getElementById('vendorSelectedLabelCount');
+const vendorPrintLabels = document.getElementById('vendorPrintLabels');
+const vendorSelectAll = document.getElementById('vendorSelectAll');
+const vendorClearSelected = document.getElementById('vendorClearSelected');
+function loadVendorSelection() {
+  try { return new Set(JSON.parse(localStorage.getItem(vendorSelectionKey) || '[]').map(String)); } catch (_) { return new Set(); }
+}
+function saveVendorSelection(set) { localStorage.setItem(vendorSelectionKey, JSON.stringify([...set])); }
+function syncVendorSelectionUI() {
+  const selected=loadVendorSelection();
+  let visible=0;
+  document.querySelectorAll('.vendor-select-checkbox').forEach(cb => { cb.checked=selected.has(String(cb.value)); if (cb.checked) visible++; });
+  const total=selected.size;
+  vendorSelectedCount.textContent=String(total);
+  vendorSelectedLabelCount.textContent=' · ' + String(total) + ' label' + (total===1?'':'s') + ' (one per selected row)';
+  vendorPrintLabels.disabled=total===0;
+  document.querySelectorAll('.vending-card').forEach(card => card.classList.toggle('vendor-card-selected', selected.has(String(card.dataset.itemId))));
+  if (vendorSelectAll) vendorSelectAll.textContent = visible && visible === document.querySelectorAll('.vendor-select-checkbox').length ? 'Deselect visible' : 'Select all visible';
+}
+document.querySelectorAll('.vendor-select-checkbox').forEach(cb => cb.addEventListener('change', () => { const s=loadVendorSelection(); const id=String(cb.value); if(cb.checked)s.add(id);else s.delete(id); saveVendorSelection(s); syncVendorSelectionUI(); }));
+if (vendorSelectAll) vendorSelectAll.addEventListener('click', () => { const s=loadVendorSelection(); const visible=[...document.querySelectorAll('.vendor-select-checkbox')]; const allVisible=visible.length && visible.every(cb => s.has(String(cb.value))); visible.forEach(cb => allVisible ? s.delete(String(cb.value)) : s.add(String(cb.value))); saveVendorSelection(s); syncVendorSelectionUI(); });
+if (vendorClearSelected) vendorClearSelected.addEventListener('click', () => { saveVendorSelection(new Set()); syncVendorSelectionUI(); });
+if (vendorPrintLabels) vendorPrintLabels.addEventListener('click', () => { const ids=[...loadVendorSelection()]; if(!ids.length)return; window.location.href='{{ url_for("vending_labels") }}?ids='+encodeURIComponent(ids.join(',')); });
+syncVendorSelectionUI();
+</script>
+</body></html>

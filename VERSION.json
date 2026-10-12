@@ -1,0 +1,6 @@
+{
+  "version": "36.1",
+  "name": "MTG Scanner Inventory",
+  "purpose": "Performance, hardening, and nightly database backups",
+  "release": "nightly-backups"
+}

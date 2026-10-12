@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-store">
+<meta name="csrf-token" content="{{ csrf_token }}">
+<title>Sign in · MTG Inventory</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+<script src="{{ url_for('static', filename='security.js') }}" defer></script>
+</head>
+<body>
+<main class="auth-page">
+<section class="auth-card">
+<h1>MTG Inventory</h1>
+<p class="subtle">Application login · v30</p>
+<p class="subtle">Sign in to access the collection. Vendor accounts are limited to the Vending area.</p>
+{% if error %}<div class="status error-text">{{ error }}</div>{% endif %}
+{% with messages = get_flashed_messages() %}{% for message in messages %}<div class="status error-text">{{ message }}</div>{% endfor %}{% endwith %}
+<form method="post" action="{{ url_for('login_post') }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<input type="hidden" name="next" value="{{ next_url }}">
+<label>Username<input name="username" autocomplete="username" maxlength="150" required autofocus></label>
+<label>Password<input type="password" name="password" autocomplete="current-password" required></label>
+<div class="dialog-actions"><button class="button" type="submit">Sign in</button></div>
+</form>
+</section>
+</main>
+</body></html>

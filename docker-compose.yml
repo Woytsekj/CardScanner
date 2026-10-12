@@ -1,0 +1,81 @@
+services:
+  web:
+    build: .
+    container_name: mtg-scanner-web
+    # Optional: run as a non-root user. Set APP_UID/APP_GID in .env to the owner of ./data
+    # (run `id -u` / `id -g`). Defaults to root so existing installs keep working.
+    user: "${APP_UID:-0}:${APP_GID:-0}"
+    ports:
+      - "${WEB_BIND_ADDRESS:-0.0.0.0}:${WEB_PORT:-5000}:5000"
+    volumes:
+      - ./data:/data
+    environment:
+      DATA_DIR: /data
+      REQUIRE_LOGIN: ${REQUIRE_LOGIN:-1}
+      PUBLIC_HTTPS: ${PUBLIC_HTTPS:-1}
+      PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME:-cards.stinkywar.com}
+      LOCAL_HOSTS: ${LOCAL_HOSTS:-127.0.0.1,localhost,192.168.4.27}
+      SESSION_LIFETIME_HOURS: ${SESSION_LIFETIME_HOURS:-12}
+      TRUSTED_HOSTS: ${TRUSTED_HOSTS:-cards.stinkywar.com,127.0.0.1,localhost}
+      FLASK_DEBUG: "0"
+      SCANNER_API_KEY: ${SCANNER_API_KEY:-change-this-scanner-key}
+      SESSION_SECRET: ${SESSION_SECRET:-change-this-session-secret}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      VENDOR_USERNAME: ${VENDOR_USERNAME:-}
+      VENDOR_PASSWORD: ${VENDOR_PASSWORD:-}
+      LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-5}
+      LOGIN_LOCKOUT_MINUTES: ${LOGIN_LOCKOUT_MINUTES:-15}
+      LOGIN_WINDOW_MINUTES: ${LOGIN_WINDOW_MINUTES:-15}
+      DISPLAY_TIMEZONE: ${DISPLAY_TIMEZONE:-America/New_York}
+      PRICE_HISTORY_DAYS: ${PRICE_HISTORY_DAYS:-365}
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      PRICE_ALERT_ENABLED: ${PRICE_ALERT_ENABLED:-1}
+      PRICE_ALERT_LOOKBACK_DAYS: ${PRICE_ALERT_LOOKBACK_DAYS:-30}
+      PRICE_ALERT_COOLDOWN_DAYS: ${PRICE_ALERT_COOLDOWN_DAYS:-7}
+      PRICE_ALERT_MIN_DOLLARS: ${PRICE_ALERT_MIN_DOLLARS:-2.00}
+      PRICE_ALERT_MIN_PERCENT: ${PRICE_ALERT_MIN_PERCENT:-25}
+      PRICE_ALERT_MIN_OWNED_VALUE_GAIN: ${PRICE_ALERT_MIN_OWNED_VALUE_GAIN:-10.00}
+      PRICE_ALERT_MAX_PER_SYNC: ${PRICE_ALERT_MAX_PER_SYNC:-10}
+    restart: unless-stopped
+
+  updater:
+    build: .
+    container_name: mtg-scanner-updater
+    user: "${APP_UID:-0}:${APP_GID:-0}"
+    command: ["python", "price_updater.py"]
+    volumes:
+      - ./data:/data
+    environment:
+      DATA_DIR: /data
+      TCGCSV_CATEGORY_ID: "1"
+      TCGCSV_USER_AGENT: "MTGScannerInventory/1.0"
+      TCGCSV_CHECK_INTERVAL: "3600"
+      TCGCSV_REQUEST_DELAY: "0.12"
+      PRICE_HISTORY_DAYS: ${PRICE_HISTORY_DAYS:-365}
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      PRICE_ALERT_ENABLED: ${PRICE_ALERT_ENABLED:-1}
+      PRICE_ALERT_LOOKBACK_DAYS: ${PRICE_ALERT_LOOKBACK_DAYS:-30}
+      PRICE_ALERT_COOLDOWN_DAYS: ${PRICE_ALERT_COOLDOWN_DAYS:-7}
+      PRICE_ALERT_MIN_DOLLARS: ${PRICE_ALERT_MIN_DOLLARS:-2.00}
+      PRICE_ALERT_MIN_PERCENT: ${PRICE_ALERT_MIN_PERCENT:-25}
+      PRICE_ALERT_MIN_OWNED_VALUE_GAIN: ${PRICE_ALERT_MIN_OWNED_VALUE_GAIN:-10.00}
+      PRICE_ALERT_MAX_PER_SYNC: ${PRICE_ALERT_MAX_PER_SYNC:-10}
+    restart: unless-stopped
+
+  backup:
+    build: .
+    container_name: mtg-scanner-backup
+    user: "${APP_UID:-0}:${APP_GID:-0}"
+    command: ["python", "backup_database.py"]
+    volumes:
+      - ./data:/data
+    environment:
+      DATA_DIR: /data
+      BACKUP_DIR: /data/backups
+      BACKUP_HOUR: ${BACKUP_HOUR:-2}
+      BACKUP_MINUTE: ${BACKUP_MINUTE:-0}
+      BACKUP_TIMEZONE: ${BACKUP_TIMEZONE:-America/New_York}
+      BACKUP_RETENTION: ${BACKUP_RETENTION:-2}
+      BACKUP_CHECK_INTERVAL: ${BACKUP_CHECK_INTERVAL:-30}
+    restart: unless-stopped

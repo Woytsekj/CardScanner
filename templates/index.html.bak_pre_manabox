@@ -1,0 +1,716 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+<meta name="csrf-token" content="{{ csrf_token }}">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MTG Scanner Inventory</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+<script src="{{ url_for('static', filename='security.js') }}" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>MTG Scanner Inventory</h1>
+      <div class="subtle">{{ result_count }} matching rows · {{ total_cards }} total cards</div>
+    </div>
+    <div class="actions">
+      <a class="button secondary" href="{{ url_for('decks_page') }}">Decks</a>
+      <a class="button secondary" href="{{ url_for('vending_view') }}">Vending</a>
+      <a class="button secondary" href="{{ url_for('export_csv') }}">Export CSV</a>
+      {% if admin_user %}
+      <a class="button secondary" href="{{ url_for('admin_page') }}">Admin</a>
+      <button class="button" type="button" onclick="openImport()">Import CSV</button>
+      <form method="post" action="{{ url_for('logout') }}" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Log out</button></form>
+      {% else %}
+      <a class="button" href="{{ url_for('login') }}">Admin Login</a>
+      {% endif %}
+    </div>
+  </header>
+
+  <main>
+    <section class="summary-grid">
+      <div class="summary-card">
+        <span>Total collection value</span>
+        <strong>${{ '%.2f'|format(grand_total) }}</strong>
+      </div>
+      <div class="summary-card">
+        <span>Normal cards</span>
+        <strong>{{ global_finish_totals.normal }}</strong>
+      </div>
+      <div class="summary-card foil-card">
+        <span>Foil cards</span>
+        <strong>{{ global_finish_totals.foil }}</strong>
+      </div>
+      <div class="summary-card">
+        <span>Visible value</span>
+        <strong>${{ '%.2f'|format(visible_total) }}</strong>
+      </div>
+      {% for owner, total in owner_totals.items() %}
+      <div class="summary-card owner-card">
+        <span>{{ owner }}</span>
+        <strong>${{ '%.2f'|format(total) }}</strong>
+        <small>N {{ owner_counts.get(owner, {}).get('normal', 0) }} · F {{ owner_counts.get(owner, {}).get('foil', 0) }}</small>
+      </div>
+      {% endfor %}
+    </section>
+
+    <section class="toolbar">
+      <form class="search-form" method="get" action="{{ url_for('index') }}" id="inventorySearchForm">
+        <div class="inventory-search-box">
+          <input id="inventorySearchInput" type="search" name="q" value="{{ search }}" placeholder="Search card name or collector number…" aria-label="Search card name or collector number" autocomplete="off" aria-autocomplete="list" aria-controls="inventorySearchSuggestions">
+          <div id="inventorySearchSuggestions" class="autocomplete-menu" role="listbox" hidden></div>
+        </div>
+        <input type="hidden" name="sort" value="{{ sort_key }}">
+        <input type="hidden" name="dir" value="{{ direction }}">
+        <input type="hidden" name="view" value="{{ view }}">
+        {% if selected_owner %}<input type="hidden" name="owner" value="{{ selected_owner }}">{% endif %}
+        {% if selected_finish %}<input type="hidden" name="finish" value="{{ selected_finish }}">{% endif %}
+        {% if selected_type %}<input type="hidden" name="type" value="{{ selected_type }}">{% endif %}
+        {% if selected_color %}<input type="hidden" name="color" value="{{ selected_color }}">{% endif %}
+        {% if selected_location %}<input type="hidden" name="location" value="{{ selected_location }}">{% endif %}
+        <button class="button" type="submit">Search</button>
+        {% if search or selected_owner or selected_finish or selected_type or selected_color or selected_location %}
+        <a class="button secondary" href="{{ url_for('index', sort=sort_key, dir=direction, view=view) }}">Clear</a>
+        {% endif %}
+      </form>
+
+      <form class="sort-form" method="get" action="{{ url_for('index') }}">
+        <input type="hidden" name="q" value="{{ search }}">
+        <input type="hidden" name="view" value="{{ view }}">
+        {% if selected_owner %}<input type="hidden" name="owner" value="{{ selected_owner }}">{% endif %}
+        {% if selected_finish %}<input type="hidden" name="finish" value="{{ selected_finish }}">{% endif %}
+        {% if selected_type %}<input type="hidden" name="type" value="{{ selected_type }}">{% endif %}
+        {% if selected_color %}<input type="hidden" name="color" value="{{ selected_color }}">{% endif %}
+        {% if selected_location %}<input type="hidden" name="location" value="{{ selected_location }}">{% endif %}
+        <label for="sort">Sort</label>
+        <select id="sort" name="sort" onchange="this.form.submit()">
+          <option value="date" {% if sort_key == 'date' %}selected{% endif %}>Newest scan</option>
+          <option value="name" {% if sort_key == 'name' %}selected{% endif %}>Card name</option>
+          <option value="number" {% if sort_key == 'number' %}selected{% endif %}>Card number</option>
+          <option value="normal" {% if sort_key == 'normal' %}selected{% endif %}>Normal price</option>
+          <option value="foil" {% if sort_key == 'foil' %}selected{% endif %}>Foil price</option>
+          <option value="price" {% if sort_key == 'price' %}selected{% endif %}>Current unit price</option>
+          <option value="value" {% if sort_key == 'value' %}selected{% endif %}>Row value</option>
+          <option value="quantity" {% if sort_key == 'quantity' %}selected{% endif %}>Quantity</option>
+          <option value="finish" {% if sort_key == 'finish' %}selected{% endif %}>Finish</option>
+          <option value="owner" {% if sort_key == 'owner' %}selected{% endif %}>Owner</option>
+          <option value="scanned" {% if sort_key == 'scanned' %}selected{% endif %}>Scanned price</option>
+        </select>
+        <button class="button secondary" type="submit" name="dir" value="{% if direction == 'asc' %}desc{% else %}asc{% endif %}">
+          {% if direction == 'asc' %}↑ Low → High{% else %}↓ High → Low{% endif %}
+        </button>
+      </form>
+
+      <div class="quick-sort-actions">
+        <a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, sort='price', dir='desc', view=view) }}">↓ Highest price</a>
+        <a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, sort='price', dir='asc', view=view) }}">↑ Lowest price</a>
+      </div>
+
+      <form class="owner-filter" method="get" action="{{ url_for('index') }}">
+        <input type="hidden" name="q" value="{{ search }}">
+        <input type="hidden" name="sort" value="{{ sort_key }}">
+        <input type="hidden" name="dir" value="{{ direction }}">
+        <input type="hidden" name="view" value="{{ view }}">
+        {% if selected_finish %}<input type="hidden" name="finish" value="{{ selected_finish }}">{% endif %}
+        {% if selected_type %}<input type="hidden" name="type" value="{{ selected_type }}">{% endif %}
+        {% if selected_color %}<input type="hidden" name="color" value="{{ selected_color }}">{% endif %}
+        {% if selected_location %}<input type="hidden" name="location" value="{{ selected_location }}">{% endif %}
+        <label for="owner">Owner</label>
+        <select id="owner" name="owner" onchange="this.form.submit()">
+          <option value="">All owners</option>
+          {% for owner in owners %}
+          <option value="{{ owner }}" {% if selected_owner == owner %}selected{% endif %}>{{ owner }}</option>
+          {% endfor %}
+        </select>
+      </form>
+
+      <form class="owner-filter" method="get" action="{{ url_for('index') }}">
+        <input type="hidden" name="q" value="{{ search }}">
+        <input type="hidden" name="sort" value="{{ sort_key }}">
+        <input type="hidden" name="dir" value="{{ direction }}">
+        <input type="hidden" name="view" value="{{ view }}">
+        {% if selected_owner %}<input type="hidden" name="owner" value="{{ selected_owner }}">{% endif %}
+        {% if selected_type %}<input type="hidden" name="type" value="{{ selected_type }}">{% endif %}
+        {% if selected_color %}<input type="hidden" name="color" value="{{ selected_color }}">{% endif %}
+        {% if selected_location %}<input type="hidden" name="location" value="{{ selected_location }}">{% endif %}
+        <label for="finish">Finish</label>
+        <select id="finish" name="finish" onchange="this.form.submit()">
+          <option value="">Normal + Foil</option>
+          <option value="normal" {% if selected_finish == 'normal' %}selected{% endif %}>Normal only</option>
+          <option value="foil" {% if selected_finish == 'foil' %}selected{% endif %}>Foil only</option>
+        </select>
+      </form>
+
+      <div class="view-toggle" aria-label="View mode">
+        <a class="button {% if view == 'list' %}{% else %}secondary{% endif %}" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, sort=sort_key, dir=direction, view='list') }}">☷ List</a>
+        <a class="button {% if view == 'grid' %}{% else %}secondary{% endif %}" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, sort=sort_key, dir=direction, view='grid') }}">▦ Grid</a>
+      </div>
+    </section>
+
+    <section class="filter-bar">
+      <form method="get" action="{{ url_for('index') }}">
+        <input type="hidden" name="q" value="{{ search }}">
+        <input type="hidden" name="sort" value="{{ sort_key }}">
+        <input type="hidden" name="dir" value="{{ direction }}">
+        <input type="hidden" name="view" value="{{ view }}">
+        {% if selected_owner %}<input type="hidden" name="owner" value="{{ selected_owner }}">{% endif %}
+        {% if selected_finish %}<input type="hidden" name="finish" value="{{ selected_finish }}">{% endif %}
+        <label>Card type<select name="type" onchange="this.form.submit()"><option value="">All types</option>{% for t in ['Legendary','Creature','Artifact','Enchantment','Instant','Sorcery','Planeswalker','Land','Battle'] %}<option value="{{ t }}" {% if selected_type == t %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></label>
+        <label>Color<select name="color" onchange="this.form.submit()"><option value="">All colors</option><option value="W" {% if selected_color == 'W' %}selected{% endif %}>White</option><option value="U" {% if selected_color == 'U' %}selected{% endif %}>Blue</option><option value="B" {% if selected_color == 'B' %}selected{% endif %}>Black</option><option value="R" {% if selected_color == 'R' %}selected{% endif %}>Red</option><option value="G" {% if selected_color == 'G' %}selected{% endif %}>Green</option><option value="colorless" {% if selected_color == 'colorless' %}selected{% endif %}>Colorless</option><option value="multicolor" {% if selected_color == 'multicolor' %}selected{% endif %}>Multicolor</option></select></label>
+        <label>Location<select name="location" onchange="this.form.submit()"><option value="">All locations</option>{% for location in locations %}<option value="{{ location }}" {% if selected_location == location %}selected{% endif %}>{{ location }}</option>{% endfor %}</select></label>
+        {% if selected_type or selected_color or selected_location %}<a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, sort=sort_key, dir=direction, view=view) }}">Clear filters</a>{% endif %}
+        <span class="filter-note">Type/color filters use Scryfall metadata. Enrich older cards from Admin if needed.</span>
+      </form>
+    </section>
+
+    <section class="meta-row">
+      <span>Prices: TCGCSV</span>
+      <span>Normal: {{ global_finish_totals.normal }}</span>
+      <span>Foil: {{ global_finish_totals.foil }}</span>
+      <span>Last price sync: {{ price_meta.get('synced_at', 'not yet synced')|localdt }}</span>
+      <span>History: {{ price_history_days }} days</span>
+      {% if scanner_api_enabled %}<span class="api-live">Scanner API: ready</span>{% else %}<span class="api-warning">Scanner API: not configured</span>{% endif %}
+      <span class="hint">Finish is stored separately, so normal and foil quantities no longer get mixed together.</span>
+    </section>
+
+    {% if view == 'grid' %}
+    <section class="card-grid">
+      {% for item in inventory %}
+      <article class="card-tile" id="tile-{{ item.id }}">
+        <div class="tile-image-wrap">
+          {% if item.image_url %}
+          <img src="{{ item.image_url }}" class="card-image" alt="{{ item.name }}" loading="lazy" onclick="openImage(this.src, this.alt)" onerror="imageFailed(this)">
+          {% else %}
+          <div class="image-placeholder">No card image</div>
+          {% endif %}
+          <span class="finish-badge {{ item.finish }}">{{ item.finish|capitalize }}</span>
+        </div>
+        <div class="tile-body">
+          <div class="card-title">{{ item.name }}</div>
+          {% if item.alternate_names %}<div class="alternate-name">Also: {{ item.alternate_names }}</div>{% endif %}
+          <div class="subtle">{{ item.set_code or '—' }} · #{{ item.collector_number or '—' }} · {{ item.rarity }}</div>
+          <div class="finish-counts"><span>Normal {{ item.card_normal_qty }}</span><span>Foil {{ item.card_foil_qty }}</span></div>
+          <div class="tile-meta">
+            <span>{{ item.owner }}</span>
+            <span>Qty {{ item.quantity }}</span>
+          </div>
+          <div class="subtle location-label">Location: {{ item.location }}</div>
+          <div class="price-grid">
+            <div><small>Scanned</small><strong>${{ '%.2f'|format(item.scanned_price|float) }}</strong></div>
+            <div><small>Normal</small><strong>{% if item.curr_normal is not none %}${{ '%.2f'|format(item.curr_normal|float) }}{% else %}—{% endif %}</strong></div>
+            <div><small>Foil</small><strong>{% if item.curr_foil is not none %}${{ '%.2f'|format(item.curr_foil|float) }}{% else %}—{% endif %}</strong></div>
+            <div><small>Row</small><strong>${{ '%.2f'|format(item.calculated_total_value) }}</strong></div>
+          </div>
+          <div class="tile-controls">
+            {% if item.tcgplayer_id %}<button class="button secondary price-history-button" data-tcg="{{ item.tcgplayer_id }}" data-name="{{ item.name|e }}" data-finish="{{ item.finish }}">Price History</button>{% endif %}
+            {% if item.metadata_available %}<button class="button secondary oracle-button" data-scryfall="{{ item.scryfall_id }}" data-name="{{ item.name|e }}">Oracle</button>{% endif %}
+            {% if admin_user %}
+            <button class="button secondary counts-button" data-scryfall="{{ item.scryfall_id }}" data-owner="{{ item.owner|e }}" data-name="{{ item.name|e }}" data-normal="{{ item.owner_normal_qty }}" data-foil="{{ item.owner_foil_qty }}">Edit counts</button>
+            <button class="button secondary move-button" data-id="{{ item.id }}" data-name="{{ item.name|e }}" data-qty="{{ item.quantity }}" data-location="{{ item.location|e }}">Move</button>
+            <select class="finish-input" data-id="{{ item.id }}" data-field="finish">
+              <option value="normal" {% if item.finish == 'normal' %}selected{% endif %}>Normal</option>
+              <option value="foil" {% if item.finish == 'foil' %}selected{% endif %}>Foil</option>
+            </select>
+            <input class="qty-input" type="number" min="1" step="1" data-id="{{ item.id }}" data-field="quantity" value="{{ item.quantity }}" aria-label="Quantity for {{ item.name }}">
+            <input class="location-input" type="text" data-id="{{ item.id }}" data-field="location" value="{{ item.location|e }}" aria-label="Location for {{ item.name }}">
+            <select class="inline-input owner-input" data-id="{{ item.id }}" data-field="owner" aria-label="Owner for {{ item.name }}">
+              {% for owner in owners %}<option value="{{ owner }}" {% if owner == item.owner %}selected{% endif %}>{{ owner }}</option>{% endfor %}
+            </select>
+            <button class="icon-button delete-button" data-id="{{ item.id }}" title="Delete">×</button>
+            {% endif %}
+          </div>
+        </div>
+      </article>
+      {% else %}
+      <div class="empty grid-empty">No cards match the current filters.</div>
+      {% endfor %}
+    </section>
+    {% else %}
+    <section class="table-card">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Card</th><th>Collector #</th><th>Set</th><th>Rarity</th><th>Finish</th><th>Owner</th><th>Qty</th><th>Location</th>
+              <th>Card Count</th><th>Scanned</th><th>Current (Norm)</th><th>Current (Foil)</th><th>Total Value</th><th>Scan Date</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for item in inventory %}
+            <tr id="row-{{ item.id }}">
+              <td class="name-cell">
+                <div class="name-with-thumb">
+                  {% if item.image_url %}<img src="{{ item.image_url }}" class="thumb" alt="" loading="lazy" onclick="openImage(this.src, this.closest('td').querySelector('.card-title').textContent)" onerror="imageFailed(this)">{% else %}<div class="thumb placeholder-thumb">—</div>{% endif %}
+                  <div>
+                    <div class="card-title">{{ item.name }}</div>
+                    {% if item.tcgplayer_id %}<div class="subtle">TCGplayer #{{ item.tcgplayer_id }}</div>{% endif %}
+                  </div>
+                </div>
+              </td>
+              <td>{{ item.collector_number or '—' }}</td>
+              <td><span class="badge">{{ item.set_code or '—' }}</span></td>
+              <td>{{ item.rarity }}</td>
+              <td><span class="finish-pill {{ item.finish }}">{{ item.finish|capitalize }}</span></td>
+              <td>{% if admin_user %}<select class="inline-input owner-input" data-id="{{ item.id }}" data-field="owner" aria-label="Owner for {{ item.name }}">{% for owner in owners %}<option value="{{ owner }}" {% if owner == item.owner %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select>{% else %}{{ item.owner }}{% endif %}</td>
+              <td>{% if admin_user %}<input class="qty-input" type="number" min="1" step="1" data-id="{{ item.id }}" data-field="quantity" value="{{ item.quantity }}" aria-label="Quantity for {{ item.name }}">{% else %}{{ item.quantity }}{% endif %}</td>
+              <td>{% if admin_user %}<input class="location-input" type="text" data-id="{{ item.id }}" data-field="location" value="{{ item.location|e }}" aria-label="Location for {{ item.name }}">{% else %}{{ item.location }}{% endif %}</td>
+              <td><span class="count-pair">N {{ item.card_normal_qty }} · F {{ item.card_foil_qty }}</span></td>
+              <td><span class="pill scanned">${{ '%.2f'|format(item.scanned_price|float) }}</span></td>
+              <td><span class="pill normal">{% if item.curr_normal is not none %}${{ '%.2f'|format(item.curr_normal|float) }}{% else %}—{% endif %}</span></td>
+              <td><span class="pill foil">{% if item.curr_foil is not none %}${{ '%.2f'|format(item.curr_foil|float) }}{% else %}—{% endif %}</span></td>
+              <td><strong>${{ '%.2f'|format(item.calculated_total_value) }}</strong></td>
+              <td class="subtle">{{ item.scan_time|localdt }}</td>
+              <td class="row-actions">
+                {% if item.tcgplayer_id %}<button class="button secondary price-history-button" data-tcg="{{ item.tcgplayer_id }}" data-name="{{ item.name|e }}" data-finish="{{ item.finish }}">History</button>{% endif %}
+                {% if item.metadata_available %}<button class="button secondary oracle-button" data-scryfall="{{ item.scryfall_id }}" data-name="{{ item.name|e }}">Oracle</button>{% endif %}
+                {% if admin_user %}
+                <button class="button secondary counts-button" data-scryfall="{{ item.scryfall_id }}" data-owner="{{ item.owner|e }}" data-name="{{ item.name|e }}" data-normal="{{ item.owner_normal_qty }}" data-foil="{{ item.owner_foil_qty }}">Counts</button>
+                <button class="button secondary move-button" data-id="{{ item.id }}" data-name="{{ item.name|e }}" data-qty="{{ item.quantity }}" data-location="{{ item.location|e }}">Move</button>
+                <select class="finish-input" data-id="{{ item.id }}" data-field="finish">
+                  <option value="normal" {% if item.finish == 'normal' %}selected{% endif %}>Normal</option>
+                  <option value="foil" {% if item.finish == 'foil' %}selected{% endif %}>Foil</option>
+                </select>
+                <button class="icon-button delete-button" data-id="{{ item.id }}" title="Delete">×</button>
+                {% endif %}
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="14" class="empty">No cards match the current filters.</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    {% endif %}
+  </main>
+  <datalist id="location-options">{% for location in locations %}<option value="{{ location }}">{% endfor %}</datalist>
+
+  <dialog id="importDialog">
+    <form id="importForm" method="dialog" enctype="multipart/form-data">
+      <h2>Import previous database CSV</h2>
+      <p class="subtle">Columns can include <code>name</code>, <code>scryfall_id</code>, <code>set_code</code>, <code>rarity</code>, <code>price</code>, <code>finish</code>, <code>owner</code>, <code>quantity</code>, <code>collector_number</code>, and <code>scan_date</code>. Old CSVs without <code>finish</code> import as Normal.</p>
+      <input type="file" name="file" accept=".csv,text/csv" required>
+      <div id="importStatus" class="status"></div>
+      <div class="dialog-actions">
+        <button class="button secondary" type="button" onclick="closeImport()">Cancel</button>
+        <button class="button" type="submit">Import</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="countsDialog">
+    <form id="countsForm" method="dialog">
+      <h2>Edit card counts</h2>
+      <p id="countsCardName" class="subtle"></p>
+      <p><strong>Owner: <span id="countsOwner"></span></strong></p>
+      <div class="count-editor">
+        <label>Normal copies<input id="normalCount" type="number" min="0" step="1" required></label>
+        <label>Foil copies<input id="foilCount" type="number" min="0" step="1" required></label>
+      </div>
+      <div id="countsStatus" class="status"></div>
+      <div class="dialog-actions">
+        <button class="button secondary" type="button" onclick="closeCounts()">Cancel</button>
+        <button class="button" type="submit">Save counts</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="imageDialog" class="image-dialog">
+    <button class="dialog-close" type="button" onclick="closeImage()">×</button>
+    <img id="largeCardImage" src="" alt="">
+    <div id="largeCardCaption" class="image-caption"></div>
+  </dialog>
+
+  <dialog id="moveDialog">
+    <form id="moveForm" method="dialog">
+      <h2>Move cards</h2>
+      <p id="moveCardName" class="subtle"></p>
+      <div class="count-editor"><label>Quantity to move<input id="moveQuantity" type="number" min="1" step="1" required></label><label>Destination<input id="moveDestination" type="text" list="location-options" placeholder="Free or deck name" required></label></div>
+      <div id="moveStatus" class="status"></div>
+      <div class="dialog-actions"><button class="button secondary" type="button" onclick="moveDialog.close()">Cancel</button><button class="button" type="submit">Move</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="priceHistoryDialog" class="price-history-dialog">
+    <button class="dialog-close" type="button" onclick="closePriceHistory()">×</button>
+    <h2 id="priceHistoryTitle">Price History</h2>
+    <div id="priceHistorySubtitle" class="subtle"></div>
+    <div class="history-range-buttons">
+      <button type="button" class="button secondary history-range" data-days="3">3 Days</button>
+      <button type="button" class="button secondary history-range" data-days="7">1 Week</button>
+      <button type="button" class="button secondary history-range" data-days="30">1 Month</button>
+      <button type="button" class="button secondary history-range active" data-days="90">3 Months</button>
+      <button type="button" class="button secondary history-range" data-days="180">6 Months</button>
+      <button type="button" class="button secondary history-range" data-days="365">1 Year</button>
+    </div>
+    <div id="priceHistoryStats" class="history-stats"></div>
+    <div id="priceHistoryStatus" class="status"></div>
+    <div class="history-chart-wrap"><svg id="priceHistoryChart" viewBox="0 0 820 360" role="img" aria-label="Card price history chart"></svg></div>
+    <div class="chart-legend"><span class="legend-normal">Normal</span><span class="legend-foil">Foil</span></div>
+  </dialog>
+
+  <dialog id="oracleDialog" class="price-history-dialog oracle-dialog">
+    <button class="dialog-close" type="button" onclick="document.getElementById('oracleDialog').close()">×</button>
+    <h2 id="oracleTitle">Oracle Text</h2>
+    <div id="oracleSubtitle" class="subtle"></div>
+    <div id="oracleTypeLine" class="oracle-type-line"></div>
+    <div id="oracleManaCost" class="oracle-mana-cost"></div>
+    <pre id="oracleText" class="oracle-text"></pre>
+    <h3>Legality</h3>
+    <div id="oracleLegalities" class="legality-grid"></div>
+    <div id="oracleUpdated" class="subtle"></div>
+    <div id="oracleStatus" class="status"></div>
+  </dialog>
+
+<script>
+let moveContext = null;
+const moveDialog = document.getElementById('moveDialog');
+const moveForm = document.getElementById('moveForm');
+document.querySelectorAll('.move-button').forEach(btn => btn.addEventListener('click', () => {
+  moveContext = {id:Number(btn.dataset.id), maxQty:Number(btn.dataset.qty), location:btn.dataset.location || 'Free'};
+  document.getElementById('moveCardName').textContent = `${btn.dataset.name} · currently in ${moveContext.location}`;
+  const qty = document.getElementById('moveQuantity'); qty.max = moveContext.maxQty; qty.value = moveContext.maxQty > 1 ? 1 : 1;
+  document.getElementById('moveDestination').value = '';
+  document.getElementById('moveStatus').textContent = '';
+  moveDialog.showModal();
+}));
+moveForm.addEventListener('submit', async e => {
+  e.preventDefault(); if (!moveContext) return;
+  const qty = Number(document.getElementById('moveQuantity').value);
+  const destination = document.getElementById('moveDestination').value.trim();
+  const status = document.getElementById('moveStatus');
+  if (!Number.isInteger(qty) || qty < 1 || qty > moveContext.maxQty || !destination) { status.textContent='Enter a valid quantity and destination.'; return; }
+  status.textContent='Moving…';
+  const r = await fetch('{{ url_for('move_quantity') }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:moveContext.id,quantity:qty,destination})});
+  const data = await r.json().catch(()=>({}));
+  if (!r.ok || !data.success) { status.textContent=data.error || 'Move failed.'; return; }
+  moveDialog.close(); window.location.reload();
+});
+
+let historyContext = null;
+let historyDays = 90;
+const historyDialog = document.getElementById('priceHistoryDialog');
+const historyChart = document.getElementById('priceHistoryChart');
+const historyStatus = document.getElementById('priceHistoryStatus');
+const historyStats = document.getElementById('priceHistoryStats');
+const historyTitle = document.getElementById('priceHistoryTitle');
+const historySubtitle = document.getElementById('priceHistorySubtitle');
+
+function closePriceHistory() { historyDialog.close(); }
+function escHtml(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function localLabel(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, {month:'short', day:'numeric'});
+}
+
+function formatMoney(v) { return v == null || Number.isNaN(Number(v)) ? '—' : '$' + Number(v).toFixed(2); }
+
+function seriesPath(points, key, xFn, yFn) {
+  let path = '';
+  let drawing = false;
+  points.forEach((p, i) => {
+    const value = p[key];
+    if (value == null || Number.isNaN(Number(value))) { drawing = false; return; }
+    const command = drawing ? 'L' : 'M';
+    path += `${command} ${xFn(i).toFixed(2)} ${yFn(Number(value)).toFixed(2)} `;
+    drawing = true;
+  });
+  return path.trim();
+}
+
+function renderHistoryChart(points) {
+  historyChart.innerHTML = '';
+  const NS = 'http://www.w3.org/2000/svg';
+  const W = 820, H = 360, left = 58, right = 18, top = 18, bottom = 48;
+  const plotW = W-left-right, plotH = H-top-bottom;
+  const values = points.flatMap(p => [p.normal, p.foil]).filter(v => v != null && Number.isFinite(Number(v))).map(Number);
+  if (!values.length) {
+    historyChart.innerHTML = '<text x="410" y="185" text-anchor="middle" fill="#888" font-size="16">No price history yet</text>';
+    return;
+  }
+  let min = Math.min(...values), max = Math.max(...values);
+  if (min === max) { min = Math.max(0, min - 1); max += 1; }
+  const pad = (max-min)*0.08; min = Math.max(0, min-pad); max += pad;
+  const xFn = i => left + (points.length <= 1 ? plotW/2 : (i/(points.length-1))*plotW);
+  const yFn = v => top + (max-v)/(max-min)*plotH;
+  for (let i=0;i<5;i++) {
+    const v = min + (max-min)*(i/4);
+    const y = yFn(v);
+    const line = document.createElementNS(NS,'line'); line.setAttribute('x1',left); line.setAttribute('x2',W-right); line.setAttribute('y1',y); line.setAttribute('y2',y); line.setAttribute('stroke','#2f2f2f'); line.setAttribute('stroke-width','1'); historyChart.appendChild(line);
+    const txt = document.createElementNS(NS,'text'); txt.setAttribute('x',left-8); txt.setAttribute('y',y+4); txt.setAttribute('text-anchor','end'); txt.setAttribute('fill','#888'); txt.setAttribute('font-size','12'); txt.textContent=formatMoney(v); historyChart.appendChild(txt);
+  }
+  const gridDates = [0, Math.floor((points.length-1)/2), Math.max(0,points.length-1)];
+  [...new Set(gridDates)].forEach(i => {
+    const x=xFn(i); const line=document.createElementNS(NS,'line'); line.setAttribute('x1',x); line.setAttribute('x2',x); line.setAttribute('y1',top); line.setAttribute('y2',H-bottom); line.setAttribute('stroke','#242424'); line.setAttribute('stroke-width','1'); historyChart.appendChild(line);
+    const txt=document.createElementNS(NS,'text'); txt.setAttribute('x',x); txt.setAttribute('y',H-17); txt.setAttribute('text-anchor','middle'); txt.setAttribute('fill','#888'); txt.setAttribute('font-size','12'); txt.textContent=localLabel(points[i].captured_at); historyChart.appendChild(txt);
+  });
+  const pNormal=document.createElementNS(NS,'path'); pNormal.setAttribute('d',seriesPath(points,'normal',xFn,yFn)); pNormal.setAttribute('fill','none'); pNormal.setAttribute('stroke','#35b7e6'); pNormal.setAttribute('stroke-width','3'); pNormal.setAttribute('stroke-linejoin','round'); pNormal.setAttribute('stroke-linecap','round'); historyChart.appendChild(pNormal);
+  const pFoil=document.createElementNS(NS,'path'); pFoil.setAttribute('d',seriesPath(points,'foil',xFn,yFn)); pFoil.setAttribute('fill','none'); pFoil.setAttribute('stroke','#f3c842'); pFoil.setAttribute('stroke-width','3'); pFoil.setAttribute('stroke-linejoin','round'); pFoil.setAttribute('stroke-linecap','round'); historyChart.appendChild(pFoil);
+  [[...points.entries()].find(([_,p])=>p.normal!=null), [...points.entries()].find(([_,p])=>p.foil!=null)].filter(Boolean).forEach(([idx,p])=>{ const key=p.normal!=null?'normal':'foil'; const c=document.createElementNS(NS,'circle'); c.setAttribute('cx',xFn(idx)); c.setAttribute('cy',yFn(Number(p[key]))); c.setAttribute('r','4'); c.setAttribute('fill',key==='normal'?'#35b7e6':'#f3c842'); historyChart.appendChild(c); });
+}
+
+async function loadPriceHistory(days) {
+  historyDays = days;
+  if (!historyContext) return;
+  historyStatus.textContent = `Loading ${days}-day history…`;
+  historyStats.innerHTML = '';
+  historyChart.innerHTML = '';
+  const r = await fetch(`/api/price-history/${encodeURIComponent(historyContext.tcg)}?days=${days}`);
+  const data = await r.json().catch(()=>({}));
+  if (!r.ok || !data.success) { historyStatus.textContent = data.error || 'Could not load price history.'; return; }
+  const points = data.points || [];
+  historyStatus.textContent = points.length ? `${points.length} recorded price points · timezone ${data.timezone}` : 'No historical snapshots have been recorded yet. The updater will begin building history after the next successful daily price sync.';
+  if (!points.length) return;
+  const start = points[0], end = points[points.length-1];
+  const changes=[];
+  [['Normal','normal'],['Foil','foil']].forEach(([label,key])=>{
+    if (start[key] != null && end[key] != null && Number(start[key]) > 0) {
+      const delta=Number(end[key])-Number(start[key]); const pct=(delta/Number(start[key]))*100;
+      changes.push(`<div><span>${label}</span><strong>${formatMoney(end[key])}</strong><small>${delta >= 0 ? '+' : ''}${formatMoney(delta)} (${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%)</small></div>`);
+    }
+  });
+  historyStats.innerHTML=changes.join('');
+  renderHistoryChart(points);
+}
+
+document.querySelectorAll('.price-history-button').forEach(button => {
+  button.addEventListener('click', () => {
+    historyContext = {tcg: button.dataset.tcg, name: button.dataset.name};
+    historyTitle.textContent = `${historyContext.name} · Price History`;
+    historySubtitle.textContent = `TCGplayer #${historyContext.tcg}`;
+    document.querySelectorAll('.history-range').forEach(b => b.classList.toggle('active', Number(b.dataset.days) === 90));
+    historyDialog.showModal();
+    loadPriceHistory(90);
+  });
+});
+document.querySelectorAll('.history-range').forEach(button => {
+  button.addEventListener('click', () => { document.querySelectorAll('.history-range').forEach(b => b.classList.remove('active')); button.classList.add('active'); loadPriceHistory(Number(button.dataset.days)); });
+});
+
+function closeCounts() { document.getElementById('countsDialog').close(); }
+let countContext = null;
+document.querySelectorAll('.counts-button').forEach(button => {
+  button.addEventListener('click', () => {
+    countContext = {scryfall_id: button.dataset.scryfall, owner: button.dataset.owner};
+    document.getElementById('countsCardName').textContent = button.dataset.name || 'Card';
+    document.getElementById('countsOwner').textContent = button.dataset.owner || '';
+    document.getElementById('normalCount').value = button.dataset.normal || 0;
+    document.getElementById('foilCount').value = button.dataset.foil || 0;
+    document.getElementById('countsStatus').textContent = '';
+    document.getElementById('countsDialog').showModal();
+  });
+});
+document.getElementById('countsForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!countContext) return;
+  const status = document.getElementById('countsStatus');
+  status.textContent = 'Saving…';
+  const r = await fetch('{{ url_for('set_counts') }}', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({...countContext, normal: Number(document.getElementById('normalCount').value), foil: Number(document.getElementById('foilCount').value)})
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok || !data.success) { status.textContent = data.error || 'Could not save counts.'; return; }
+  closeCounts();
+  window.location.reload();
+});
+
+
+const inventorySearchInput = document.getElementById('inventorySearchInput');
+const inventorySearchSuggestions = document.getElementById('inventorySearchSuggestions');
+const inventorySearchForm = document.getElementById('inventorySearchForm');
+const inventorySearchIndex = {{ inventory_search_index|tojson }};
+let inventorySuggestionCards = [];
+let inventorySuggestionIndex = -1;
+let inventorySuggestionVisible = false;
+
+function escInventory(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function normalizeSearchText(s) {
+  return String(s ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
+function hideInventorySuggestions() {
+  if (!inventorySearchSuggestions) return;
+  inventorySearchSuggestions.hidden = true;
+  inventorySearchSuggestions.innerHTML = '';
+  inventorySuggestionCards = [];
+  inventorySuggestionIndex = -1;
+  inventorySuggestionVisible = false;
+}
+function scoreInventorySuggestion(card, term) {
+  const q = normalizeSearchText(term);
+  const name = normalizeSearchText(card.name);
+  const aliases = (card.alternate_names || []).map(normalizeSearchText).filter(Boolean);
+  const set = normalizeSearchText(card.set_code);
+  const cn = normalizeSearchText(card.collector_number);
+  const checks = [];
+  if (name.startsWith(q)) checks.push([0, name.length]);
+  aliases.forEach(a => { if (a.startsWith(q)) checks.push([1, a.length]); });
+  if (cn.startsWith(q)) checks.push([2, cn.length]);
+  if (set.startsWith(q)) checks.push([3, set.length]);
+  if (name.includes(q)) checks.push([4, name.length]);
+  aliases.forEach(a => { if (a.includes(q)) checks.push([5, a.length]); });
+  if (cn.includes(q)) checks.push([6, cn.length]);
+  if (set.includes(q)) checks.push([7, set.length]);
+  if (!checks.length) return null;
+  checks.sort((a,b) => a[0]-b[0] || a[1]-b[1]);
+  const [rank, len] = checks[0];
+  const matchedAlias = aliases.find(a => a.startsWith(q) || a.includes(q));
+  return { rank, len, matchedAlias };
+}
+function renderInventorySuggestions(items) {
+  inventorySuggestionCards = items || [];
+  inventorySuggestionIndex = -1;
+  if (!inventorySuggestionCards.length) { hideInventorySuggestions(); return; }
+  inventorySearchSuggestions.innerHTML = inventorySuggestionCards.map((card, i) => `
+    <button type="button" class="autocomplete-item" role="option" aria-selected="false" data-index="${i}">
+      ${card.image_url ? `<img src="${escInventory(card.image_url)}" alt="">` : '<span class="autocomplete-thumb-placeholder">—</span>'}
+      <span class="autocomplete-copy"><strong>${escInventory(card.name)}</strong><small>${escInventory(card.set_code || '—')} · #${escInventory(card.collector_number || '—')} · ${Number(card.quantity || 0)} owned${card.matchedAlias ? ` · also: ${escInventory(card.matchedAlias)}` : ''}</small></span>
+    </button>`).join('');
+  inventorySearchSuggestions.hidden = false;
+  inventorySuggestionVisible = true;
+  inventorySearchSuggestions.querySelectorAll('.autocomplete-item').forEach(btn => btn.addEventListener('mousedown', e => {
+    e.preventDefault();
+    const card = inventorySuggestionCards[Number(btn.dataset.index)];
+    inventorySearchInput.value = card.matchedAlias || card.name || '';
+    hideInventorySuggestions();
+    inventorySearchForm.requestSubmit();
+  }));
+}
+function fetchInventorySuggestions() {
+  const term = inventorySearchInput.value.trim();
+  if (term.length < 2) { hideInventorySuggestions(); return; }
+  const results = [];
+  for (const card of inventorySearchIndex) {
+    const scored = scoreInventorySuggestion(card, term);
+    if (scored) results.push({...card, _rank: scored.rank, _len: scored.len, matchedAlias: scored.matchedAlias});
+  }
+  results.sort((a,b) => a._rank-b._rank || a._len-b._len || String(a.name).localeCompare(String(b.name), undefined, {sensitivity:'base'}) || String(a.set_code).localeCompare(String(b.set_code), undefined, {sensitivity:'base'}));
+  renderInventorySuggestions(results.slice(0, 12));
+}
+function highlightInventorySuggestion(index) {
+  const buttons = [...inventorySearchSuggestions.querySelectorAll('.autocomplete-item')];
+  if (!buttons.length) return;
+  index = ((index % buttons.length) + buttons.length) % buttons.length;
+  buttons.forEach((btn, i) => {
+    const active = i === index;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    if (active) btn.scrollIntoView({block:'nearest'});
+  });
+  inventorySuggestionIndex = index;
+}
+if (inventorySearchInput) {
+  inventorySearchInput.addEventListener('input', fetchInventorySuggestions);
+  inventorySearchInput.addEventListener('focus', fetchInventorySuggestions);
+  inventorySearchInput.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown' && inventorySuggestionVisible) { e.preventDefault(); highlightInventorySuggestion(inventorySuggestionIndex + 1); }
+    else if (e.key === 'ArrowUp' && inventorySuggestionVisible) { e.preventDefault(); highlightInventorySuggestion(inventorySuggestionIndex - 1); }
+    else if (e.key === 'Enter') {
+      if (inventorySuggestionVisible && inventorySuggestionIndex >= 0 && inventorySuggestionCards[inventorySuggestionIndex]) {
+        e.preventDefault();
+        const card = inventorySuggestionCards[inventorySuggestionIndex];
+        inventorySearchInput.value = card.matchedAlias || card.name || '';
+        hideInventorySuggestions();
+      }
+      inventorySearchForm.requestSubmit();
+    } else if (e.key === 'Escape') hideInventorySuggestions();
+  });
+  document.addEventListener('click', e => { if (!e.target.closest('.inventory-search-box')) hideInventorySuggestions(); });
+}
+
+function openImport() { document.getElementById('importDialog').showModal(); }
+function closeImport() { document.getElementById('importDialog').close(); }
+function openImage(src, alt) {
+  if (!src) return;
+  document.getElementById('largeCardImage').src = src;
+  document.getElementById('largeCardImage').alt = alt || '';
+  document.getElementById('largeCardCaption').textContent = alt || '';
+  document.getElementById('imageDialog').showModal();
+}
+function closeImage() { document.getElementById('imageDialog').close(); }
+function imageFailed(img) { img.style.display = 'none'; }
+
+const oracleDialog = document.getElementById('oracleDialog');
+const oracleTitle = document.getElementById('oracleTitle');
+const oracleSubtitle = document.getElementById('oracleSubtitle');
+const oracleTypeLine = document.getElementById('oracleTypeLine');
+const oracleManaCost = document.getElementById('oracleManaCost');
+const oracleTextEl = document.getElementById('oracleText');
+const oracleLegalities = document.getElementById('oracleLegalities');
+const oracleUpdated = document.getElementById('oracleUpdated');
+const oracleStatus = document.getElementById('oracleStatus');
+function escOracle(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+async function openOracle(sid, name) {
+  oracleTitle.textContent = name || 'Oracle Text';
+  oracleSubtitle.textContent = 'Loading cached metadata…';
+  oracleTypeLine.textContent = ''; oracleManaCost.textContent = ''; oracleTextEl.textContent = ''; oracleLegalities.innerHTML = ''; oracleUpdated.textContent = ''; oracleStatus.textContent = '';
+  oracleDialog.showModal();
+  try {
+    const r = await fetch('/api/card-info/' + encodeURIComponent(sid));
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.success) { oracleStatus.textContent = data.error || 'No cached metadata.'; return; }
+    const c = data.card || {};
+    oracleSubtitle.textContent = c.colors ? 'Colors: ' + c.colors : '';
+    oracleTypeLine.textContent = c.type_line || ''; oracleManaCost.textContent = c.mana_cost || ''; oracleTextEl.textContent = c.oracle_text || 'No oracle text.';
+    const legal = c.legalities || {};
+    const labels = Object.keys(legal).sort((a,b)=>a.localeCompare(b));
+    oracleLegalities.innerHTML = labels.map(k => `<div class="legality-chip ${escOracle(legal[k])}"><strong>${escOracle(k)}</strong><span>${escOracle(String(legal[k]).replace(/^./,m=>m.toUpperCase()))}</span></div>`).join('');
+    oracleUpdated.textContent = c.updated_at ? 'Cached metadata updated: ' + c.updated_at : '';
+  } catch (_) { oracleStatus.textContent = 'Could not load cached metadata.'; }
+}
+document.querySelectorAll('.oracle-button').forEach(btn => btn.addEventListener('click', () => openOracle(btn.dataset.scryfall, btn.dataset.name)));
+
+async function saveField(input) {
+  const response = await fetch('{{ url_for('update_inventory') }}', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({id: input.dataset.id, field: input.dataset.field, value: input.value})
+  });
+  if (!response.ok) input.classList.add('error');
+  else input.classList.remove('error');
+}
+
+document.querySelectorAll('.inline-input, .qty-input, .finish-input, .location-input').forEach(input => {
+  input.addEventListener('change', () => saveField(input));
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
+});
+
+document.querySelectorAll('.delete-button').forEach(button => {
+  button.addEventListener('click', async () => {
+    if (!confirm('Delete this inventory row?')) return;
+    const r = await fetch(`/delete/${button.dataset.id}`, {method: 'DELETE'});
+    if (r.ok) {
+      const row = document.getElementById(`row-${button.dataset.id}`);
+      const tile = document.getElementById(`tile-${button.dataset.id}`);
+      if (row) row.remove();
+      if (tile) tile.remove();
+    }
+  });
+});
+
+document.getElementById('importForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const status = document.getElementById('importStatus');
+  status.textContent = 'Importing…';
+  const form = new FormData(event.target);
+  const r = await fetch('{{ url_for('import_csv') }}', {method: 'POST', body: form});
+  const data = await r.json();
+  if (!r.ok || !data.success) {
+    status.textContent = data.error || 'Import failed.';
+    return;
+  }
+  status.textContent = `Imported ${data.count} rows${data.skipped ? `; skipped ${data.skipped}` : ''}.`;
+  if (data.unknown_owners && data.unknown_owners.length) {
+    status.textContent += ` Unknown owners skipped: ${data.unknown_owners.join(', ')}. Add them in Admin, then re-import.`;
+    return;
+  }
+  setTimeout(() => window.location.reload(), 700);
+});
+</script>
+</body>
+</html>
