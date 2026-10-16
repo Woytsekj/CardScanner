@@ -109,7 +109,21 @@ def ensure_history_tables(conn: sqlite3.Connection) -> None:
 
 
 def owned_products(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    join_sql = "LEFT JOIN (SELECT NULL AS scryfall_id, NULL AS tcgplayer_id) a ON 1=0"
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS card_price_mapping (
+        scryfall_id TEXT PRIMARY KEY,
+        tcgplayer_id TEXT,
+        finishes_json TEXT,
+        card_name TEXT,
+        set_code TEXT,
+        collector_number TEXT,
+        resolved_at TEXT NOT NULL
+        )
+    """)
+    join_sql += (
+        "\nLEFT JOIN card_price_mapping m "
+        "ON m.scryfall_id = i.scryfall_id"
+        )
     if DB_ART.exists():
         try:
             conn.execute("ATTACH DATABASE ? AS art_db", (str(DB_ART),))
@@ -120,7 +134,13 @@ def owned_products(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 conn.execute("DETACH DATABASE art_db")
             except sqlite3.Error:
                 pass
-    tcg_id_sql = "COALESCE(NULLIF(TRIM(i.tcgplayer_id), ''), a.tcgplayer_id)"
+    tcg_id_sql = (
+        "COALESCE("
+        "NULLIF(TRIM(i.tcgplayer_id), ''), "
+        "NULLIF(TRIM(a.tcgplayer_id), ''), "
+        "NULLIF(TRIM(m.tcgplayer_id), '')"
+        ")"
+    )
     rows = conn.execute(
         f"""SELECT {tcg_id_sql} AS tcgplayer_id,
                   MAX(scryfall_id) AS scryfall_id,
