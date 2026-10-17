@@ -1,0 +1,40 @@
+name: Price History Tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "price_updater.py"
+      - "tests/test_price_history.py"
+      - ".github/workflows/price-history-test.yml"
+  push:
+    branches: [main]
+    paths:
+      - "price_updater.py"
+      - "tests/test_price_history.py"
+      - ".github/workflows/price-history-test.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  price-history:
+    name: price-history
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install price updater dependency
+        run: python -m pip install --upgrade pip requests
+
+      - name: Run price-history regression tests
+        run: python -m unittest discover -s tests -t . -p 'test_price_history.py' -v
