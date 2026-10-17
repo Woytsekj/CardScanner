@@ -305,6 +305,142 @@ class InventoryManagementTests(unittest.TestCase):
         )
         self.assertEqual([row["id"] for row in rows], [id2, id10])
 
+    def test_bulk_update_can_change_owner_for_selected_rows(self) -> None:
+        conn = self.connect()
+        conn.execute("INSERT OR IGNORE INTO people(name,active) VALUES('Jonathan',1)")
+        conn.commit()
+        conn.close()
+        ids = [
+            self.add_card("Bulk Owner A", owner="Me", location="Binder 1", for_vending=1),
+            self.add_card("Bulk Owner B", owner="Me", location="Storage Box", for_vending=1),
+        ]
+        response = self.post_json("/admin/inventory/bulk-update", {"ids": ids, "owner": "Jonathan"})
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        conn = self.connect()
+        rows = conn.execute("SELECT owner,location,for_vending FROM inventory WHERE id IN (?,?) ORDER BY id", ids).fetchall()
+        conn.close()
+        self.assertEqual([(r["owner"], r["location"], r["for_vending"]) for r in rows], [
+            ("Jonathan", "Binder 1", 1), ("Jonathan", "Storage Box", 1),
+        ])
+
+    def test_superadmin_can_link_account_to_person_and_set_default_collection(self) -> None:
+        conn = self.connect()
+        conn.execute("INSERT OR IGNORE INTO people(name,active) VALUES('Jonathan',1)")
+        conn.execute("INSERT OR IGNORE INTO people(name,active) VALUES('Nick',1)")
+        person_id = int(conn.execute("SELECT id FROM people WHERE name='Jonathan'").fetchone()[0])
+        conn.execute(
+            "INSERT INTO users(username,password_hash,is_admin,role,is_superadmin,active) VALUES(?,?,?,?,?,1)",
+            ("jonathan-login", app_module.generate_password_hash("linked-user-password-123"), 1, "admin", 0),
+        )
+        conn.commit()
+        conn.close()
+        self.add_card("Jonathan Collection Card", owner="Jonathan")
+        self.add_card("Nick Collection Card", owner="Nick")
+        self.add_card("Jonathan Vending Card", owner="Jonathan", for_vending=1)
+        self.add_card("Nick Vending Card", owner="Nick", for_vending=1)
+
+        response = self.client.post(
+            "/admin/users/jonathan-login/person",
+            data={"person_id": str(person_id), "csrf_token": self.csrf},
+            base_url="http://localhost",
+        )
+        self.assertEqual(response.status_code, 302)
+        conn = self.connect()
+        linked = conn.execute("SELECT person_id FROM users WHERE username='jonathan-login'").fetchone()
+        conn.close()
+        self.assertEqual(linked["person_id"], person_id)
+
+        # On the next request, this account defaults to its mapped Person rather than another owner's inventory.
+        with self.client.session_transaction() as session:
+            session.clear()
+            session["username"] = "jonathan-login"
+            session["csrf_token"] = "linked-account-csrf-token-0123456789"
+        inventory_response = self.client.get("/", base_url="http://localhost")
+        self.assertEqual(inventory_response.status_code, 200)
+        page = inventory_response.get_data(as_text=True)
+        self.assertIn("Jonathan Collection Card", page)
+        self.assertNotIn("Nick Collection Card", page)
+
+        vending_response = self.client.get("/vending", base_url="http://localhost")
+        self.assertEqual(vending_response.status_code, 200)
+        vending_page = vending_response.get_data(as_text=True)
+        self.assertIn("Jonathan Vending Card", vending_page)
+        self.assertIn("Nick Vending Card", vending_page, "vending is shared across owners by default")
+
+        deck_id = self.add_deck("Jonathan Deck")
+        deck_response = self.client.get(f"/decks/{deck_id}", base_url="http://localhost")
+        self.assertEqual(deck_response.status_code, 200)
+        deck_page = deck_response.get_data(as_text=True)
+        self.assertIn('<option value="Jonathan" selected>', deck_page)
+
+    def test_person_assignment_form_in_admin_has_csrf_token(self) -> None:
+        conn = self.connect()
+        conn.execute("INSERT INTO users(username,password_hash,is_admin,role,is_superadmin,active) VALUES(?,?,?,?,?,1)",
+                     ("needs-person-link", app_module.generate_password_hash("user-password-long-enough"), 1, "admin", 0))
+        conn.commit()
+        conn.close()
+        response = self.client.get("/admin", base_url="http://localhost")
+        self.assertEqual(response.status_code, 200)
+        page = response.get_data(as_text=True)
+        action = 'action="/admin/users/needs-person-link/person"'
+        self.assertIn(action, page)
+        form_start = page.index(action)
+        form_end = page.index("</form>", form_start)
+        self.assertIn('name="csrf_token"', page[form_start:form_end])
+        create_action = 'action="/admin/users"'
+        self.assertIn(create_action, page)
+        create_start = page.index(create_action)
+        create_end = page.index("</form>", create_start)
+        self.assertIn('name="csrf_token"', page[create_start:create_end])
+
+    def test_vending_page_uses_shared_selection_and_admin_bulk_controls(self) -> None:
+        self.add_card("Selectable Vending Card", owner="Me", for_vending=1)
+        response = self.client.get("/vending", base_url="http://localhost")
+        self.assertEqual(response.status_code, 200)
+        page = response.get_data(as_text=True)
+        self.assertIn("multi-select.js", page)
+        self.assertIn("vendorApplyBulkEdit", page)
+        self.assertIn("vendor-select-checkbox", page)
+
+    def test_legacy_user_schema_migrates_person_assignment_column_without_losing_accounts(self) -> None:
+        legacy_db = self.root / "legacy-users.db"
+        with sqlite3.connect(legacy_db) as conn:
+            conn.execute("""CREATE TABLE users (
+                username TEXT PRIMARY KEY COLLATE NOCASE,
+                password_hash TEXT NOT NULL,
+                is_admin INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )""")
+            conn.execute(
+                "INSERT INTO users(username,password_hash,is_admin) VALUES(?,?,?)",
+                ("legacy-admin", "already-hashed-password", 1),
+            )
+        original_db = app_module.DB_INV
+        original_auth = app_module._AUTH_READY
+        try:
+            app_module.DB_INV = legacy_db
+            app_module._AUTH_READY = False
+            app_module.migrate_db()
+            with sqlite3.connect(legacy_db) as conn:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+                self.assertIn("person_id", columns)
+                row = conn.execute("SELECT username,password_hash,person_id FROM users WHERE username='legacy-admin'").fetchone()
+                self.assertEqual(row, ("legacy-admin", "already-hashed-password", None))
+        finally:
+            app_module.DB_INV = original_db
+            app_module._AUTH_READY = original_auth
+
+    def test_inventory_uses_shared_multi_select_script_and_safe_modes(self) -> None:
+        self.add_card("UI mode test card")
+        response = self.client.get("/?view=grid", base_url="http://localhost")
+        self.assertEqual(response.status_code, 200)
+        page = response.get_data(as_text=True)
+        self.assertIn('data-inventory-mode="browse"', page)
+        self.assertIn('data-mode="select"', page)
+        self.assertIn('data-mode="edit"', page)
+        self.assertIn('multi-select.js', page)
+        self.assertIn('edit-only-control', page)
+
 
 if __name__ == "__main__":
     unittest.main()

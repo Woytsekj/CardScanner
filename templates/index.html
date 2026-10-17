@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
 <script src="{{ url_for('static', filename='security.js') }}" defer></script>
 </head>
-<body>
+<body data-inventory-mode="browse">
   <header class="topbar">
     <div>
       <h1>MTG Scanner Inventory</h1>
@@ -65,7 +65,7 @@
         <input type="hidden" name="sort" value="{{ sort_key }}">
         <input type="hidden" name="dir" value="{{ direction }}">
         <input type="hidden" name="view" value="{{ view }}">
-        {% if selected_owner %}<input type="hidden" name="owner" value="{{ selected_owner }}">{% endif %}
+        {% if owner_explicit %}<input type="hidden" name="owner" value="{{ selected_owner }}">{% endif %}
         {% if selected_finish %}<input type="hidden" name="finish" value="{{ selected_finish }}">{% endif %}
         {% if selected_type %}<input type="hidden" name="type" value="{{ selected_type }}">{% endif %}
         {% if selected_color %}<input type="hidden" name="color" value="{{ selected_color }}">{% endif %}
@@ -81,7 +81,7 @@
         <form class="sort-form" method="get" action="{{ url_for('index') }}">
           <input type="hidden" name="q" value="{{ search }}">
           <input type="hidden" name="view" value="{{ view }}">
-          {% if selected_owner %}<input type="hidden" name="owner" value="{{ selected_owner }}">{% endif %}
+          {% if owner_explicit %}<input type="hidden" name="owner" value="{{ selected_owner }}">{% endif %}
           {% if selected_finish %}<input type="hidden" name="finish" value="{{ selected_finish }}">{% endif %}
           {% if selected_type %}<input type="hidden" name="type" value="{{ selected_type }}">{% endif %}
           {% if selected_color %}<input type="hidden" name="color" value="{{ selected_color }}">{% endif %}
@@ -119,7 +119,7 @@
 
         <form class="owner-filter" method="get" action="{{ url_for('index') }}">
           <input type="hidden" name="q" value="{{ search }}"><input type="hidden" name="sort" value="{{ sort_key }}"><input type="hidden" name="dir" value="{{ direction }}"><input type="hidden" name="view" value="{{ view }}">
-          {% if selected_owner %}<input type="hidden" name="owner" value="{{ selected_owner }}">{% endif %}{% if selected_type %}<input type="hidden" name="type" value="{{ selected_type }}">{% endif %}{% if selected_color %}<input type="hidden" name="color" value="{{ selected_color }}">{% endif %}{% if selected_location %}<input type="hidden" name="location" value="{{ selected_location }}">{% endif %}{% if selected_vending %}<input type="hidden" name="vending" value="{{ selected_vending }}">{% endif %}
+          {% if owner_explicit %}<input type="hidden" name="owner" value="{{ selected_owner }}">{% endif %}{% if selected_type %}<input type="hidden" name="type" value="{{ selected_type }}">{% endif %}{% if selected_color %}<input type="hidden" name="color" value="{{ selected_color }}">{% endif %}{% if selected_location %}<input type="hidden" name="location" value="{{ selected_location }}">{% endif %}{% if selected_vending %}<input type="hidden" name="vending" value="{{ selected_vending }}">{% endif %}
           <label for="finish">Finish</label><select id="finish" name="finish" onchange="this.form.submit()"><option value="">Normal + Foil</option><option value="normal" {% if selected_finish == 'normal' %}selected{% endif %}>Normal only</option><option value="foil" {% if selected_finish == 'foil' %}selected{% endif %}>Foil only</option></select>
         </form>
 
@@ -127,6 +127,13 @@
           <a class="button {% if view == 'list' %}{% else %}secondary{% endif %}" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view='list') }}">☷ List</a>
           <a class="button {% if view == 'grid' %}{% else %}secondary{% endif %}" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view='grid') }}">▦ Grid</a>
         </div>
+        {% if admin_user %}
+        <div class="interaction-mode-toggle" role="group" aria-label="Inventory interaction mode">
+          <button type="button" class="button secondary mode-button active" data-mode="browse" aria-pressed="true">Browse</button>
+          <button type="button" class="button secondary mode-button" data-mode="select" aria-pressed="false">Select</button>
+          <button type="button" class="button secondary mode-button" data-mode="edit" aria-pressed="false">Edit mode</button>
+        </div>
+        {% endif %}
       </div>
     </section>
 
@@ -136,7 +143,7 @@
         <input type="hidden" name="sort" value="{{ sort_key }}">
         <input type="hidden" name="dir" value="{{ direction }}">
         <input type="hidden" name="view" value="{{ view }}">
-        {% if selected_owner %}<input type="hidden" name="owner" value="{{ selected_owner }}">{% endif %}
+        {% if owner_explicit %}<input type="hidden" name="owner" value="{{ selected_owner }}">{% endif %}
         {% if selected_finish %}<input type="hidden" name="finish" value="{{ selected_finish }}">{% endif %}
         <label>Card type<select name="type" onchange="this.form.submit()"><option value="">All types</option>{% for t in ['Legendary','Creature','Artifact','Enchantment','Instant','Sorcery','Planeswalker','Land','Battle'] %}<option value="{{ t }}" {% if selected_type == t %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></label>
         <label>Color<select name="color" onchange="this.form.submit()"><option value="">All colors</option><option value="W" {% if selected_color == 'W' %}selected{% endif %}>White</option><option value="U" {% if selected_color == 'U' %}selected{% endif %}>Blue</option><option value="B" {% if selected_color == 'B' %}selected{% endif %}>Black</option><option value="R" {% if selected_color == 'R' %}selected{% endif %}>Red</option><option value="G" {% if selected_color == 'G' %}selected{% endif %}>Green</option><option value="colorless" {% if selected_color == 'colorless' %}selected{% endif %}>Colorless</option><option value="multicolor" {% if selected_color == 'multicolor' %}selected{% endif %}>Multicolor</option></select></label>
@@ -165,6 +172,7 @@
         <button type="button" class="button secondary" id="clearInventorySelection">Clear selection</button>
       </div>
       <div class="bulk-controls-row">
+        <label>Owner<select id="bulkOwner"><option value="unchanged">No change</option>{% for owner in owners %}<option value="{{ owner }}">{{ owner }}</option>{% endfor %}</select></label>
         <label>For vending<select id="bulkVending"><option value="unchanged">No change</option><option value="1">Mark for vending</option><option value="0">Remove from vending</option></select></label>
         <label>Storage location<input id="bulkLocation" type="text" list="location-options" placeholder="Leave unchanged"></label>
         <label>Deck assignment<select id="bulkDeck"><option value="unchanged">No change</option><option value="none">Unassigned / free pool</option>{% for deck in decks %}<option value="{{ deck.id }}">{{ deck.name }}</option>{% endfor %}</select></label>
@@ -181,7 +189,7 @@
         {% if admin_user %}<label class="inventory-select-label"><input class="inventory-select" type="checkbox" value="{{ item.id }}" aria-label="Select {{ item.name }} for bulk editing"> Select</label>{% endif %}
         <div class="tile-image-wrap">
           {% if item.image_url %}
-          <img src="{{ item.image_url }}" class="card-image" alt="{{ item.name }}" loading="lazy" onclick="openImage(this.src, this.alt)" onerror="imageFailed(this)">
+          <img src="{{ item.image_url }}" class="card-image oracle-image-trigger" alt="{{ item.name }}" data-scryfall="{{ item.scryfall_id or '' }}" data-name="{{ item.name|e }}" loading="lazy" onerror="imageFailed(this)">
           {% else %}
           <div class="image-placeholder">No card image</div>
           {% endif %}
@@ -198,7 +206,7 @@
           </div>
           <div class="subtle location-label">Storage: {{ item.location }}{% if item.deck_id %} · Deck assigned{% endif %}</div>
           {% if admin_user %}
-          <div class="inventory-management-controls">
+          <div class="inventory-management-controls edit-only-control">
             <label class="check-row vending-inline-toggle"><input type="checkbox" class="vending-input" data-id="{{ item.id }}" data-field="for_vending" {% if item.for_vending %}checked{% endif %} {% if item.deck_id %}disabled{% endif %}> For vending</label>
             <label>Deck<select class="inline-input deck-input" data-id="{{ item.id }}" data-field="deck_id"><option value="none" {% if not item.deck_id %}selected{% endif %}>Unassigned</option>{% for deck in decks %}<option value="{{ deck.id }}" {% if item.deck_id == deck.id %}selected{% endif %}>{{ deck.name }}</option>{% endfor %}</select></label>
           </div>
@@ -211,20 +219,20 @@
           </div>
           <div class="tile-controls">
             {% if item.tcgplayer_id %}<button class="button secondary price-history-button" data-tcg="{{ item.tcgplayer_id }}" data-name="{{ item.name|e }}" data-finish="{{ item.finish }}">Price History</button>{% endif %}
-            {% if item.metadata_available %}<button class="button secondary oracle-button" data-scryfall="{{ item.scryfall_id }}" data-name="{{ item.name|e }}">Oracle</button>{% endif %}
+            {% if item.scryfall_id %}<button class="button secondary oracle-button" data-scryfall="{{ item.scryfall_id }}" data-name="{{ item.name|e }}" data-image="{{ item.image_url or '' }}">Oracle / Image</button>{% endif %}
             {% if admin_user %}
-            <button class="button secondary counts-button" data-scryfall="{{ item.scryfall_id }}" data-owner="{{ item.owner|e }}" data-name="{{ item.name|e }}" data-normal="{{ item.owner_normal_qty }}" data-foil="{{ item.owner_foil_qty }}">Edit counts</button>
-            <button class="button secondary move-button" data-id="{{ item.id }}" data-name="{{ item.name|e }}" data-qty="{{ item.quantity }}" data-location="{{ item.location|e }}">Move</button>
-            <select class="finish-input" data-id="{{ item.id }}" data-field="finish">
+            <button class="button secondary counts-button edit-only-control" data-scryfall="{{ item.scryfall_id }}" data-owner="{{ item.owner|e }}" data-name="{{ item.name|e }}" data-normal="{{ item.owner_normal_qty }}" data-foil="{{ item.owner_foil_qty }}">Edit counts</button>
+            <button class="button secondary move-button edit-only-control" data-id="{{ item.id }}" data-name="{{ item.name|e }}" data-qty="{{ item.quantity }}" data-location="{{ item.location|e }}">Move</button>
+            <select class="finish-input edit-only-control" data-id="{{ item.id }}" data-field="finish">
               <option value="normal" {% if item.finish == 'normal' %}selected{% endif %}>Normal</option>
               <option value="foil" {% if item.finish == 'foil' %}selected{% endif %}>Foil</option>
             </select>
-            <input class="qty-input" type="number" min="1" step="1" data-id="{{ item.id }}" data-field="quantity" value="{{ item.quantity }}" aria-label="Quantity for {{ item.name }}">
-            <input class="location-input" type="text" data-id="{{ item.id }}" data-field="location" value="{{ item.location|e }}" aria-label="Location for {{ item.name }}">
-            <select class="inline-input owner-input" data-id="{{ item.id }}" data-field="owner" aria-label="Owner for {{ item.name }}">
+            <input class="qty-input edit-only-control" type="number" min="1" step="1" data-id="{{ item.id }}" data-field="quantity" value="{{ item.quantity }}" aria-label="Quantity for {{ item.name }}">
+            <input class="location-input edit-only-control" type="text" data-id="{{ item.id }}" data-field="location" value="{{ item.location|e }}" aria-label="Location for {{ item.name }}">
+            <select class="inline-input owner-input edit-only-control" data-id="{{ item.id }}" data-field="owner" aria-label="Owner for {{ item.name }}">
               {% for owner in owners %}<option value="{{ owner }}" {% if owner == item.owner %}selected{% endif %}>{{ owner }}</option>{% endfor %}
             </select>
-            <button class="icon-button delete-button" data-id="{{ item.id }}" title="Delete">×</button>
+            <button class="icon-button delete-button edit-only-control" data-id="{{ item.id }}" title="Delete">×</button>
             {% endif %}
           </div>
         </div>
@@ -250,7 +258,7 @@
               <td class="selection-column">{% if admin_user %}<input class="inventory-select" type="checkbox" value="{{ item.id }}" aria-label="Select {{ item.name }} for bulk editing">{% endif %}</td>
               <td class="name-cell">
                 <div class="name-with-thumb">
-                  {% if item.image_url %}<img src="{{ item.image_url }}" class="thumb" alt="" loading="lazy" onclick="openImage(this.src, this.closest('td').querySelector('.card-title').textContent)" onerror="imageFailed(this)">{% else %}<div class="thumb placeholder-thumb">—</div>{% endif %}
+                  {% if item.image_url %}<img src="{{ item.image_url }}" class="thumb oracle-image-trigger" alt="" data-scryfall="{{ item.scryfall_id or '' }}" data-name="{{ item.name|e }}" loading="lazy" onerror="imageFailed(this)">{% else %}<div class="thumb placeholder-thumb">—</div>{% endif %}
                   <div>
                     <div class="card-title">{{ item.name }}</div>
                     {% if item.tcgplayer_id %}<div class="subtle">TCGplayer #{{ item.tcgplayer_id }}</div>{% endif %}
@@ -261,11 +269,20 @@
               <td><span class="badge">{{ item.set_code or '—' }}</span></td>
               <td>{{ item.rarity }}</td>
               <td><span class="finish-pill {{ item.finish }}">{{ item.finish|capitalize }}</span></td>
-              <td>{% if admin_user %}<select class="inline-input owner-input" data-id="{{ item.id }}" data-field="owner" aria-label="Owner for {{ item.name }}">{% for owner in owners %}<option value="{{ owner }}" {% if owner == item.owner %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select>{% else %}{{ item.owner }}{% endif %}</td>
-              <td>{% if admin_user %}<input class="qty-input" type="number" min="1" step="1" data-id="{{ item.id }}" data-field="quantity" value="{{ item.quantity }}" aria-label="Quantity for {{ item.name }}">{% else %}{{ item.quantity }}{% endif %}</td>
-              <td>{% if admin_user %}<input class="location-input" type="text" data-id="{{ item.id }}" data-field="location" value="{{ item.location|e }}" aria-label="Storage location for {{ item.name }}">{% else %}{{ item.location }}{% endif %}</td>
-              <td>{% if admin_user %}<select class="inline-input deck-input" data-id="{{ item.id }}" data-field="deck_id" aria-label="Deck assignment for {{ item.name }}"><option value="none" {% if not item.deck_id %}selected{% endif %}>Unassigned</option>{% for deck in decks %}<option value="{{ deck.id }}" {% if item.deck_id == deck.id %}selected{% endif %}>{{ deck.name }}</option>{% endfor %}</select>{% elif item.deck_id %}{% for deck in decks %}{% if deck.id == item.deck_id %}{{ deck.name }}{% endif %}{% endfor %}{% else %}Unassigned{% endif %}</td>
-              <td>{% if admin_user %}<label class="check-row vending-cell"><input type="checkbox" class="vending-input" data-id="{{ item.id }}" data-field="for_vending" {% if item.for_vending %}checked{% endif %} {% if item.deck_id %}disabled{% endif %} aria-label="For vending: {{ item.name }}"></label>{% elif item.for_vending %}Yes{% else %}No{% endif %}</td>
+              <td>
+                <span class="edit-value">{{ item.owner }}</span>
+                {% if admin_user %}<select class="inline-input owner-input edit-only-control" data-id="{{ item.id }}" data-field="owner" aria-label="Owner for {{ item.name }}">{% for owner in owners %}<option value="{{ owner }}" {% if owner == item.owner %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select>{% endif %}
+              </td>
+              <td><span class="edit-value">{{ item.quantity }}</span>{% if admin_user %}<input class="qty-input edit-only-control" type="number" min="1" step="1" data-id="{{ item.id }}" data-field="quantity" value="{{ item.quantity }}" aria-label="Quantity for {{ item.name }}">{% endif %}</td>
+              <td><span class="edit-value">{{ item.location }}</span>{% if admin_user %}<input class="location-input edit-only-control" type="text" data-id="{{ item.id }}" data-field="location" value="{{ item.location|e }}" aria-label="Storage location for {{ item.name }}">{% endif %}</td>
+              <td>
+                <span class="edit-value">{% if item.deck_id %}{% for deck in decks %}{% if deck.id == item.deck_id %}{{ deck.name }}{% endif %}{% endfor %}{% else %}Unassigned{% endif %}</span>
+                {% if admin_user %}<select class="inline-input deck-input edit-only-control" data-id="{{ item.id }}" data-field="deck_id" aria-label="Deck assignment for {{ item.name }}"><option value="none" {% if not item.deck_id %}selected{% endif %}>Unassigned</option>{% for deck in decks %}<option value="{{ deck.id }}" {% if item.deck_id == deck.id %}selected{% endif %}>{{ deck.name }}</option>{% endfor %}</select>{% endif %}
+              </td>
+              <td>
+                <span class="edit-value">{{ 'Yes' if item.for_vending else 'No' }}</span>
+                {% if admin_user %}<label class="check-row vending-cell edit-only-control"><input type="checkbox" class="vending-input" data-id="{{ item.id }}" data-field="for_vending" {% if item.for_vending %}checked{% endif %} {% if item.deck_id %}disabled{% endif %} aria-label="For vending: {{ item.name }}"></label>{% endif %}
+              </td>
               <td><span class="count-pair">N {{ item.card_normal_qty }} · F {{ item.card_foil_qty }}</span></td>
               <td><span class="pill scanned">${{ '%.2f'|format(item.scanned_price|float) }}</span></td>
               <td><span class="pill normal">{% if item.curr_normal is not none %}${{ '%.2f'|format(item.curr_normal|float) }}{% else %}—{% endif %}</span></td>
@@ -274,15 +291,15 @@
               <td class="subtle">{{ item.scan_time|localdt }}</td>
               <td class="row-actions">
                 {% if item.tcgplayer_id %}<button class="button secondary price-history-button" data-tcg="{{ item.tcgplayer_id }}" data-name="{{ item.name|e }}" data-finish="{{ item.finish }}">History</button>{% endif %}
-                {% if item.metadata_available %}<button class="button secondary oracle-button" data-scryfall="{{ item.scryfall_id }}" data-name="{{ item.name|e }}">Oracle</button>{% endif %}
+                {% if item.scryfall_id %}<button class="button secondary oracle-button" data-scryfall="{{ item.scryfall_id }}" data-name="{{ item.name|e }}" data-image="{{ item.image_url or '' }}">Oracle / Image</button>{% endif %}
                 {% if admin_user %}
-                <button class="button secondary counts-button" data-scryfall="{{ item.scryfall_id }}" data-owner="{{ item.owner|e }}" data-name="{{ item.name|e }}" data-normal="{{ item.owner_normal_qty }}" data-foil="{{ item.owner_foil_qty }}">Counts</button>
-                <button class="button secondary move-button" data-id="{{ item.id }}" data-name="{{ item.name|e }}" data-qty="{{ item.quantity }}" data-location="{{ item.location|e }}">Move</button>
-                <select class="finish-input" data-id="{{ item.id }}" data-field="finish">
+                <button class="button secondary counts-button edit-only-control" data-scryfall="{{ item.scryfall_id }}" data-owner="{{ item.owner|e }}" data-name="{{ item.name|e }}" data-normal="{{ item.owner_normal_qty }}" data-foil="{{ item.owner_foil_qty }}">Counts</button>
+                <button class="button secondary move-button edit-only-control" data-id="{{ item.id }}" data-name="{{ item.name|e }}" data-qty="{{ item.quantity }}" data-location="{{ item.location|e }}">Move</button>
+                <select class="finish-input edit-only-control" data-id="{{ item.id }}" data-field="finish">
                   <option value="normal" {% if item.finish == 'normal' %}selected{% endif %}>Normal</option>
                   <option value="foil" {% if item.finish == 'foil' %}selected{% endif %}>Foil</option>
                 </select>
-                <button class="icon-button delete-button" data-id="{{ item.id }}" title="Delete">×</button>
+                <button class="icon-button delete-button edit-only-control" data-id="{{ item.id }}" title="Delete">×</button>
                 {% endif %}
               </td>
             </tr>
@@ -373,17 +390,26 @@
   <dialog id="oracleDialog" class="price-history-dialog oracle-dialog">
     <button class="dialog-close" type="button" onclick="document.getElementById('oracleDialog').close()">×</button>
     <h2 id="oracleTitle">Oracle Text</h2>
-    <div id="oracleSubtitle" class="subtle"></div>
-    <div id="oracleTypeLine" class="oracle-type-line"></div>
-    <div id="oracleManaCost" class="oracle-mana-cost"></div>
-    <pre id="oracleText" class="oracle-text"></pre>
-    <h3>Legality</h3>
-    <div id="oracleLegalities" class="legality-grid"></div>
+    <div class="oracle-switch-actions"><button type="button" class="button secondary" id="oracleSwitchButton">Show card image</button><span class="subtle">Click the rules text or image to switch views.</span></div>
+    <section id="oracleTextPanel" class="oracle-switch-panel" role="button" tabindex="0" aria-label="Switch to card image">
+      <div id="oracleSubtitle" class="subtle"></div>
+      <div id="oracleTypeLine" class="oracle-type-line"></div>
+      <div id="oracleManaCost" class="oracle-mana-cost"></div>
+      <pre id="oracleText" class="oracle-text"></pre>
+      <h3>Legality</h3>
+      <div id="oracleLegalities" class="legality-grid"></div>
+    </section>
+    <button type="button" id="oracleImagePanel" class="oracle-image-panel" hidden aria-label="Switch to Oracle text">
+      <img id="oracleCardImage" src="" alt="">
+      <span>Click image to return to Oracle text</span>
+    </button>
     <div id="oracleUpdated" class="subtle"></div>
     <div id="oracleStatus" class="status"></div>
   </dialog>
 
+<script src="{{ url_for('static', filename='multi-select.js') }}"></script>
 <script>
+const pageCsrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
 let moveContext = null;
 const moveDialog = document.getElementById('moveDialog');
 const moveForm = document.getElementById('moveForm');
@@ -402,7 +428,7 @@ moveForm.addEventListener('submit', async e => {
   const status = document.getElementById('moveStatus');
   if (!Number.isInteger(qty) || qty < 1 || qty > moveContext.maxQty || !destination) { status.textContent='Enter a valid quantity and destination.'; return; }
   status.textContent='Moving…';
-  const r = await fetch('{{ url_for('move_quantity') }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:moveContext.id,quantity:qty,destination})});
+  const r = await fetch('{{ url_for('move_quantity') }}',{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':pageCsrfToken},body:JSON.stringify({id:moveContext.id,quantity:qty,destination})});
   const data = await r.json().catch(()=>({}));
   if (!r.ok || !data.success) { status.textContent=data.error || 'Move failed.'; return; }
   moveDialog.close(); window.location.reload();
@@ -529,7 +555,7 @@ document.getElementById('countsForm').addEventListener('submit', async (event) =
   const status = document.getElementById('countsStatus');
   status.textContent = 'Saving…';
   const r = await fetch('{{ url_for('set_counts') }}', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
+    method: 'POST', headers: {'Content-Type':'application/json','X-CSRFToken':pageCsrfToken},
     body: JSON.stringify({...countContext, normal: Number(document.getElementById('normalCount').value), foil: Number(document.getElementById('foilCount').value)})
   });
   const data = await r.json().catch(() => ({}));
@@ -647,6 +673,7 @@ function openImport() { document.getElementById('importDialog').showModal(); }
 function closeImport() { document.getElementById('importDialog').close(); }
 function openImage(src, alt) {
   if (!src) return;
+  if (document.body.dataset.inventoryMode === 'select') return;
   document.getElementById('largeCardImage').src = src;
   document.getElementById('largeCardImage').alt = alt || '';
   document.getElementById('largeCardCaption').textContent = alt || '';
@@ -664,12 +691,30 @@ const oracleTextEl = document.getElementById('oracleText');
 const oracleLegalities = document.getElementById('oracleLegalities');
 const oracleUpdated = document.getElementById('oracleUpdated');
 const oracleStatus = document.getElementById('oracleStatus');
+const oracleTextPanel = document.getElementById('oracleTextPanel');
+const oracleImagePanel = document.getElementById('oracleImagePanel');
+const oracleCardImage = document.getElementById('oracleCardImage');
+const oracleSwitchButton = document.getElementById('oracleSwitchButton');
+let activeOracleImageUrl = '';
 function escOracle(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-async function openOracle(sid, name) {
+function switchOracleDisplay(mode) {
+  const showImage = mode === 'image';
+  oracleTextPanel.hidden = showImage;
+  oracleImagePanel.hidden = !showImage;
+  oracleSwitchButton.textContent = showImage ? 'Show Oracle text' : 'Show card image';
+  oracleTextPanel.setAttribute('aria-label', 'Switch to card image');
+  oracleImagePanel.setAttribute('aria-label', 'Switch to Oracle text');
+}
+async function openOracle(sid, name, imageUrl = '', initialMode = 'text') {
   oracleTitle.textContent = name || 'Oracle Text';
   oracleSubtitle.textContent = 'Loading cached metadata…';
   oracleTypeLine.textContent = ''; oracleManaCost.textContent = ''; oracleTextEl.textContent = ''; oracleLegalities.innerHTML = ''; oracleUpdated.textContent = ''; oracleStatus.textContent = '';
+  activeOracleImageUrl = imageUrl || (sid ? `https://cards.scryfall.io/normal/front/${sid[0]}/${sid[1]}/${sid}.jpg` : '');
+  oracleCardImage.src = activeOracleImageUrl;
+  oracleCardImage.alt = name || '';
+  switchOracleDisplay(initialMode === 'image' ? 'image' : 'text');
   oracleDialog.showModal();
+  if (!sid) { oracleStatus.textContent = 'No Scryfall ID is available for this printing.'; return; }
   try {
     const r = await fetch('/api/card-info/' + encodeURIComponent(sid));
     const data = await r.json().catch(() => ({}));
@@ -683,14 +728,23 @@ async function openOracle(sid, name) {
     oracleUpdated.textContent = c.updated_at ? 'Cached metadata updated: ' + c.updated_at : '';
   } catch (_) { oracleStatus.textContent = 'Could not load cached metadata.'; }
 }
-document.querySelectorAll('.oracle-button').forEach(btn => btn.addEventListener('click', () => openOracle(btn.dataset.scryfall, btn.dataset.name)));
+document.querySelectorAll('.oracle-button').forEach(btn => btn.addEventListener('click', () => openOracle(btn.dataset.scryfall, btn.dataset.name, btn.dataset.image || '', 'text')));
+document.querySelectorAll('.oracle-image-trigger').forEach(img => img.addEventListener('click', () => {
+  if (document.body.dataset.inventoryMode === 'select') return;
+  if (img.dataset.scryfall) openOracle(img.dataset.scryfall, img.dataset.name || img.alt, img.currentSrc || img.src, 'image');
+  else openImage(img.currentSrc || img.src, img.alt);
+}));
+oracleTextPanel?.addEventListener('click', () => switchOracleDisplay('image'));
+oracleTextPanel?.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchOracleDisplay('image'); } });
+oracleImagePanel?.addEventListener('click', () => switchOracleDisplay('text'));
+oracleSwitchButton?.addEventListener('click', () => switchOracleDisplay(oracleImagePanel.hidden ? 'image' : 'text'));
 
 async function saveField(input) {
   let value = input.dataset.field === 'for_vending' ? input.checked : input.value;
   if (input.dataset.field === 'deck_id' && value === 'none') value = null;
   const response = await fetch('{{ url_for('update_inventory') }}', {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    headers: {'Content-Type': 'application/json', 'X-CSRFToken': pageCsrfToken},
     body: JSON.stringify({id: input.dataset.id, field: input.dataset.field, value})
   });
   if (!response.ok) {
@@ -720,6 +774,7 @@ const bulkStatus = document.getElementById('bulkEditStatus');
 const bulkCount = document.getElementById('bulkSelectedCount');
 const selectAllInventory = document.getElementById('selectAllInventory');
 const selectAllInventoryTable = document.getElementById('selectAllInventoryTable');
+let inventorySelection = null;
 function inventoryCheckboxes() { return [...document.querySelectorAll('.inventory-select')]; }
 function syncBulkSelection() {
   const boxes = inventoryCheckboxes();
@@ -732,20 +787,51 @@ function syncBulkSelection() {
 }
 [selectAllInventory, selectAllInventoryTable].filter(Boolean).forEach(box => box.addEventListener('change', () => {
   inventoryCheckboxes().forEach(item => { item.checked = box.checked; });
+  if (inventorySelection) inventorySelection.refresh();
   syncBulkSelection();
 }));
-document.querySelectorAll('.inventory-select').forEach(box => box.addEventListener('change', syncBulkSelection));
+inventorySelection = window.CardScannerMultiSelect.bind({
+  checkboxSelector: '.inventory-select',
+  isActive: () => document.body.dataset.inventoryMode === 'select',
+  onChange: syncBulkSelection,
+  itemSelector: '.card-tile',
+  excludedSelector: '.inventory-select-label, input, button, select, textarea, a',
+  itemClass: 'selection-drag-target',
+});
+
+const modeButtons = [...document.querySelectorAll('.mode-button')];
+function setInventoryMode(mode) {
+  if (!['browse', 'select', 'edit'].includes(mode)) mode = 'browse';
+  const previous = document.body.dataset.inventoryMode || 'browse';
+  document.body.dataset.inventoryMode = mode;
+  modeButtons.forEach(button => {
+    const active = button.dataset.mode === mode;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+  if (previous === 'select' && mode !== 'select') {
+    inventoryCheckboxes().forEach(box => { box.checked = false; });
+    inventorySelection.resetAnchor();
+    inventorySelection.refresh();
+    syncBulkSelection();
+  }
+}
+modeButtons.forEach(button => button.addEventListener('click', () => setInventoryMode(button.dataset.mode)));
+
 document.getElementById('clearInventorySelection')?.addEventListener('click', () => {
   inventoryCheckboxes().forEach(item => { item.checked = false; });
+  inventorySelection.resetAnchor();
+  inventorySelection.refresh();
   syncBulkSelection();
 });
 document.getElementById('applyBulkEdit')?.addEventListener('click', async () => {
   const ids = inventoryCheckboxes().filter(box => box.checked).map(box => Number(box.value));
   if (!ids.length) { bulkStatus.textContent = 'Select the cards to change first.'; return; }
+  const owner = document.getElementById('bulkOwner').value;
   const forVending = document.getElementById('bulkVending').value;
   const location = document.getElementById('bulkLocation').value.trim();
   const deck = document.getElementById('bulkDeck').value;
-  if (forVending === 'unchanged' && !location && deck === 'unchanged') {
+  if (owner === 'unchanged' && forVending === 'unchanged' && !location && deck === 'unchanged') {
     bulkStatus.textContent = 'Choose at least one change to apply.'; return;
   }
   if (deck !== 'unchanged' && deck !== 'none' && forVending === '1') {
@@ -754,11 +840,12 @@ document.getElementById('applyBulkEdit')?.addEventListener('click', async () => 
   if (!confirm(`Apply the selected changes to ${ids.length} inventory row(s)?`)) return;
   bulkStatus.textContent = 'Applying changes…';
   const payload = {ids};
+  if (owner !== 'unchanged') payload.owner = owner;
   if (forVending !== 'unchanged') payload.for_vending = forVending;
   if (location) payload.location = location;
   if (deck !== 'unchanged') payload.deck_id = deck;
   try {
-    const r = await fetch('{{ url_for('bulk_update_inventory') }}', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    const r = await fetch('{{ url_for('bulk_update_inventory') }}', {method:'POST', headers:{'Content-Type':'application/json', 'X-CSRFToken':pageCsrfToken}, body:JSON.stringify(payload)});
     const data = await r.json().catch(() => ({}));
     if (!r.ok || !data.success) { bulkStatus.textContent = data.error || 'Bulk update failed.'; return; }
     bulkStatus.textContent = `Updated ${data.updated} row(s). Reloading…`;
@@ -770,7 +857,7 @@ syncBulkSelection();
 document.querySelectorAll('.delete-button').forEach(button => {
   button.addEventListener('click', async () => {
     if (!confirm('Delete this inventory row?')) return;
-    const r = await fetch(`/delete/${button.dataset.id}`, {method: 'DELETE'});
+    const r = await fetch(`/delete/${button.dataset.id}`, {method: 'DELETE', headers: {'X-CSRFToken': pageCsrfToken}});
     if (r.ok) {
       const row = document.getElementById(`row-${button.dataset.id}`);
       const tile = document.getElementById(`tile-${button.dataset.id}`);

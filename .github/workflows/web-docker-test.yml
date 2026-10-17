@@ -20,6 +20,14 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
+      - name: Set up Node for shared browser interaction checks
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check shared selection utility JavaScript syntax
+        run: node --check static/multi-select.js
+
       - name: Set up Python for regression tests
         uses: actions/setup-python@v5
         with:
