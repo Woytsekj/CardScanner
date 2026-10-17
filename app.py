@@ -154,12 +154,36 @@ def localdt_filter(value: Any) -> str:
 
 
 def connect_inventory() -> sqlite3.Connection:
+    """Open an inventory connection without changing database-wide journal mode.
+
+    journal_mode is persistent for the database and should be initialized once
+    during startup, not repeatedly by concurrent request workers.
+    """
     conn = sqlite3.connect(DB_INV, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=5000")
-    conn.execute("PRAGMA journal_mode=WAL")
     return conn
+
+
+def enable_inventory_wal(conn: sqlite3.Connection) -> None:
+    """Enable WAL once during startup, retrying brief locks from other containers."""
+    current = conn.execute("PRAGMA journal_mode").fetchone()
+    if current and str(current[0]).lower() == "wal":
+        return
+
+    for attempt in range(6):
+        try:
+            mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()
+            if mode and str(mode[0]).lower() == "wal":
+                return
+            raise sqlite3.OperationalError(
+                f"Could not enable SQLite WAL mode (reported mode: {mode[0] if mode else 'unknown'})"
+            )
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or attempt == 5:
+                raise
+            time.sleep(0.25 * (attempt + 1))
 
 
 def normalize_finish(value: Any) -> str:
@@ -583,6 +607,10 @@ def security_headers(response):
 
 def migrate_db() -> None:
     conn = connect_inventory()
+    # Gunicorn is started with --preload so this startup migration runs once in
+    # the master process before workers fork. Avoid changing journal mode from
+    # every connection, which can race and fail with "database is locked".
+    enable_inventory_wal(conn)
     c = conn.cursor()
     c.execute(
         """
