@@ -7,7 +7,7 @@
 <script src="{{ url_for('static', filename='security.js') }}" defer></script>
 </head><body>
 <header class="topbar">
-  <div><h1>Vending View</h1><div class="subtle">Free-storage cards only · {{ result_count }} matching rows</div></div>
+  <div><h1>Vending View</h1><div class="subtle">Cards marked for vending across all storage locations · {{ result_count }} matching rows</div></div>
   <div class="actions"><a class="button secondary" href="{{ url_for('index') }}">Inventory</a><a class="button secondary" href="{{ url_for('decks_page') }}">Decks</a><a class="button" href="{{ url_for('vending_export_csv', owner=selected_owner, q=search, min_value=min_value) }}">Export Vendor CSV</a></div>
 </header>
 <main>
@@ -22,7 +22,7 @@
     <button class="button" type="submit">Filter</button>
   </form>
 </section>
-<p class="subtle">Use <strong>Free</strong> for cards that can be sold. Named-deck locations stay out of this view automatically, so your vending helper won't accidentally sell a card currently assigned to a deck.</p>
+<p class="subtle">Only cards explicitly marked <strong>For vending</strong> appear here, regardless of their physical storage location. Assigning a card to a deck automatically removes it from vending.</p>
 <section class="vendor-selection-toolbar">
   <div><strong><span id="vendorSelectedCount">0</span> selected</strong><span class="subtle" id="vendorSelectedLabelCount"> · 0 labels</span></div>
   <div class="actions">
@@ -40,6 +40,7 @@
     <h3>{{ item.name }}</h3>
     {% if item.alternate_names %}<div class="alternate-name">{{ item.alternate_names }}</div>{% endif %}
     <div class="subtle">{{ item.set_code or '—' }} #{{ item.collector_number or '—' }} · {{ item.finish|capitalize }}</div>
+    <div class="subtle">Storage: {{ item.location or 'Free' }}</div>
     <div class="vending-price"><div class="vending-unit-price">${{ '%.2f'|format(item.calculated_unit_price) }}</div></div>
     <div class="vending-price-meta"><span>Qty {{ item.quantity }}</span><span>${{ '%.2f'|format(item.calculated_total_value) }} total</span></div>
     <div class="vending-owner">Owner: <strong>{{ item.owner }}</strong></div>

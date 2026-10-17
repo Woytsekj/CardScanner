@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import os
+import re
 import sqlite3
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -68,7 +69,9 @@ PRICE_HISTORY_DAYS = max(30, int(os.environ.get("PRICE_HISTORY_DAYS", "365")))
 SORTS = {
     "date": "i.scan_time",
     "name": "i.name COLLATE NOCASE",
+    "set": "COALESCE(i.set_code, '') COLLATE NOCASE",
     "number": "COALESCE(i.collector_number, a.collector_number) COLLATE NOCASE",
+    "cmc": "COALESCE(cm.mana_value, -1)",
     "quantity": "IFNULL(i.quantity, 1)",
     "finish": "IFNULL(NULLIF(i.finish, ''), 'normal') COLLATE NOCASE",
     "owner": "IFNULL(i.owner, 'Me') COLLATE NOCASE",
@@ -151,12 +154,36 @@ def localdt_filter(value: Any) -> str:
 
 
 def connect_inventory() -> sqlite3.Connection:
+    """Open an inventory connection without changing database-wide journal mode.
+
+    journal_mode is persistent for the database and should be initialized once
+    during startup, not repeatedly by concurrent request workers.
+    """
     conn = sqlite3.connect(DB_INV, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=5000")
-    conn.execute("PRAGMA journal_mode=WAL")
     return conn
+
+
+def enable_inventory_wal(conn: sqlite3.Connection) -> None:
+    """Enable WAL once during startup, retrying brief locks from other containers."""
+    current = conn.execute("PRAGMA journal_mode").fetchone()
+    if current and str(current[0]).lower() == "wal":
+        return
+
+    for attempt in range(6):
+        try:
+            mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()
+            if mode and str(mode[0]).lower() == "wal":
+                return
+            raise sqlite3.OperationalError(
+                f"Could not enable SQLite WAL mode (reported mode: {mode[0] if mode else 'unknown'})"
+            )
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or attempt == 5:
+                raise
+            time.sleep(0.25 * (attempt + 1))
 
 
 def normalize_finish(value: Any) -> str:
@@ -580,6 +607,10 @@ def security_headers(response):
 
 def migrate_db() -> None:
     conn = connect_inventory()
+    # Gunicorn is started with --preload so this startup migration runs once in
+    # the master process before workers fork. Avoid changing journal mode from
+    # every connection, which can race and fail with "database is locked".
+    enable_inventory_wal(conn)
     c = conn.cursor()
     c.execute(
         """
@@ -667,8 +698,19 @@ def migrate_db() -> None:
     except sqlite3.OperationalError:
         pass
     c.execute("UPDATE inventory SET location='Free' WHERE location IS NULL OR TRIM(location)=''")
+
+    # Vending eligibility is independent from physical storage and deck assignment.
+    # Only backfill when this column is first introduced; never re-enable rows that
+    # an administrator has intentionally opted out of vending on later restarts.
+    existing_columns = {row[1] for row in c.execute("PRAGMA table_info(inventory)").fetchall()}
+    if "for_vending" not in existing_columns:
+        c.execute("ALTER TABLE inventory ADD COLUMN for_vending INTEGER NOT NULL DEFAULT 0")
+        c.execute("UPDATE inventory SET for_vending=1 WHERE LOWER(TRIM(COALESCE(location,'Free')))='free'")
+        c.execute("UPDATE inventory SET for_vending=0 WHERE deck_id IS NOT NULL")
+    c.execute("UPDATE inventory SET for_vending=0 WHERE for_vending IS NULL")
     c.execute("CREATE INDEX IF NOT EXISTS idx_inventory_location ON inventory(location COLLATE NOCASE)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_inventory_deck_id ON inventory(deck_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_inventory_for_vending ON inventory(for_vending)")
     c.execute("""CREATE TABLE IF NOT EXISTS card_metadata (
         scryfall_id TEXT PRIMARY KEY, name TEXT, type_line TEXT, colors_json TEXT,
         colors_text TEXT, color_identity_json TEXT, mana_value REAL, mana_cost TEXT,
@@ -707,17 +749,24 @@ def migrate_db() -> None:
     c.execute("CREATE INDEX IF NOT EXISTS idx_deck_cards_deck ON deck_cards(deck_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_deck_cards_name ON deck_cards(name COLLATE NOCASE)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_deck_cards_scryfall ON deck_cards(scryfall_id)")
-    # Best-effort link for older inventory rows whose location was the deck name.
-    try:
-        c.execute(
-            """UPDATE inventory SET deck_id=(SELECT d.id FROM decklists d
-                   WHERE LOWER(TRIM(d.name))=LOWER(TRIM(inventory.location))
-                   ORDER BY d.updated_at DESC LIMIT 1)
-               WHERE deck_id IS NULL AND LOWER(COALESCE(location,'Free')) <> 'free'
-                 AND EXISTS (SELECT 1 FROM decklists d WHERE LOWER(TRIM(d.name))=LOWER(TRIM(inventory.location)))"""
-        )
-    except sqlite3.Error:
-        pass
+    # One-time compatibility migration for the old schema, where a deck name in
+    # `location` implicitly meant membership in that deck. Never repeat this on
+    # subsequent starts: storage locations are now independent of deck membership.
+    c.execute("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)")
+    migrated = c.execute("SELECT 1 FROM app_migrations WHERE name='deck_location_to_deck_id_v1'").fetchone()
+    if not migrated:
+        try:
+            c.execute(
+                """UPDATE inventory SET deck_id=(SELECT d.id FROM decklists d
+                       WHERE LOWER(TRIM(d.name))=LOWER(TRIM(inventory.location))
+                       ORDER BY d.updated_at DESC LIMIT 1)
+                   WHERE deck_id IS NULL AND LOWER(COALESCE(location,'Free')) <> 'free'
+                     AND EXISTS (SELECT 1 FROM decklists d WHERE LOWER(TRIM(d.name))=LOWER(TRIM(inventory.location)))"""
+            )
+        except sqlite3.Error:
+            pass
+        c.execute("INSERT OR IGNORE INTO app_migrations(name, applied_at) VALUES('deck_location_to_deck_id_v1', ?)", (datetime.now(timezone.utc).isoformat(),))
+
     ensure_people_and_auth(conn)
     conn.commit()
     conn.close()
@@ -863,17 +912,164 @@ def card_value(item: dict[str, Any], prices: dict[str, dict[str, Any]]) -> tuple
     return to_float(normal, 0.0), to_float(foil, 0.0), unit
 
 
-def inventory_rows(search: str, owner_filter: str, finish_filter: str, sort_key: str, direction: str, type_filter: str = "", color_filter: str = "", location_filter: str = ""):
+def parse_scryfall_search(search: str) -> tuple[list[str], list[Any], str | None, str | None]:
+    """Parse a useful local subset of Scryfall query syntax into parameterized SQL.
+
+    Supported card queries include free-text names/collector numbers, set:, cn:,
+    name:, t:/type:, o:/oracle:, c:, r:/rarity:, is:foil/nonfoil, and common
+    collection helpers owner:, loc:/location:, deck:, and vending:true/false.
+    order:set/name/collector/usd and direction:asc/desc can also be used.
+    Unsupported qualifiers fall back to ordinary text search rather than SQL.
+    """
+    where: list[str] = []
+    args: list[Any] = []
+    order_override: str | None = None
+    direction_override: str | None = None
+    token_pattern = re.compile(
+        r'-?[A-Za-z][A-Za-z0-9_]*(?:>=|<=|!=|=|:|>|<)"(?:\\.|[^"\\])*"'
+        r'|-?[A-Za-z][A-Za-z0-9_]*(?:>=|<=|!=|=|:|>|<)\S+'
+        r'|-(?:"(?:\\.|[^"\\])*"|\S+)'
+        r'|"(?:\\.|[^"\\])*"|\S+'
+    )
+    tokens = token_pattern.findall(search or "")
+    rarity_rank = {"common": 1, "uncommon": 2, "rare": 3, "mythic": 4, "mythic rare": 4}
+
+    def append(expr: str, values: list[Any], negated: bool) -> None:
+        where.append(f"NOT ({expr})" if negated else f"({expr})")
+        args.extend(values)
+
+    for raw in tokens:
+        negated = raw.startswith("-")
+        token = raw[1:] if negated else raw
+        field = None
+        operator = None
+        value = None
+        for op in (">=", "<=", "!=", ":", "=", ">", "<"):
+            if op in token:
+                possible_field, possible_value = token.split(op, 1)
+                if possible_field and possible_value and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", possible_field):
+                    field, operator, value = possible_field.lower(), op, possible_value
+                    break
+        if value is not None:
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] == '"':
+                value = value[1:-1].replace('\\"', '"').replace('\\\\', '\\')
+            if field == "order":
+                order_map = {"set": "set", "name": "name", "collector": "number", "number": "number", "usd": "price", "price": "price", "cmc": "cmc", "date": "date", "released": "date"}
+                order_override = order_map.get(value.lower(), order_override)
+                continue
+            if field in {"direction", "dir"}:
+                if value.lower() in {"asc", "desc"}:
+                    direction_override = value.lower()
+                continue
+            if field in {"set", "s"}:
+                pattern = value.replace("*", "%")
+                if "%" in pattern or "_" in pattern:
+                    append("COALESCE(i.set_code, '') LIKE ? COLLATE NOCASE", [pattern], negated)
+                else:
+                    append("COALESCE(i.set_code, '') = ? COLLATE NOCASE", [value.upper()], negated)
+                continue
+            if field in {"cn", "collector", "collector_number"}:
+                col = "COALESCE(CAST(COALESCE(i.collector_number, a.collector_number) AS TEXT), '')"
+                pattern = value.replace("*", "%")
+                if "%" in pattern or "_" in pattern:
+                    append(f"{col} LIKE ? COLLATE NOCASE", [pattern], negated)
+                else:
+                    append(f"{col} = ? COLLATE NOCASE", [value], negated)
+                continue
+            if field in {"name", "card"}:
+                append("i.name LIKE ? COLLATE NOCASE", [f"%{value}%"], negated)
+                continue
+            if field in {"t", "type"}:
+                parts = [part for part in re.split(r"\s+", value) if part]
+                expr = " AND ".join("COALESCE(cm.type_line, '') LIKE ? COLLATE NOCASE" for _ in parts) or "1=1"
+                append(expr, [f"%{part}%" for part in parts], negated)
+                continue
+            if field in {"o", "oracle"}:
+                append("COALESCE(cm.oracle_text, '') LIKE ? COLLATE NOCASE", [f"%{value.replace('*', '%')}%" if "*" not in value else f"%{value.replace('*', '%')}"], negated)
+                continue
+            if field in {"c", "color", "colors"}:
+                color_value = value.lower().replace(" ", "")
+                if color_value in {"colorless", "c"}:
+                    expr, vals = "COALESCE(cm.colors_text, '') = ''", []
+                elif color_value in {"multicolor", "multi"}:
+                    expr, vals = "length(COALESCE(cm.colors_text, '')) > 1", []
+                else:
+                    symbols = [ch.upper() for ch in color_value if ch.upper() in "WUBRG"]
+                    if not symbols:
+                        expr, vals = "1=0", []
+                    elif operator in {"=", "!="}:
+                        expr, vals = "UPPER(COALESCE(cm.colors_text, '')) = ?", ["".join(ch for ch in "WUBRG" if ch in symbols)]
+                    else:
+                        expr = " AND ".join("UPPER(COALESCE(cm.colors_text, '')) LIKE ?" for _ in symbols)
+                        vals = [f"%{ch}%" for ch in symbols]
+                append(expr, vals, negated or operator == "!=")
+                continue
+            if field in {"r", "rarity"}:
+                rank_expr = "CASE LOWER(COALESCE(i.rarity,'')) WHEN 'common' THEN 1 WHEN 'uncommon' THEN 2 WHEN 'rare' THEN 3 WHEN 'mythic' THEN 4 WHEN 'mythic rare' THEN 4 ELSE 0 END"
+                rarity = rarity_rank.get(value.lower())
+                if operator in {">=", "<=", ">", "<", "=", "!="} and rarity is not None:
+                    sql_op = "=" if operator == ":" else operator
+                    append(f"{rank_expr} {sql_op} ?", [rarity], negated)
+                elif operator in {":", "="}:
+                    append("LOWER(COALESCE(i.rarity,'')) = ?", [value.lower()], negated)
+                else:
+                    append("1=0", [], negated)
+                continue
+            if field == "is":
+                flag = value.lower()
+                if flag in {"foil", "etched"}:
+                    append("LOWER(COALESCE(i.finish,'normal')) IN ('foil','etched','etched foil','foil etched')", [], negated)
+                elif flag in {"nonfoil", "normal"}:
+                    append("LOWER(COALESCE(i.finish,'normal')) NOT IN ('foil','etched','etched foil','foil etched')", [], negated)
+                else:
+                    # Unknown is: qualifiers fall back to text search, rather than falsely matching everything.
+                    needle = f"%{token}%"
+                    append("(i.name LIKE ? COLLATE NOCASE OR COALESCE(i.collector_number, a.collector_number) LIKE ? COLLATE NOCASE)", [needle, needle], negated)
+                continue
+            if field == "owner":
+                append("COALESCE(i.owner,'Me') = ? COLLATE NOCASE", [value], negated or operator == "!=")
+                continue
+            if field in {"loc", "location"}:
+                append("COALESCE(i.location,'Free') = ? COLLATE NOCASE", [value], negated or operator == "!=")
+                continue
+            if field == "deck":
+                if value.lower() in {"none", "unassigned", "free"}:
+                    append("i.deck_id IS NOT NULL", [], not (negated or operator == "!="))
+                else:
+                    append("i.deck_id = (SELECT d.id FROM decklists d WHERE d.name = ? COLLATE NOCASE ORDER BY d.updated_at DESC LIMIT 1)", [value], negated or operator == "!=")
+                continue
+            if field == "vending":
+                want = value.lower() in {"1", "true", "yes", "on", "available"}
+                append("COALESCE(i.for_vending,0) = ?", [1 if want else 0], negated or operator == "!=")
+                continue
+            # Unknown key:value terms remain searchable as text.
+            needle = f"%{token}%"
+            append("(i.name LIKE ? COLLATE NOCASE OR COALESCE(i.collector_number, a.collector_number) LIKE ? COLLATE NOCASE OR COALESCE(i.set_code,'') LIKE ? COLLATE NOCASE)", [needle, needle, needle], negated)
+            continue
+
+        # Plain words/quoted phrases search card name, collector number, and aliases.
+        plain = token.strip('"')
+        if not plain:
+            continue
+        needle = f"%{plain}%"
+        append(
+            "(i.name LIKE ? COLLATE NOCASE OR COALESCE(i.collector_number, a.collector_number) LIKE ? COLLATE NOCASE OR EXISTS (SELECT 1 FROM card_aliases ca WHERE ca.scryfall_id = i.scryfall_id AND ca.alias LIKE ? COLLATE NOCASE))",
+            [needle, needle, needle], negated,
+        )
+    return where, args, order_override, direction_override
+
+
+def inventory_rows(search: str, owner_filter: str, finish_filter: str, sort_key: str, direction: str, type_filter: str = "", color_filter: str = "", location_filter: str = "", vending_filter: str = ""):
     prices = get_tcg_prices()
     conn = connect_inventory()
     join_sql = attach_art_join(conn)
 
-    where = []
-    args: list[Any] = []
-    if search:
-        where.append("(i.name LIKE ? COLLATE NOCASE OR COALESCE(i.collector_number, a.collector_number) LIKE ? COLLATE NOCASE OR EXISTS (SELECT 1 FROM card_aliases ca WHERE ca.scryfall_id = i.scryfall_id AND ca.alias LIKE ? COLLATE NOCASE))")
-        needle = f"%{search}%"
-        args.extend([needle, needle, needle])
+    where, args, query_order, query_direction = parse_scryfall_search(search)
+    if query_order:
+        sort_key = query_order
+    if query_direction:
+        direction = query_direction
     if owner_filter:
         where.append("IFNULL(i.owner, 'Me') = ?")
         args.append(owner_filter)
@@ -893,12 +1089,24 @@ def inventory_rows(search: str, owner_filter: str, finish_filter: str, sort_key:
     if location_filter:
         where.append("COALESCE(i.location, 'Free') = ? COLLATE NOCASE")
         args.append(location_filter)
+    if vending_filter == "yes":
+        where.append("COALESCE(i.for_vending,0) = 1")
+    elif vending_filter == "no":
+        where.append("COALESCE(i.for_vending,0) = 0")
     where_sql = "WHERE " + " AND ".join(where) if where else ""
 
     sort_key = sort_key if sort_key in SORTS else "date"
     direction_sql = "ASC" if direction == "asc" else "DESC"
     price_sort = sort_key in {"normal", "foil", "price", "value"}
     sql_sort = SORTS[sort_key] if not price_sort else "i.scan_time"
+    if sort_key == "set":
+        order_sql = (
+            f"COALESCE(i.set_code, '') COLLATE NOCASE {direction_sql}, "
+            f"CAST(COALESCE(i.collector_number, a.collector_number, '0') AS INTEGER) {direction_sql}, "
+            f"COALESCE(CAST(COALESCE(i.collector_number, a.collector_number) AS TEXT), '') COLLATE NOCASE {direction_sql}"
+        )
+    else:
+        order_sql = f"{sql_sort} {direction_sql}"
 
     query = f"""
         SELECT i.id, i.scryfall_id, i.name, i.set_code, i.rarity,
@@ -912,14 +1120,14 @@ def inventory_rows(search: str, owner_filter: str, finish_filter: str, sort_key:
                     NULLIF(TRIM(m.tcgplayer_id), '')
                  ) AS tcgplayer_id,
                COALESCE(i.location, 'Free') AS location,
-               i.deck_id,
+               i.deck_id, COALESCE(i.for_vending, 0) AS for_vending,
                cm.type_line, cm.colors_text, cm.mana_value, cm.oracle_text, cm.oracle_id, cm.legalities_json, cm.updated_at AS metadata_updated_at,
                COALESCE((SELECT GROUP_CONCAT(ca.alias, ' · ') FROM card_aliases ca WHERE ca.scryfall_id = i.scryfall_id), '') AS alternate_names
         FROM inventory i
         {join_sql}
         LEFT JOIN card_metadata cm ON cm.scryfall_id = i.scryfall_id
         {where_sql}
-        ORDER BY {sql_sort} {direction_sql}
+        ORDER BY {order_sql}, i.id ASC
     """
     rows = conn.execute(query, args).fetchall()
 
@@ -954,6 +1162,7 @@ def inventory_rows(search: str, owner_filter: str, finish_filter: str, sort_key:
         item = dict(row)
         item["finish"] = normalize_finish(item.get("finish"))
         item["quantity"] = parse_qty(item.get("quantity"))
+        item["for_vending"] = bool(int(item.get("for_vending") or 0))
         normal_price, foil_price, unit_value = card_value(item, prices)
         item["curr_normal"] = normal_price if normal_price else None
         item["curr_foil"] = foil_price if foil_price else None
@@ -1043,7 +1252,8 @@ def insert_or_increment_scan(payload: dict[str, Any]) -> dict[str, Any]:
             """
             SELECT id, quantity FROM inventory
             WHERE scryfall_id = ? AND owner = ? AND IFNULL(NULLIF(finish,''),'normal') = ?
-              AND COALESCE(location,'Free') = ?
+              AND COALESCE(location,'Free') = ? AND deck_id IS NULL
+              AND COALESCE(for_vending,0) = 0
             ORDER BY id LIMIT 1
             """,
             (scryfall_id, owner, finish, location),
@@ -1065,10 +1275,10 @@ def insert_or_increment_scan(payload: dict[str, Any]) -> dict[str, Any]:
             cur = conn.execute(
                 """
                 INSERT INTO inventory
-                    (scryfall_id, name, set_code, rarity, price, owner, quantity, scan_time, finish, collector_number, tcgplayer_id, location)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (scryfall_id, name, set_code, rarity, price, owner, quantity, scan_time, finish, collector_number, tcgplayer_id, location, for_vending)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (scryfall_id, name, set_code, rarity, price, owner, qty, scan_time, finish, collector_number, tcgplayer_id, location),
+                (scryfall_id, name, set_code, rarity, price, owner, qty, scan_time, finish, collector_number, tcgplayer_id, location, 0),
             )
             row_id = cur.lastrowid
             new_qty = qty
@@ -1432,7 +1642,8 @@ def manual_add():
             existing = conn.execute(
                 """SELECT id, quantity FROM inventory
                    WHERE scryfall_id = ? AND owner = ? AND IFNULL(NULLIF(finish,''),'normal') = ?
-                     AND COALESCE(location,'Free') = ?
+                     AND COALESCE(location,'Free') = ? AND deck_id IS NULL
+                     AND COALESCE(for_vending,0) = 0
                    ORDER BY id LIMIT 1""",
                 (scryfall_id, owner, finish, location),
             ).fetchone()
@@ -1447,10 +1658,10 @@ def manual_add():
         else:
             conn.execute(
                 """INSERT INTO inventory
-                   (scryfall_id,name,set_code,rarity,price,owner,quantity,scan_time,finish,collector_number,tcgplayer_id,location)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   (scryfall_id,name,set_code,rarity,price,owner,quantity,scan_time,finish,collector_number,tcgplayer_id,location,for_vending)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (scryfall_id or None, name, set_code, rarity, price, owner, qty,
-                 datetime.now(timezone.utc).isoformat(), finish, collector_number, tcgplayer_id, location),
+                 datetime.now(timezone.utc).isoformat(), finish, collector_number, tcgplayer_id, location, 0),
             )
         conn.commit()
     except Exception as exc:
@@ -1550,8 +1761,9 @@ def delete_person(person_id: int):
                          AND IFNULL(NULLIF(finish,''),'normal') = ?
                          AND COALESCE(location,'Free') = ?
                          AND IFNULL(deck_id,0) = IFNULL(?,0)
+                         AND COALESCE(for_vending,0) = COALESCE(?,0)
                        ORDER BY id LIMIT 1""",
-                    (target_name, scryfall_id, finish, location, deck_id),
+                    (target_name, scryfall_id, finish, location, deck_id, row["for_vending"]),
                 ).fetchone()
                 qty = int(row["quantity"] or 0)
                 if existing:
@@ -1742,9 +1954,9 @@ def set_counts():
             else:
                 conn.execute("UPDATE inventory SET quantity = ? WHERE id = ?", (qty, row["id"]))
         elif qty > 0:
-            source = conn.execute("SELECT name,set_code,rarity,price,collector_number,tcgplayer_id,location,deck_id FROM inventory WHERE scryfall_id = ? AND owner = ? LIMIT 1", (scryfall_id, owner)).fetchone()
+            source = conn.execute("SELECT name,set_code,rarity,price,collector_number,tcgplayer_id,location,deck_id,for_vending FROM inventory WHERE scryfall_id = ? AND owner = ? LIMIT 1", (scryfall_id, owner)).fetchone()
             if source:
-                conn.execute("""INSERT INTO inventory(scryfall_id,name,set_code,rarity,price,owner,quantity,finish,collector_number,tcgplayer_id,location,deck_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", (scryfall_id, source["name"], source["set_code"], source["rarity"], source["price"], owner, qty, finish, source["collector_number"], source["tcgplayer_id"], source["location"] or "Free", source["deck_id"]))
+                conn.execute("""INSERT INTO inventory(scryfall_id,name,set_code,rarity,price,owner,quantity,finish,collector_number,tcgplayer_id,location,deck_id,for_vending) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", (scryfall_id, source["name"], source["set_code"], source["rarity"], source["price"], owner, qty, finish, source["collector_number"], source["tcgplayer_id"], source["location"] or "Free", source["deck_id"], source["for_vending"]))
     conn.commit()
     conn.close()
     return jsonify({"success": True})
@@ -1759,10 +1971,20 @@ def index():
     type_filter = request.args.get("type", "").strip()
     color_filter = request.args.get("color", "").strip().lower()
     location_filter = request.args.get("location", "").strip()
+    vending_filter = request.args.get("vending", "").strip().lower()
+    if vending_filter not in {"", "yes", "no"}:
+        vending_filter = ""
     if finish_filter not in {"", "normal", "foil"}:
         finish_filter = ""
     sort_key = request.args.get("sort", "date")
     direction = request.args.get("dir", "desc")
+    _, _, query_order, query_direction = parse_scryfall_search(search)
+    if query_order:
+        sort_key = query_order
+    if query_direction:
+        direction = query_direction
+    if sort_key not in SORTS:
+        sort_key = "date"
     if direction not in {"asc", "desc"}:
         direction = "desc"
     view = request.args.get("view", "list")
@@ -1770,9 +1992,9 @@ def index():
         view = "list"
 
     inventory, visible_owner_totals, visible_owner_counts, visible_total, visible_finish_totals, result_count = inventory_rows(
-        search, owner_filter, finish_filter, sort_key, direction, type_filter, color_filter, location_filter
+        search, owner_filter, finish_filter, sort_key, direction, type_filter, color_filter, location_filter, vending_filter
     )
-    if not (search or owner_filter or finish_filter or type_filter or color_filter or location_filter):
+    if not (search or owner_filter or finish_filter or type_filter or color_filter or location_filter or vending_filter):
         # Nothing is filtered, so the result above already IS the full inventory.
         all_inventory, owner_totals, owner_counts, grand_total, global_finish_totals = (
             inventory, visible_owner_totals, visible_owner_counts, visible_total, visible_finish_totals
@@ -1782,6 +2004,7 @@ def index():
 
     conn = connect_inventory()
     owners = active_people(conn)
+    decks = conn.execute("SELECT id, name FROM decklists ORDER BY name COLLATE NOCASE").fetchall()
     total_rows = conn.execute("SELECT COUNT(*) FROM inventory").fetchone()[0]
     total_cards = conn.execute("SELECT COALESCE(SUM(IFNULL(quantity,1)),0) FROM inventory").fetchone()[0]
     locations = [r[0] for r in conn.execute("SELECT DISTINCT COALESCE(location, 'Free') FROM inventory ORDER BY COALESCE(location, 'Free') COLLATE NOCASE").fetchall()]
@@ -1807,7 +2030,9 @@ def index():
         selected_type=type_filter,
         selected_color=color_filter,
         selected_location=location_filter,
+        selected_vending=vending_filter,
         locations=locations,
+        decks=decks,
         search=search,
         sort_key=sort_key,
         direction=direction,
@@ -1834,7 +2059,7 @@ def update_inventory():
         return jsonify({"success": False, "error": "Invalid id"}), 400
     field = data.get("field")
     value = data.get("value")
-    if field not in {"quantity", "owner", "finish", "location"}:
+    if field not in {"quantity", "owner", "finish", "location", "for_vending", "deck_id"}:
         return jsonify({"success": False, "error": "Invalid field"}), 400
     if field == "quantity":
         value = parse_qty(value)
@@ -1850,19 +2075,141 @@ def update_inventory():
         value = normalize_finish(value)
     elif field == "location":
         value = str(value or "Free").strip()[:120] or "Free"
+    elif field == "for_vending":
+        if value in (True, 1, "1", "true", "yes", "on"):
+            value = 1
+        elif value in (False, 0, "0", "false", "no", "off"):
+            value = 0
+        else:
+            return jsonify({"success": False, "error": "Vending flag must be on or off."}), 400
+    elif field == "deck_id":
+        if value in (None, "", "none", "unassigned"):
+            value = None
+        else:
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                return jsonify({"success": False, "error": "Invalid deck."}), 400
 
     conn = connect_inventory()
-    if field == "location":
-        deck_row = conn.execute("SELECT id FROM decklists WHERE name = ? COLLATE NOCASE ORDER BY updated_at DESC LIMIT 1", (value,)).fetchone()
-        conn.execute("UPDATE inventory SET location = ?, deck_id = ? WHERE id = ?", (value, int(deck_row[0]) if deck_row else None, item_id))
-    else:
-        conn.execute(f"UPDATE inventory SET {field} = ? WHERE id = ?", (value, item_id))
-    updated = conn.total_changes
-    conn.commit()
-    conn.close()
+    try:
+        if field == "owner":
+            updated = conn.execute("UPDATE inventory SET owner=? WHERE id=?", (value, item_id)).rowcount
+        elif field == "deck_id":
+            if value is not None and not conn.execute("SELECT 1 FROM decklists WHERE id=?", (value,)).fetchone():
+                return jsonify({"success": False, "error": "Deck not found."}), 404
+            if value is None:
+                updated = conn.execute("UPDATE inventory SET deck_id=NULL WHERE id=?", (item_id,)).rowcount
+            else:
+                updated = conn.execute("UPDATE inventory SET deck_id=?, for_vending=0 WHERE id=?", (value, item_id)).rowcount
+        elif field == "for_vending":
+            row = conn.execute("SELECT deck_id FROM inventory WHERE id=?", (item_id,)).fetchone()
+            if not row:
+                return jsonify({"success": False, "error": "Row not found"}), 404
+            if value and row["deck_id"] is not None:
+                return jsonify({"success": False, "error": "Cards assigned to a deck cannot be marked for vending. Unassign them first."}), 400
+            updated = conn.execute("UPDATE inventory SET for_vending=? WHERE id=?", (value, item_id)).rowcount
+        else:
+            updated = conn.execute(f"UPDATE inventory SET {field}=? WHERE id=?", (value, item_id)).rowcount
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
     if not updated:
         return jsonify({"success": False, "error": "Row not found"}), 404
     return jsonify({"success": True})
+
+
+@app.post("/admin/inventory/bulk-update")
+@admin_required
+def bulk_update_inventory():
+    data = request.get_json(silent=True) or {}
+    raw_ids = data.get("ids")
+    if not isinstance(raw_ids, list):
+        return jsonify({"success": False, "error": "Select one or more inventory rows."}), 400
+    ids: list[int] = []
+    seen: set[int] = set()
+    for raw_id in raw_ids:
+        try:
+            item_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if item_id > 0 and item_id not in seen:
+            seen.add(item_id)
+            ids.append(item_id)
+    if not ids:
+        return jsonify({"success": False, "error": "Select one or more inventory rows."}), 400
+    if len(ids) > 5000:
+        return jsonify({"success": False, "error": "Select at most 5,000 rows per bulk operation."}), 400
+
+    assignments: list[str] = []
+    values: list[Any] = []
+    vending_value = None
+    if data.get("for_vending", "unchanged") not in (None, "", "unchanged"):
+        raw_vending = data.get("for_vending")
+        if raw_vending in (True, 1, "1", "true", "yes", "on"):
+            vending_value = 1
+        elif raw_vending in (False, 0, "0", "false", "no", "off"):
+            vending_value = 0
+        else:
+            return jsonify({"success": False, "error": "Choose Mark for vending or Remove from vending."}), 400
+
+    location_supplied = "location" in data and data.get("location") not in (None, "")
+    location_value = str(data.get("location") or "").strip()[:120] if location_supplied else None
+    deck_supplied = "deck_id" in data and data.get("deck_id") not in (None, "", "unchanged")
+    deck_value: int | None = None
+    if deck_supplied:
+        raw_deck = data.get("deck_id")
+        if raw_deck not in ("none", "unassigned", "null"):
+            try:
+                deck_value = int(raw_deck)
+            except (TypeError, ValueError):
+                return jsonify({"success": False, "error": "Invalid deck selection."}), 400
+
+    if not any((vending_value is not None, location_supplied, deck_supplied)):
+        return jsonify({"success": False, "error": "Choose at least one bulk change."}), 400
+    if deck_supplied and deck_value is not None and vending_value == 1:
+        return jsonify({"success": False, "error": "A card cannot be assigned to a deck and marked for vending in the same operation."}), 400
+
+    conn = connect_inventory()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if deck_supplied and deck_value is not None and not conn.execute("SELECT 1 FROM decklists WHERE id=?", (deck_value,)).fetchone():
+            conn.rollback()
+            return jsonify({"success": False, "error": "Selected deck does not exist."}), 400
+        if vending_value == 1 and not (deck_supplied and deck_value is None):
+            placeholders = ",".join("?" for _ in ids)
+            assigned_count = conn.execute(
+                f"SELECT COUNT(*) FROM inventory WHERE id IN ({placeholders}) AND deck_id IS NOT NULL",
+                ids,
+            ).fetchone()[0]
+            if assigned_count:
+                conn.rollback()
+                return jsonify({"success": False, "error": f"{assigned_count} selected row(s) are assigned to decks. Unassign them before marking them for vending."}), 400
+        if location_supplied:
+            assignments.append("location=?")
+            values.append(location_value or "Free")
+        if deck_supplied:
+            assignments.append("deck_id=?")
+            values.append(deck_value)
+        if deck_supplied and deck_value is not None:
+            # Assigning to a deck always removes sale eligibility.
+            assignments.append("for_vending=0")
+        elif vending_value is not None:
+            assignments.append("for_vending=?")
+            values.append(vending_value)
+        placeholders = ",".join("?" for _ in ids)
+        cur = conn.execute(f"UPDATE inventory SET {', '.join(assignments)} WHERE id IN ({placeholders})", values + ids)
+        conn.commit()
+        updated = cur.rowcount
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return jsonify({"success": True, "updated": updated, "selected": len(ids)})
 
 
 @app.post("/admin/move_quantity")
@@ -1887,8 +2234,6 @@ def move_quantity():
             return jsonify({"success": False, "error": "Inventory row not found."}), 404
         source_qty = int(row["quantity"] or 0)
         source_location = str(row["location"] or "Free")
-        destination_deck_row = conn.execute("SELECT id FROM decklists WHERE name = ? COLLATE NOCASE ORDER BY updated_at DESC LIMIT 1", (destination,)).fetchone()
-        destination_deck_id = int(destination_deck_row[0]) if destination_deck_row else None
         if move_qty > source_qty:
             conn.rollback()
             return jsonify({"success": False, "error": f"You only have {source_qty} copy/copies in {source_location}."}), 400
@@ -1902,20 +2247,22 @@ def move_quantity():
             target = conn.execute(
                 """SELECT id, quantity FROM inventory
                    WHERE scryfall_id = ? AND owner = ? AND IFNULL(NULLIF(finish,''),'normal') = ?
-                     AND COALESCE(location,'Free') = ? AND id <> ? LIMIT 1""",
-                (row["scryfall_id"], row["owner"], normalize_finish(row["finish"]), destination, item_id),
+                     AND COALESCE(location,'Free') = ? AND IFNULL(deck_id,0)=IFNULL(?,0)
+                     AND COALESCE(for_vending,0)=COALESCE(?,0) AND id <> ? LIMIT 1""",
+                (row["scryfall_id"], row["owner"], normalize_finish(row["finish"]), destination, row["deck_id"], row["for_vending"], item_id),
             ).fetchone()
         else:
             target = conn.execute(
                 """SELECT id, quantity FROM inventory
                    WHERE scryfall_id IS NULL AND name = ? COLLATE NOCASE AND set_code = ? COLLATE NOCASE
                      AND COALESCE(collector_number,'') = COALESCE(?, '') AND owner = ?
-                     AND IFNULL(NULLIF(finish,''),'normal') = ? AND COALESCE(location,'Free') = ? AND id <> ? LIMIT 1""",
-                (row["name"], row["set_code"], row["collector_number"], row["owner"], normalize_finish(row["finish"]), destination, item_id),
+                     AND IFNULL(NULLIF(finish,''),'normal') = ? AND COALESCE(location,'Free') = ?
+                     AND IFNULL(deck_id,0)=IFNULL(?,0) AND COALESCE(for_vending,0)=COALESCE(?,0) AND id <> ? LIMIT 1""",
+                (row["name"], row["set_code"], row["collector_number"], row["owner"], normalize_finish(row["finish"]), destination, row["deck_id"], row["for_vending"], item_id),
             ).fetchone()
 
         if move_qty == source_qty:
-            conn.execute("UPDATE inventory SET location = ?, deck_id = ? WHERE id = ?", (destination, destination_deck_id, item_id))
+            conn.execute("UPDATE inventory SET location = ? WHERE id = ?", (destination, item_id))
         else:
             conn.execute("UPDATE inventory SET quantity = quantity - ? WHERE id = ?", (move_qty, item_id))
             if target:
@@ -1923,10 +2270,10 @@ def move_quantity():
             else:
                 conn.execute(
                     """INSERT INTO inventory
-                       (scryfall_id,name,set_code,rarity,price,owner,quantity,scan_time,finish,collector_number,tcgplayer_id,location,deck_id)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       (scryfall_id,name,set_code,rarity,price,owner,quantity,scan_time,finish,collector_number,tcgplayer_id,location,deck_id,for_vending)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (row["scryfall_id"], row["name"], row["set_code"], row["rarity"], row["price"], row["owner"], move_qty,
-                     row["scan_time"], normalize_finish(row["finish"]), row["collector_number"], row["tcgplayer_id"], destination, destination_deck_id),
+                     row["scan_time"], normalize_finish(row["finish"]), row["collector_number"], row["tcgplayer_id"], destination, row["deck_id"], row["for_vending"]),
                 )
         conn.commit()
         return jsonify({"success": True, "message": f"Moved {move_qty} card(s) to {destination}."})
@@ -2014,14 +2361,21 @@ def import_csv():
         collector_number = get(row, "collector_number", "collector number", "card number", "number", default="")
         tcgplayer_id = get(row, "tcgplayer_id", "tcgplayer id", "tcgplayer product id", "product id", default="")
         location = location_override or str(get(row, "location", "where", "binder name", default="Free") or "Free").strip()[:120] or "Free"
+        raw_vending = get(row, "for_vending", "for vending", "vending")
+        if raw_vending is None:
+            # Storage location no longer implies sale eligibility. Legacy Free rows
+            # are backfilled once by migrate_db(); new imports opt in explicitly.
+            for_vending = 0
+        else:
+            for_vending = int(str(raw_vending).strip().lower() in {"1", "true", "yes", "y", "on", "available"})
         conn.execute(
             """
             INSERT INTO inventory
-                (scryfall_id, name, set_code, rarity, price, owner, quantity, scan_time, finish, collector_number, tcgplayer_id, location)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (scryfall_id, name, set_code, rarity, price, owner, quantity, scan_time, finish, collector_number, tcgplayer_id, location, for_vending)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (str(scryfall_id), str(name), set_code, str(rarity), str(price), owner, qty, str(scan_time), finish,
-             str(collector_number).strip() or None, str(tcgplayer_id).strip() or None, location),
+             str(collector_number).strip() or None, str(tcgplayer_id).strip() or None, location, for_vending),
         )
         count += 1
     conn.commit()
@@ -2041,14 +2395,14 @@ def export_csv():
     writer = csv.writer(out)
     writer.writerow([
         "id", "scryfall_id", "name", "set_code", "rarity", "scanned_price", "finish", "quantity", "owner",
-        "collector_number", "tcgplayer_id", "location", "current_normal", "current_foil", "current_unit_value",
+        "collector_number", "tcgplayer_id", "location", "for_vending", "current_normal", "current_foil", "current_unit_value",
         "current_total_value", "scan_time",
     ])
     for item in inventory:
         writer.writerow([
             item.get("id"), item.get("scryfall_id"), item.get("name"), item.get("set_code"), item.get("rarity"),
             item.get("scanned_price"), item.get("finish"), item.get("quantity"), item.get("owner"),
-            item.get("collector_number"), item.get("tcgplayer_id"), item.get("location"), item.get("curr_normal"), item.get("curr_foil"),
+            item.get("collector_number"), item.get("tcgplayer_id"), item.get("location"), int(bool(item.get("for_vending"))), item.get("curr_normal"), item.get("curr_foil"),
             item.get("calculated_unit_price"), item.get("calculated_total_value"), item.get("scan_time"),
         ])
     return send_file(
@@ -2472,64 +2826,96 @@ def save_deck(name: str, source: str, source_url: str|None, cards:list[dict[str,
     return deck_id
 
 
-def deck_comparison(deck_id:int, owner:str, fuzzy: bool = False)->tuple[list[dict[str,Any]],dict[str,Any]]:
-    conn=connect_inventory()
-    deck=conn.execute("SELECT name FROM decklists WHERE id=?",(deck_id,)).fetchone()
+def deck_comparison(deck_id: int, owner: str, fuzzy: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    conn = connect_inventory()
+    deck = conn.execute("SELECT name FROM decklists WHERE id=?", (deck_id,)).fetchone()
     if not deck:
-        conn.close(); return [],{"required":0,"owned":0,"assigned":0,"free_available":0,"missing":0,"complete":False,"fuzzy":fuzzy}
-    deck_location=str(deck["name"] or f"Deck {deck_id}").strip()
-    cards=conn.execute(
-        "SELECT dc.id,dc.name,dc.quantity,dc.scryfall_id,dc.set_code,dc.collector_number,dc.category,dc.finish,dc.tcgplayer_id,cm.oracle_id AS card_oracle_id FROM deck_cards dc LEFT JOIN card_metadata cm ON cm.scryfall_id=dc.scryfall_id WHERE dc.deck_id=? ORDER BY CASE WHEN LOWER(COALESCE(dc.category,''))='commander' THEN 0 ELSE 1 END, dc.category, dc.name COLLATE NOCASE, dc.id",
+        conn.close()
+        return [], {"required": 0, "owned": 0, "assigned": 0, "free_available": 0, "missing": 0, "complete": False, "fuzzy": fuzzy}
+    cards = conn.execute(
+        """SELECT dc.id,dc.name,dc.quantity,dc.scryfall_id,dc.set_code,dc.collector_number,
+                  dc.category,dc.finish,dc.tcgplayer_id,cm.oracle_id AS card_oracle_id
+           FROM deck_cards dc LEFT JOIN card_metadata cm ON cm.scryfall_id=dc.scryfall_id
+           WHERE dc.deck_id=?
+           ORDER BY CASE WHEN LOWER(COALESCE(dc.category,''))='commander' THEN 0 ELSE 1 END,
+                    dc.category, dc.name COLLATE NOCASE, dc.id""",
         (deck_id,),
     ).fetchall()
-    inv=conn.execute(
-        """SELECT i.scryfall_id,i.name,i.set_code,i.collector_number,i.finish,COALESCE(i.location,'Free') location,
-                  i.quantity qty,cm.oracle_id AS oracle_id
+    inv = conn.execute(
+        """SELECT i.scryfall_id,i.name,i.set_code,i.collector_number,i.finish,
+                  i.deck_id, COALESCE(i.for_vending,0) AS for_vending,
+                  SUM(IFNULL(i.quantity,1)) AS qty,cm.oracle_id AS oracle_id
            FROM inventory i LEFT JOIN card_metadata cm ON cm.scryfall_id=i.scryfall_id
-           WHERE i.owner=? AND COALESCE(i.location,'Free') IN ('Free', ?)
-           GROUP BY i.scryfall_id,i.name,i.set_code,i.collector_number,i.finish,COALESCE(i.location,'Free'),cm.oracle_id""",
-        (owner,deck_location),
+           WHERE i.owner=? AND (i.deck_id=? OR i.deck_id IS NULL)
+           GROUP BY i.scryfall_id,i.name,i.set_code,i.collector_number,i.finish,
+                    i.deck_id,COALESCE(i.for_vending,0),cm.oracle_id""",
+        (owner, deck_id),
     ).fetchall()
     conn.close()
 
-    free_exact: dict[tuple[str,str], int] = {}
-    assigned_exact: dict[tuple[str,str], int] = {}
-    free_name: dict[tuple[str,str], int] = {}
-    assigned_name: dict[tuple[str,str], int] = {}
-    free_fuzzy: dict[str,int] = {}
-    assigned_fuzzy: dict[str,int] = {}
+    free_exact: dict[tuple[str, str], int] = {}
+    assigned_exact: dict[tuple[str, str], int] = {}
+    free_name: dict[tuple[str, str], int] = {}
+    assigned_name: dict[tuple[str, str], int] = {}
+    free_fuzzy: dict[str, int] = {}
+    assigned_fuzzy: dict[str, int] = {}
     for r in inv:
-        finish=normalize_finish(r["finish"]); qty=int(r["qty"] or 0); sid=str(r["scryfall_id"] or "").strip(); location=str(r["location"] or "Free")
-        exact=assigned_exact if location.casefold()==deck_location.casefold() else free_exact
-        by_name=assigned_name if location.casefold()==deck_location.casefold() else free_name
-        fuzzy_map=assigned_fuzzy if location.casefold()==deck_location.casefold() else free_fuzzy
-        if sid: exact[(sid,finish)]=exact.get((sid,finish),0)+qty
-        name_key=(_norm_card_name(r["name"]),finish)
-        by_name[name_key]=by_name.get(name_key,0)+qty
-        fuzzy_key=str(r["oracle_id"] or "").strip() or _norm_card_name(r["name"])
-        fuzzy_map[fuzzy_key]=fuzzy_map.get(fuzzy_key,0)+qty
+        finish = normalize_finish(r["finish"])
+        qty = int(r["qty"] or 0)
+        sid = str(r["scryfall_id"] or "").strip()
+        is_assigned = r["deck_id"] is not None and int(r["deck_id"]) == deck_id
+        exact = assigned_exact if is_assigned else free_exact
+        by_name = assigned_name if is_assigned else free_name
+        fuzzy_map = assigned_fuzzy if is_assigned else free_fuzzy
+        if sid:
+            exact[(sid, finish)] = exact.get((sid, finish), 0) + qty
+        name_key = (_norm_card_name(r["name"]), finish)
+        by_name[name_key] = by_name.get(name_key, 0) + qty
+        fuzzy_key = str(r["oracle_id"] or "").strip() or _norm_card_name(r["name"])
+        fuzzy_map[fuzzy_key] = fuzzy_map.get(fuzzy_key, 0) + qty
 
-    out=[]; req=have=assigned_total=free_total=missing=0
+    out = []
+    req = have = assigned_total = free_total = missing = 0
     for r in cards:
-        required=int(r["quantity"] or 0); finish=normalize_finish(r["finish"]); sid=str(r["scryfall_id"] or "").strip()
+        required = int(r["quantity"] or 0)
+        finish = normalize_finish(r["finish"])
+        sid = str(r["scryfall_id"] or "").strip()
         if fuzzy:
-            fuzzy_key=str(r["card_oracle_id"] or "").strip() or _norm_card_name(r["name"])
-            already=assigned_fuzzy.get(fuzzy_key,0); free_av=free_fuzzy.get(fuzzy_key,0)
-            assigned=min(required,already); free_used=min(max(0,required-assigned),free_av)
-            h=assigned+free_used; m=max(0,required-h)
-            assigned_fuzzy[fuzzy_key]=max(0,already-assigned); free_fuzzy[fuzzy_key]=max(0,free_av-free_used)
+            fuzzy_key = str(r["card_oracle_id"] or "").strip() or _norm_card_name(r["name"])
+            already = assigned_fuzzy.get(fuzzy_key, 0)
+            free_av = free_fuzzy.get(fuzzy_key, 0)
+            assigned = min(required, already)
+            free_used = min(max(0, required - assigned), free_av)
+            h = assigned + free_used
+            m = max(0, required - h)
+            assigned_fuzzy[fuzzy_key] = max(0, already - assigned)
+            free_fuzzy[fuzzy_key] = max(0, free_av - free_used)
         else:
-            key=(sid,finish) if sid else None
-            already=assigned_exact.get(key,0) if key else assigned_name.get((_norm_card_name(r["name"]),finish),0)
-            free_av=free_exact.get(key,0) if key else free_name.get((_norm_card_name(r["name"]),finish),0)
-            assigned=min(required,already); free_used=min(max(0,required-assigned),free_av)
-            h=assigned+free_used; m=max(0,required-h)
+            key = (sid, finish) if sid else None
+            already = assigned_exact.get(key, 0) if key else assigned_name.get((_norm_card_name(r["name"]), finish), 0)
+            free_av = free_exact.get(key, 0) if key else free_name.get((_norm_card_name(r["name"]), finish), 0)
+            assigned = min(required, already)
+            free_used = min(max(0, required - assigned), free_av)
+            h = assigned + free_used
+            m = max(0, required - h)
             if key:
-                assigned_exact[key]=max(0,assigned_exact.get(key,0)-assigned); free_exact[key]=max(0,free_exact.get(key,0)-free_used)
-            nk=(_norm_card_name(r["name"]),finish); assigned_name[nk]=max(0,assigned_name.get(nk,0)-assigned); free_name[nk]=max(0,free_name.get(nk,0)-free_used)
-        req+=required; have+=h; assigned_total+=assigned; free_total+=free_av; missing+=m
-        out.append({"id":r["id"],"name":r["name"],"category":r["category"] or "Mainboard","required":required,"owned":h,"assigned":assigned,"free_available":free_av,"missing":m,"scryfall_id":r["scryfall_id"],"set_code":r["set_code"],"collector_number":r["collector_number"],"finish":finish,"tcgplayer_id":r["tcgplayer_id"],"image_url":scryfall_image_url(r["scryfall_id"]),"fuzzy":fuzzy})
-    return out,{"required":req,"owned":have,"assigned":assigned_total,"free_available":free_total,"missing":missing,"complete":missing==0,"fuzzy":fuzzy}
+                assigned_exact[key] = max(0, assigned_exact.get(key, 0) - assigned)
+                free_exact[key] = max(0, free_exact.get(key, 0) - free_used)
+            nk = (_norm_card_name(r["name"]), finish)
+            assigned_name[nk] = max(0, assigned_name.get(nk, 0) - assigned)
+            free_name[nk] = max(0, free_name.get(nk, 0) - free_used)
+        req += required
+        have += h
+        assigned_total += assigned
+        free_total += free_av
+        missing += m
+        out.append({"id": r["id"], "name": r["name"], "category": r["category"] or "Mainboard",
+                    "required": required, "owned": h, "assigned": assigned, "free_available": free_av,
+                    "missing": m, "scryfall_id": r["scryfall_id"], "set_code": r["set_code"],
+                    "collector_number": r["collector_number"], "finish": finish, "tcgplayer_id": r["tcgplayer_id"],
+                    "image_url": scryfall_image_url(r["scryfall_id"]), "fuzzy": fuzzy})
+    return out, {"required": req, "owned": have, "assigned": assigned_total, "free_available": free_total,
+                 "missing": missing, "complete": missing == 0, "fuzzy": fuzzy}
 
 
 @app.get("/decks")
@@ -2562,9 +2948,10 @@ def decks_import():
         if add_inventory and not session.get("is_admin"):
             raise PermissionError("Adding an imported deck directly to inventory requires an admin login.")
         if add_inventory:
-            # When a saved deck is also added to inventory, default the location to the deck name.
-            # Setting an explicit non-Free location still honors that value.
-            target_location = "Free" if store_free else (location if location and location.casefold() != "free" else deck_name)
+            # Physical storage is independent of deck membership. The checkbox decides
+            # whether imported copies stay in the unassigned pool or are assigned to this deck.
+            target_location = location or "Free"
+            target_deck_id = None if store_free else deck_db_id
             conn=connect_inventory(); ensure_people_and_auth(conn)
             if not conn.execute("SELECT 1 FROM people WHERE name=? AND active=1",(owner,)).fetchone():
                 raise ValueError(f"Owner '{owner}' is not active")
@@ -2575,8 +2962,9 @@ def decks_import():
                 if sid:
                     existing=conn.execute(
                         """SELECT id,price,tcgplayer_id FROM inventory WHERE scryfall_id=? AND owner=?
-                           AND IFNULL(NULLIF(finish,''),'normal')=? AND COALESCE(location,'Free')=? LIMIT 1""",
-                        (sid,owner,finish,target_location),
+                           AND IFNULL(NULLIF(finish,''),'normal')=? AND COALESCE(location,'Free')=?
+                           AND IFNULL(deck_id,0)=IFNULL(?,0) AND COALESCE(for_vending,0)=0 LIMIT 1""",
+                        (sid,owner,finish,target_location,target_deck_id),
                     ).fetchone()
                 tcgplayer_id=_normalize_tcgplayer_id(c.get("tcgplayer_id"))
                 if existing and not tcgplayer_id:
@@ -2588,14 +2976,15 @@ def decks_import():
                 if existing:
                     conn.execute(
                         """UPDATE inventory SET quantity=quantity+?,scan_time=?,price=COALESCE(?,price),
-                           collector_number=COALESCE(?,collector_number),tcgplayer_id=COALESCE(?,tcgplayer_id),deck_id=? WHERE id=?""",
-                        (int(c["quantity"]),now_iso,snapshot_price,c.get("collector_number"),tcgplayer_id,deck_db_id if not store_free and target_location.casefold() != "free" else None,existing["id"])
+                           collector_number=COALESCE(?,collector_number),tcgplayer_id=COALESCE(?,tcgplayer_id),deck_id=?,
+                           for_vending=CASE WHEN ? IS NOT NULL THEN 0 ELSE for_vending END WHERE id=?""",
+                        (int(c["quantity"]),now_iso,snapshot_price,c.get("collector_number"),tcgplayer_id,target_deck_id,target_deck_id,existing["id"])
                     )
                 else:
                     conn.execute(
-                        """INSERT INTO inventory(scryfall_id,name,set_code,rarity,price,owner,quantity,scan_time,finish,collector_number,tcgplayer_id,location,deck_id)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (sid,c["name"],c.get("set_code") or "",c.get("rarity") or "Common",snapshot_price or "0.00",owner,int(c["quantity"]),now_iso,finish,c.get("collector_number"),tcgplayer_id,target_location,deck_db_id if not store_free and target_location.casefold() != "free" else None)
+                        """INSERT INTO inventory(scryfall_id,name,set_code,rarity,price,owner,quantity,scan_time,finish,collector_number,tcgplayer_id,location,deck_id,for_vending)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (sid,c["name"],c.get("set_code") or "",c.get("rarity") or "Common",snapshot_price or "0.00",owner,int(c["quantity"]),now_iso,finish,c.get("collector_number"),tcgplayer_id,target_location,target_deck_id,0)
                     )
             conn.commit(); conn.close()
         return redirect(url_for("deck_view",deck_id=deck_db_id,owner=owner,message=f"Imported {deck_name}."))
@@ -2706,12 +3095,12 @@ def _deck_available_free_rows(conn: sqlite3.Connection, deck_card: sqlite3.Row, 
             r=conn.execute("SELECT oracle_id FROM card_metadata WHERE scryfall_id=?",(sid,)).fetchone()
             oracle_id=str(r[0] or "").strip() if r else None
         if oracle_id:
-            return conn.execute("""SELECT i.* FROM inventory i LEFT JOIN card_metadata cm ON cm.scryfall_id=i.scryfall_id WHERE i.owner=? AND COALESCE(i.location,'Free')='Free' AND cm.oracle_id=? ORDER BY i.id""",(owner,oracle_id)).fetchall()
-        return conn.execute("SELECT * FROM inventory WHERE owner=? AND COALESCE(location,'Free')='Free' AND name=? COLLATE NOCASE ORDER BY id",(owner,deck_card["name"])).fetchall()
+            return conn.execute("""SELECT i.* FROM inventory i LEFT JOIN card_metadata cm ON cm.scryfall_id=i.scryfall_id WHERE i.owner=? AND i.deck_id IS NULL AND cm.oracle_id=? ORDER BY i.id""",(owner,oracle_id)).fetchall()
+        return conn.execute("SELECT * FROM inventory WHERE owner=? AND deck_id IS NULL AND name=? COLLATE NOCASE ORDER BY id",(owner,deck_card["name"])).fetchall()
     if sid:
-        rows=conn.execute("""SELECT * FROM inventory WHERE owner=? AND COALESCE(location,'Free')='Free' AND scryfall_id=? AND IFNULL(NULLIF(finish,''),'normal')=? ORDER BY id""",(owner,sid,finish)).fetchall()
+        rows=conn.execute("""SELECT * FROM inventory WHERE owner=? AND deck_id IS NULL AND scryfall_id=? AND IFNULL(NULLIF(finish,''),'normal')=? ORDER BY id""",(owner,sid,finish)).fetchall()
         if rows: return rows
-    return conn.execute("""SELECT * FROM inventory WHERE owner=? AND COALESCE(location,'Free')='Free' AND name=? COLLATE NOCASE AND IFNULL(NULLIF(finish,''),'normal')=? ORDER BY id""",(owner,deck_card["name"],finish)).fetchall()
+    return conn.execute("""SELECT * FROM inventory WHERE owner=? AND deck_id IS NULL AND name=? COLLATE NOCASE AND IFNULL(NULLIF(finish,''),'normal')=? ORDER BY id""",(owner,deck_card["name"],finish)).fetchall()
 
 
 @app.post("/decks/<int:deck_id>/assign-free")
@@ -2726,7 +3115,6 @@ def assign_free_to_deck(deck_id:int):
         conn.close(); return redirect(url_for("decks_page",message="Deck not found."))
     if owner not in owners:
         owner=owners[0] if owners else "Me"
-    location=str(deck["name"] or f"Deck {deck_id}").strip()[:120]
     moved=0; requested=0
     cards=conn.execute("SELECT * FROM deck_cards WHERE deck_id=? ORDER BY id",(deck_id,)).fetchall()
     try:
@@ -2740,25 +3128,25 @@ def assign_free_to_deck(deck_id:int):
                 if oracle_id:
                     row=conn.execute(
                         """SELECT COALESCE(SUM(i.quantity),0) q FROM inventory i LEFT JOIN card_metadata cm ON cm.scryfall_id=i.scryfall_id
-                           WHERE i.owner=? AND COALESCE(i.location,'Free')=? AND cm.oracle_id=?""",
-                        (owner,location,oracle_id),
+                           WHERE i.owner=? AND i.deck_id=? AND cm.oracle_id=?""",
+                        (owner,deck_id,oracle_id),
                     ).fetchone()
                 else:
                     row=conn.execute(
-                        """SELECT COALESCE(SUM(quantity),0) q FROM inventory WHERE owner=? AND COALESCE(location,'Free')=? AND name=? COLLATE NOCASE""",
-                        (owner,location,dc["name"]),
+                        """SELECT COALESCE(SUM(quantity),0) q FROM inventory WHERE owner=? AND deck_id=? AND name=? COLLATE NOCASE""",
+                        (owner,deck_id,dc["name"]),
                     ).fetchone()
             elif sid:
                 row=conn.execute(
-                    """SELECT COALESCE(SUM(quantity),0) q FROM inventory WHERE owner=? AND COALESCE(location,'Free')=?
+                    """SELECT COALESCE(SUM(quantity),0) q FROM inventory WHERE owner=? AND deck_id=?
                        AND scryfall_id=? AND IFNULL(NULLIF(finish,''),'normal')=?""",
-                    (owner,location,sid,finish),
+                    (owner,deck_id,sid,finish),
                 ).fetchone()
             else:
                 row=conn.execute(
-                    """SELECT COALESCE(SUM(quantity),0) q FROM inventory WHERE owner=? AND COALESCE(location,'Free')=?
+                    """SELECT COALESCE(SUM(quantity),0) q FROM inventory WHERE owner=? AND deck_id=?
                        AND name=? COLLATE NOCASE AND IFNULL(NULLIF(finish,''),'normal')=?""",
-                    (owner,location,dc["name"],finish),
+                    (owner,deck_id,dc["name"],finish),
                 ).fetchone()
             already=int(row["q"] or 0)
             need=max(0,int(dc["quantity"] or 0)-already)
@@ -2770,33 +3158,33 @@ def assign_free_to_deck(deck_id:int):
                 if source_qty<=0: continue
                 take=min(need,source_qty)
                 if take==source_qty:
-                    conn.execute("UPDATE inventory SET location=?, deck_id=? WHERE id=?",(location,deck_id,inv["id"]))
+                    conn.execute("UPDATE inventory SET deck_id=?, for_vending=0 WHERE id=?",(deck_id,inv["id"]))
                 else:
                     conn.execute("UPDATE inventory SET quantity=quantity-? WHERE id=?",(take,inv["id"]))
                     target=None
                     if sid:
                         target=conn.execute(
-                            """SELECT id FROM inventory WHERE owner=? AND COALESCE(location,'Free')=? AND scryfall_id=?
-                               AND IFNULL(NULLIF(finish,''),'normal')=? LIMIT 1""",(owner,location,sid,finish)
+                            """SELECT id FROM inventory WHERE owner=? AND deck_id=? AND COALESCE(location,'Free')=? AND scryfall_id=?
+                               AND IFNULL(NULLIF(finish,''),'normal')=? AND COALESCE(for_vending,0)=0 LIMIT 1""",(owner,deck_id,inv["location"],sid,finish)
                         ).fetchone()
                     else:
                         target=conn.execute(
-                            """SELECT id FROM inventory WHERE owner=? AND COALESCE(location,'Free')=? AND name=? COLLATE NOCASE
-                               AND IFNULL(NULLIF(finish,''),'normal')=? LIMIT 1""",(owner,location,dc["name"],finish)
+                            """SELECT id FROM inventory WHERE owner=? AND deck_id=? AND COALESCE(location,'Free')=? AND name=? COLLATE NOCASE
+                               AND IFNULL(NULLIF(finish,''),'normal')=? AND COALESCE(for_vending,0)=0 LIMIT 1""",(owner,deck_id,inv["location"],dc["name"],finish)
                         ).fetchone()
                     if target:
                         conn.execute("UPDATE inventory SET quantity=quantity+? WHERE id=?",(take,target["id"]))
                     else:
                         conn.execute(
-                            """INSERT INTO inventory(scryfall_id,name,set_code,rarity,price,owner,quantity,scan_time,finish,collector_number,tcgplayer_id,location,deck_id)
-                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                            (inv["scryfall_id"],inv["name"],inv["set_code"],inv["rarity"],inv["price"],owner,take,inv["scan_time"],finish,inv["collector_number"],inv["tcgplayer_id"],location,deck_id),
+                            """INSERT INTO inventory(scryfall_id,name,set_code,rarity,price,owner,quantity,scan_time,finish,collector_number,tcgplayer_id,location,deck_id,for_vending)
+                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0)""",
+                            (inv["scryfall_id"],inv["name"],inv["set_code"],inv["rarity"],inv["price"],owner,take,inv["scan_time"],finish,inv["collector_number"],inv["tcgplayer_id"],inv["location"] or "Free",deck_id),
                         )
                 moved+=take; need-=take
         conn.commit()
-        message=f"Moved {moved} card(s) from Free into {location}."
+        message=f"Assigned {moved} card(s) from the unassigned pool to this deck. Physical storage locations were preserved."
         if moved < requested:
-            message += f" {requested-moved} still need available Free copies matching the deck."
+            message += f" {requested-moved} still need unassigned copies matching the deck."
     except Exception as exc:
         conn.rollback(); message=f"Could not assign cards: {exc}"
     finally:
@@ -2945,39 +3333,25 @@ def enrich_metadata():
 @app.post("/decks/<int:deck_id>/delete")
 @admin_required
 def delete_deck(deck_id: int):
-    conn=connect_inventory()
+    conn = connect_inventory()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        deck=conn.execute("SELECT id,name FROM decklists WHERE id=?",(deck_id,)).fetchone()
+        deck = conn.execute("SELECT id,name FROM decklists WHERE id=?", (deck_id,)).fetchone()
         if not deck:
-            conn.rollback(); return redirect(url_for("decks_page",message="Deck not found."))
-        deck_name=str(deck["name"] or "").strip()
-        rows=conn.execute("SELECT * FROM inventory WHERE deck_id=? OR (deck_id IS NULL AND LOWER(COALESCE(location,''))=LOWER(?) AND LOWER(COALESCE(location,''))<>'free')",(deck_id,deck_name)).fetchall()
-        moved_qty=0
-        for row in rows:
-            qty=int(row["quantity"] or 0)
-            if qty<=0: continue
-            target=conn.execute(
-                """SELECT id FROM inventory WHERE owner=? AND COALESCE(location,'Free')='Free'
-                   AND IFNULL(NULLIF(finish,''),'normal')=?
-                   AND ((scryfall_id IS NOT NULL AND scryfall_id=?) OR (scryfall_id IS NULL AND name=? COLLATE NOCASE)) LIMIT 1""",
-                (row["owner"] or "Me",normalize_finish(row["finish"]),row["scryfall_id"],row["name"]),
-            ).fetchone()
-            if target and int(target["id"])!=int(row["id"]):
-                conn.execute("UPDATE inventory SET quantity=quantity+? WHERE id=?",(qty,target["id"]))
-                conn.execute("DELETE FROM inventory WHERE id=?",(row["id"],))
-            else:
-                conn.execute("UPDATE inventory SET location='Free', deck_id=NULL WHERE id=?",(row["id"],))
-            moved_qty += qty
-        # Inventory rows have already been moved to Free above. Explicitly remove the
-        # saved decklist rows before deleting the parent deck so behavior is deterministic
-        # even on databases created before foreign_keys was enabled.
+            conn.rollback()
+            return redirect(url_for("decks_page", message="Deck not found."))
+        rows = conn.execute("SELECT id,quantity FROM inventory WHERE deck_id=?", (deck_id,)).fetchall()
+        moved_qty = sum(max(0, int(row["quantity"] or 0)) for row in rows)
+        # Unassign copies, preserving physical location, quantity, finish, owner, and sale flag.
+        conn.execute("UPDATE inventory SET deck_id=NULL WHERE deck_id=?", (deck_id,))
         conn.execute("DELETE FROM deck_cards WHERE deck_id=?", (deck_id,))
-        cur=conn.execute("DELETE FROM decklists WHERE id=?",(deck_id,))
+        cur = conn.execute("DELETE FROM decklists WHERE id=?", (deck_id,))
         conn.commit()
-        return redirect(url_for("decks_page",message=(f"Deck deleted. Returned {moved_qty} card(s) to Free. Inventory was preserved." if cur.rowcount else "Deck not found.")))
+        message = f"Deck deleted. Unassigned {moved_qty} inventory copies; physical storage locations were preserved." if cur.rowcount else "Deck not found."
+        return redirect(url_for("decks_page", message=message))
     except Exception as exc:
-        conn.rollback(); return redirect(url_for("decks_page",message=f"Could not delete deck: {exc}"))
+        conn.rollback()
+        return redirect(url_for("decks_page", message=f"Could not delete deck: {exc}"))
     finally:
         conn.close()
 
@@ -2991,7 +3365,7 @@ def vending_export_csv():
         min_value=max(0.0,float(request.args.get("min_value") or 0))
     except ValueError:
         min_value=0.0
-    inventory,*_=inventory_rows(q,owner,"","price","desc","","","Free")
+    inventory,*_=inventory_rows(q,owner,"","price","desc","","","","yes")
     inventory=[i for i in inventory if i["calculated_total_value"]>=min_value] if min_value else inventory
     out=io.StringIO(newline="")
     w=csv.writer(out)
@@ -3008,12 +3382,11 @@ def vending_view():
     try: min_value=max(0.0,float(request.args.get("min_value") or 0))
     except ValueError: min_value=0.0
 
-    # Build autocomplete suggestions from the currently sellable Free inventory,
-    # not from named decks. This includes automatically imported Scryfall printed names.
-    autocomplete_rows,*_=inventory_rows("",owner,"","price","desc","","","Free")
+    # Vending eligibility is independent of physical location and deck assignment.
+    autocomplete_rows,*_=inventory_rows("",owner,"","price","desc","","","","yes")
     search_index=build_inventory_search_index(autocomplete_rows)
 
-    inventory,*_=inventory_rows(q,owner,"","price","desc","","","Free")
+    inventory,*_=inventory_rows(q,owner,"","price","desc","","","","yes")
     inventory=[i for i in inventory if i["calculated_total_value"]>=min_value] if min_value else inventory
     conn=connect_inventory(); owners=active_people(conn); conn.close()
     return render_template("vending.html",inventory=inventory,owners=owners,selected_owner=owner,search=q,min_value=min_value,result_count=len(inventory),inventory_search_index=search_index)
@@ -3022,7 +3395,7 @@ def vending_view():
 @app.get("/vending/labels")
 @vendor_or_admin_required
 def vending_labels():
-    """Render a printer-friendly label sheet for vendor-selected Free cards."""
+    """Render a printer-friendly label sheet for rows explicitly marked for vending."""
     raw_ids = str(request.args.get("ids") or "")
     ordered_ids=[]
     seen=set()
@@ -3047,7 +3420,7 @@ def vending_labels():
     except ValueError:
         start_label=1
 
-    inventory, *_ = inventory_rows("", "", "", "price", "desc", "", "", "Free")
+    inventory, *_ = inventory_rows("", "", "", "price", "desc", "", "", "", "yes")
     by_id={int(i["id"]): i for i in inventory}
     labels=[]
     skipped=[]

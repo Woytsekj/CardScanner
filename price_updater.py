@@ -44,7 +44,8 @@ def connect_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_INV, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=5000")
-    conn.execute("PRAGMA journal_mode=WAL")
+    # WAL mode is initialized by the web app's one-time database migration.
+    # Reissuing PRAGMA journal_mode=WAL here can race the web startup migration.
     return conn
 
 
