@@ -302,15 +302,29 @@ def ensure_people_and_auth(conn: sqlite3.Connection, force: bool = False) -> Non
 def _ensure_people_and_auth(conn: sqlite3.Connection) -> None:
     c = conn.cursor()
     c.execute("""CREATE TABLE IF NOT EXISTS people (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL COLLATE NOCASE UNIQUE, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY COLLATE NOCASE, password_hash TEXT NOT NULL, is_admin INTEGER NOT NULL DEFAULT 1, role TEXT NOT NULL DEFAULT 'admin', is_superadmin INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, last_login_at TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS users (
+        username TEXT PRIMARY KEY COLLATE NOCASE,
+        password_hash TEXT NOT NULL,
+        is_admin INTEGER NOT NULL DEFAULT 1,
+        role TEXT NOT NULL DEFAULT 'admin',
+        is_superadmin INTEGER NOT NULL DEFAULT 0,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        last_login_at TEXT,
+        person_id INTEGER REFERENCES people(id) ON DELETE SET NULL
+    )""")
     for ddl in (
         "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'",
         "ALTER TABLE users ADD COLUMN is_superadmin INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE users ADD COLUMN last_login_at TEXT",
+        "ALTER TABLE users ADD COLUMN person_id INTEGER REFERENCES people(id) ON DELETE SET NULL",
     ):
         try: c.execute(ddl)
         except sqlite3.OperationalError: pass
+    # Each person can be the default collection for at most one web account.
+    # A partial index preserves the ability to leave service/vendor accounts unlinked.
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_person_id_unique ON users(person_id) WHERE person_id IS NOT NULL")
     c.execute("UPDATE users SET role='admin' WHERE is_admin=1 AND (role IS NULL OR role='')")
     c.execute("UPDATE users SET role='vendor' WHERE is_admin=0 AND (role IS NULL OR role='')")
     c.execute("UPDATE users SET is_superadmin=1, is_admin=1, role='superadmin' WHERE is_superadmin=1")
@@ -434,7 +448,11 @@ def _load_current_user(username: str) -> sqlite3.Row | None:
         conn = connect_inventory()
         ensure_people_and_auth(conn)
         user = conn.execute(
-            "SELECT username, password_hash, is_admin, role, is_superadmin, active, created_at, last_login_at FROM users WHERE username = ?",
+            """SELECT u.username, u.password_hash, u.is_admin, u.role, u.is_superadmin,
+                      u.active, u.created_at, u.last_login_at, u.person_id,
+                      p.name AS person_name
+               FROM users u LEFT JOIN people p ON p.id = u.person_id
+               WHERE u.username = ?""",
             (username,),
         ).fetchone()
         conn.close()
@@ -1363,12 +1381,18 @@ def admin_page():
     people = conn.execute("""SELECT p.id, p.name, p.active, p.created_at,
                COALESCE((SELECT SUM(IFNULL(i.quantity,1)) FROM inventory i WHERE IFNULL(i.owner, 'Me') = p.name),0) AS card_count
                FROM people p ORDER BY p.active DESC, p.name COLLATE NOCASE""").fetchall()
-    users = conn.execute("SELECT username, is_admin, role, is_superadmin, active, created_at, last_login_at FROM users ORDER BY is_superadmin DESC, username COLLATE NOCASE").fetchall()
+    users = conn.execute(
+        """SELECT u.username, u.is_admin, u.role, u.is_superadmin, u.active,
+                  u.created_at, u.last_login_at, u.person_id, p.name AS person_name
+           FROM users u LEFT JOIN people p ON p.id = u.person_id
+           ORDER BY u.is_superadmin DESC, u.username COLLATE NOCASE"""
+    ).fetchall()
     conn.close()
     return render_template(
         "admin.html",
         people=people,
         users=users,
+        account_people=[p for p in people if p["active"]],
         admin_user=current_admin(),
         admin_is_superadmin=is_superadmin_user(current_user()),
         message=request.args.get("message", ""),
@@ -1773,6 +1797,9 @@ def delete_person(person_id: int):
                     conn.execute("UPDATE inventory SET owner = ? WHERE id = ?", (target_name, row["id"]))
         else:
             conn.execute("BEGIN IMMEDIATE")
+        # Deleting a person safely removes the account's default-owner mapping;
+        # it never deletes or transfers the web account itself.
+        conn.execute("UPDATE users SET person_id = NULL WHERE person_id = ?", (person_id,))
         conn.execute("DELETE FROM people WHERE id = ?", (person_id,))
         conn.commit()
         msg = f"Deleted {name} permanently." + (f" Transferred {total_qty} card(s) to {target_name}." if total_qty > 0 else "")
@@ -1790,6 +1817,7 @@ def add_user():
     username = " ".join(str(request.form.get("username") or "").strip().split())[:150]
     password = str(request.form.get("password") or "")
     role = str(request.form.get("role") or "vendor").strip().lower()
+    raw_person_id = str(request.form.get("person_id") or "").strip()
     if not username or len(username) < 2:
         return redirect(url_for("admin_page", message="Username must be at least 2 characters."))
     if len(password) < 12:
@@ -1799,9 +1827,62 @@ def add_user():
     conn=connect_inventory(); ensure_people_and_auth(conn)
     if conn.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone():
         conn.close(); return redirect(url_for("admin_page", message="That username already exists."))
-    conn.execute("INSERT INTO users(username,password_hash,is_admin,role,is_superadmin,active) VALUES (?,?,?,?,?,1)", (username,generate_password_hash(password),1 if role=="admin" else 0,role,0))
+    person_id = None
+    if raw_person_id:
+        try:
+            person_id = int(raw_person_id)
+        except ValueError:
+            conn.close(); return redirect(url_for("admin_page", message="Invalid person assignment."))
+        person = conn.execute("SELECT id, name, active FROM people WHERE id=?", (person_id,)).fetchone()
+        if not person or not int(person["active"]):
+            conn.close(); return redirect(url_for("admin_page", message="Choose an active person for this account."))
+        if conn.execute("SELECT username FROM users WHERE person_id=?", (person_id,)).fetchone():
+            conn.close(); return redirect(url_for("admin_page", message="That person is already assigned to another account."))
+    conn.execute("INSERT INTO users(username,password_hash,is_admin,role,is_superadmin,active,person_id) VALUES (?,?,?,?,?,1,?)", (username,generate_password_hash(password),1 if role=="admin" else 0,role,0,person_id))
     conn.commit(); conn.close()
-    return redirect(url_for("admin_page", message=f"Created {role} user {username}."))
+    assignment_note = "" if person_id is None else " and linked to the selected person"
+    return redirect(url_for("admin_page", message=f"Created {role} user {username}{assignment_note}."))
+
+
+@app.post("/admin/users/<username>/person")
+@superadmin_required
+def assign_user_person(username: str):
+    """Associate a web account with its default collection person, or clear the link."""
+    username = str(username)[:150]
+    raw_person_id = str(request.form.get("person_id") or "").strip()
+    person_id: int | None = None
+    if raw_person_id:
+        try:
+            person_id = int(raw_person_id)
+        except ValueError:
+            return redirect(url_for("admin_page", message="Invalid person assignment."))
+
+    conn = connect_inventory()
+    ensure_people_and_auth(conn)
+    try:
+        user = conn.execute("SELECT username FROM users WHERE username=?", (username,)).fetchone()
+        if not user:
+            return redirect(url_for("admin_page", message="Web user not found."))
+        if person_id is not None:
+            person = conn.execute("SELECT id,name,active FROM people WHERE id=?", (person_id,)).fetchone()
+            if not person or not int(person["active"]):
+                return redirect(url_for("admin_page", message="Choose an active person."))
+            other = conn.execute(
+                "SELECT username FROM users WHERE person_id=? AND username<>? COLLATE NOCASE",
+                (person_id, username),
+            ).fetchone()
+            if other:
+                return redirect(url_for("admin_page", message=f"{person['name']} is already linked to {other['username']}. Unlink that account first."))
+        conn.execute("UPDATE users SET person_id=? WHERE username=?", (person_id, username))
+        conn.commit()
+        person_name = conn.execute("SELECT name FROM people WHERE id=?", (person_id,)).fetchone()[0] if person_id is not None else None
+        message = f"Linked {username} to {person_name}." if person_name else f"Removed the person assignment for {username}."
+        return redirect(url_for("admin_page", message=message))
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return redirect(url_for("admin_page", message="That person is already linked to another account."))
+    finally:
+        conn.close()
 
 
 @app.post("/admin/users/<username>/toggle")
@@ -1966,7 +2047,13 @@ def set_counts():
 @admin_required
 def index():
     search = request.args.get("q", "").strip()
+    owner_explicit = "owner" in request.args
     owner_filter = request.args.get("owner", "").strip()
+    # A linked account starts in its own collection. Selecting "All owners"
+    # sends owner= explicitly, which preserves that choice across form submits.
+    if not owner_explicit:
+        user = current_user()
+        owner_filter = str(user["person_name"] or "").strip() if user else ""
     finish_filter = request.args.get("finish", "").strip().lower()
     type_filter = request.args.get("type", "").strip()
     color_filter = request.args.get("color", "").strip().lower()
@@ -2011,7 +2098,12 @@ def index():
     if "Free" not in locations:
         locations.insert(0, "Free")
     conn.close()
-    inventory_search_index = build_inventory_search_index(all_inventory)
+    # Keep client-side autocomplete scoped to the selected/default owner.
+    # all_inventory is intentionally unfiltered for collection-wide summary
+    # totals, but using it for autocomplete exposes other owners' card names
+    # even when a linked account defaults to its own collection.
+    autocomplete_rows, *_ = inventory_rows("", owner_filter, "", "date", "desc")
+    inventory_search_index = build_inventory_search_index(autocomplete_rows)
 
     return render_template(
         "index.html",
@@ -2026,6 +2118,7 @@ def index():
         visible_finish_totals=visible_finish_totals,
         owners=owners,
         selected_owner=owner_filter,
+        owner_explicit=owner_explicit,
         selected_finish=finish_filter,
         selected_type=type_filter,
         selected_color=color_filter,
@@ -2146,6 +2239,8 @@ def bulk_update_inventory():
 
     assignments: list[str] = []
     values: list[Any] = []
+    owner_supplied = "owner" in data and data.get("owner") not in (None, "", "unchanged")
+    owner_value = " ".join(str(data.get("owner") or "").split())[:100] if owner_supplied else None
     vending_value = None
     if data.get("for_vending", "unchanged") not in (None, "", "unchanged"):
         raw_vending = data.get("for_vending")
@@ -2168,8 +2263,16 @@ def bulk_update_inventory():
             except (TypeError, ValueError):
                 return jsonify({"success": False, "error": "Invalid deck selection."}), 400
 
-    if not any((vending_value is not None, location_supplied, deck_supplied)):
+    if not any((owner_supplied, vending_value is not None, location_supplied, deck_supplied)):
         return jsonify({"success": False, "error": "Choose at least one bulk change."}), 400
+    if owner_supplied:
+        conn = connect_inventory()
+        try:
+            valid_owner = conn.execute("SELECT 1 FROM people WHERE name=? COLLATE NOCASE AND active=1", (owner_value,)).fetchone()
+        finally:
+            conn.close()
+        if not valid_owner:
+            return jsonify({"success": False, "error": "Choose an active owner from the people list."}), 400
     if deck_supplied and deck_value is not None and vending_value == 1:
         return jsonify({"success": False, "error": "A card cannot be assigned to a deck and marked for vending in the same operation."}), 400
 
@@ -2188,6 +2291,9 @@ def bulk_update_inventory():
             if assigned_count:
                 conn.rollback()
                 return jsonify({"success": False, "error": f"{assigned_count} selected row(s) are assigned to decks. Unassign them before marking them for vending."}), 400
+        if owner_supplied:
+            assignments.append("owner=?")
+            values.append(owner_value)
         if location_supplied:
             assignments.append("location=?")
             values.append(location_value or "Free")
@@ -3005,7 +3111,10 @@ def deck_view(deck_id:int):
     ).fetchall()
     conn.close()
     if not deck: return redirect(url_for("decks_page",message="Deck not found."))
-    if not owner and owners: owner=owners[0]
+    if "owner" not in request.args:
+        user = current_user()
+        mapped_person = str(user["person_name"] or "").strip() if user else ""
+        owner = mapped_person if mapped_person else (owners[0] if owners else "")
     comparison,stats=deck_comparison(deck_id,owner,fuzzy=fuzzy)
     return render_template("deck_view.html",deck=deck,deck_cards=deck_cards,comparison=comparison,stats=stats,owners=owners,selected_owner=owner,fuzzy=fuzzy,message=request.args.get("message",""))
 
@@ -3378,7 +3487,10 @@ def vending_export_csv():
 @app.get("/vending")
 @vendor_or_admin_required
 def vending_view():
-    owner=str(request.args.get("owner") or "").strip(); q=str(request.args.get("q") or "").strip()
+    # Vending is a shared sale-eligible view across owners by default. The owner
+    # filter remains available when an admin/vendor wants to narrow the list.
+    owner = str(request.args.get("owner") or "").strip()
+    q=str(request.args.get("q") or "").strip()
     try: min_value=max(0.0,float(request.args.get("min_value") or 0))
     except ValueError: min_value=0.0
 
@@ -3388,8 +3500,12 @@ def vending_view():
 
     inventory,*_=inventory_rows(q,owner,"","price","desc","","","","yes")
     inventory=[i for i in inventory if i["calculated_total_value"]>=min_value] if min_value else inventory
-    conn=connect_inventory(); owners=active_people(conn); conn.close()
-    return render_template("vending.html",inventory=inventory,owners=owners,selected_owner=owner,search=q,min_value=min_value,result_count=len(inventory),inventory_search_index=search_index)
+    conn=connect_inventory()
+    owners=active_people(conn)
+    decks=conn.execute("SELECT id,name FROM decklists ORDER BY name COLLATE NOCASE").fetchall()
+    locations=[row[0] for row in conn.execute("SELECT DISTINCT COALESCE(location,'Free') FROM inventory ORDER BY COALESCE(location,'Free') COLLATE NOCASE").fetchall()]
+    conn.close()
+    return render_template("vending.html",inventory=inventory,owners=owners,decks=decks,locations=locations,admin_user=current_admin(),selected_owner=owner,search=q,min_value=min_value,result_count=len(inventory),inventory_search_index=search_index)
 
 
 @app.get("/vending/labels")
