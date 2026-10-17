@@ -56,10 +56,10 @@
       {% endfor %}
     </section>
 
-    <section class="toolbar">
+    <section class="toolbar" id="inventoryToolbar">
       <form class="search-form" method="get" action="{{ url_for('index') }}" id="inventorySearchForm">
         <div class="inventory-search-box">
-          <input id="inventorySearchInput" type="search" name="q" value="{{ search }}" placeholder="Search card name or collector number…" aria-label="Search card name or collector number" autocomplete="off" aria-autocomplete="list" aria-controls="inventorySearchSuggestions">
+          <input id="inventorySearchInput" type="search" name="q" value="{{ search }}" placeholder='Search cards or Scryfall syntax (e.g. set:mh3 t:creature, order:set)…' aria-label="Search card inventory using card names or Scryfall query syntax" autocomplete="off" aria-autocomplete="list" aria-controls="inventorySearchSuggestions">
           <div id="inventorySearchSuggestions" class="autocomplete-menu" role="listbox" hidden></div>
         </div>
         <input type="hidden" name="sort" value="{{ sort_key }}">
@@ -70,82 +70,63 @@
         {% if selected_type %}<input type="hidden" name="type" value="{{ selected_type }}">{% endif %}
         {% if selected_color %}<input type="hidden" name="color" value="{{ selected_color }}">{% endif %}
         {% if selected_location %}<input type="hidden" name="location" value="{{ selected_location }}">{% endif %}
+        {% if selected_vending %}<input type="hidden" name="vending" value="{{ selected_vending }}">{% endif %}
         <button class="button" type="submit">Search</button>
-        {% if search or selected_owner or selected_finish or selected_type or selected_color or selected_location %}
+        {% if search or selected_owner or selected_finish or selected_type or selected_color or selected_location or selected_vending %}
         <a class="button secondary" href="{{ url_for('index', sort=sort_key, dir=direction, view=view) }}">Clear</a>
         {% endif %}
       </form>
 
-      <form class="sort-form" method="get" action="{{ url_for('index') }}">
-        <input type="hidden" name="q" value="{{ search }}">
-        <input type="hidden" name="view" value="{{ view }}">
-        {% if selected_owner %}<input type="hidden" name="owner" value="{{ selected_owner }}">{% endif %}
-        {% if selected_finish %}<input type="hidden" name="finish" value="{{ selected_finish }}">{% endif %}
-        {% if selected_type %}<input type="hidden" name="type" value="{{ selected_type }}">{% endif %}
-        {% if selected_color %}<input type="hidden" name="color" value="{{ selected_color }}">{% endif %}
-        {% if selected_location %}<input type="hidden" name="location" value="{{ selected_location }}">{% endif %}
-        <label for="sort">Sort</label>
-        <select id="sort" name="sort" onchange="this.form.submit()">
-          <option value="date" {% if sort_key == 'date' %}selected{% endif %}>Newest scan</option>
-          <option value="name" {% if sort_key == 'name' %}selected{% endif %}>Card name</option>
-          <option value="number" {% if sort_key == 'number' %}selected{% endif %}>Card number</option>
-          <option value="normal" {% if sort_key == 'normal' %}selected{% endif %}>Normal price</option>
-          <option value="foil" {% if sort_key == 'foil' %}selected{% endif %}>Foil price</option>
-          <option value="price" {% if sort_key == 'price' %}selected{% endif %}>Current unit price</option>
-          <option value="value" {% if sort_key == 'value' %}selected{% endif %}>Row value</option>
-          <option value="quantity" {% if sort_key == 'quantity' %}selected{% endif %}>Quantity</option>
-          <option value="finish" {% if sort_key == 'finish' %}selected{% endif %}>Finish</option>
-          <option value="owner" {% if sort_key == 'owner' %}selected{% endif %}>Owner</option>
-          <option value="scanned" {% if sort_key == 'scanned' %}selected{% endif %}>Scanned price</option>
-        </select>
-        <button class="button secondary" type="submit" name="dir" value="{% if direction == 'asc' %}desc{% else %}asc{% endif %}">
-          {% if direction == 'asc' %}↑ Low → High{% else %}↓ High → Low{% endif %}
-        </button>
-      </form>
+      <div class="toolbar-controls">
+        <form class="sort-form" method="get" action="{{ url_for('index') }}">
+          <input type="hidden" name="q" value="{{ search }}">
+          <input type="hidden" name="view" value="{{ view }}">
+          {% if selected_owner %}<input type="hidden" name="owner" value="{{ selected_owner }}">{% endif %}
+          {% if selected_finish %}<input type="hidden" name="finish" value="{{ selected_finish }}">{% endif %}
+          {% if selected_type %}<input type="hidden" name="type" value="{{ selected_type }}">{% endif %}
+          {% if selected_color %}<input type="hidden" name="color" value="{{ selected_color }}">{% endif %}
+          {% if selected_location %}<input type="hidden" name="location" value="{{ selected_location }}">{% endif %}
+          {% if selected_vending %}<input type="hidden" name="vending" value="{{ selected_vending }}">{% endif %}
+          <label for="sort">Sort</label>
+          <select id="sort" name="sort" onchange="this.form.submit()">
+            <option value="date" {% if sort_key == 'date' %}selected{% endif %}>Newest scan</option>
+            <option value="name" {% if sort_key == 'name' %}selected{% endif %}>Card name</option>
+            <option value="set" {% if sort_key == 'set' %}selected{% endif %}>Set + collector number</option>
+            <option value="number" {% if sort_key == 'number' %}selected{% endif %}>Card number</option>
+            <option value="cmc" {% if sort_key == 'cmc' %}selected{% endif %}>Mana value</option>
+            <option value="normal" {% if sort_key == 'normal' %}selected{% endif %}>Normal price</option>
+            <option value="foil" {% if sort_key == 'foil' %}selected{% endif %}>Foil price</option>
+            <option value="price" {% if sort_key == 'price' %}selected{% endif %}>Current unit price</option>
+            <option value="value" {% if sort_key == 'value' %}selected{% endif %}>Row value</option>
+            <option value="quantity" {% if sort_key == 'quantity' %}selected{% endif %}>Quantity</option>
+            <option value="finish" {% if sort_key == 'finish' %}selected{% endif %}>Finish</option>
+            <option value="owner" {% if sort_key == 'owner' %}selected{% endif %}>Owner</option>
+            <option value="scanned" {% if sort_key == 'scanned' %}selected{% endif %}>Scanned price</option>
+          </select>
+          <button class="button secondary" type="submit" name="dir" value="{% if direction == 'asc' %}desc{% else %}asc{% endif %}">{% if direction == 'asc' %}↑ Low → High{% else %}↓ High → Low{% endif %}</button>
+        </form>
 
-      <div class="quick-sort-actions">
-        <a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, sort='price', dir='desc', view=view) }}">↓ Highest price</a>
-        <a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, sort='price', dir='asc', view=view) }}">↑ Lowest price</a>
-      </div>
+        <div class="quick-sort-actions">
+          <a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort='price', dir='desc', view=view) }}">↓ Highest price</a>
+          <a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort='price', dir='asc', view=view) }}">↑ Lowest price</a>
+        </div>
 
-      <form class="owner-filter" method="get" action="{{ url_for('index') }}">
-        <input type="hidden" name="q" value="{{ search }}">
-        <input type="hidden" name="sort" value="{{ sort_key }}">
-        <input type="hidden" name="dir" value="{{ direction }}">
-        <input type="hidden" name="view" value="{{ view }}">
-        {% if selected_finish %}<input type="hidden" name="finish" value="{{ selected_finish }}">{% endif %}
-        {% if selected_type %}<input type="hidden" name="type" value="{{ selected_type }}">{% endif %}
-        {% if selected_color %}<input type="hidden" name="color" value="{{ selected_color }}">{% endif %}
-        {% if selected_location %}<input type="hidden" name="location" value="{{ selected_location }}">{% endif %}
-        <label for="owner">Owner</label>
-        <select id="owner" name="owner" onchange="this.form.submit()">
-          <option value="">All owners</option>
-          {% for owner in owners %}
-          <option value="{{ owner }}" {% if selected_owner == owner %}selected{% endif %}>{{ owner }}</option>
-          {% endfor %}
-        </select>
-      </form>
+        <form class="owner-filter" method="get" action="{{ url_for('index') }}">
+          <input type="hidden" name="q" value="{{ search }}"><input type="hidden" name="sort" value="{{ sort_key }}"><input type="hidden" name="dir" value="{{ direction }}"><input type="hidden" name="view" value="{{ view }}">
+          {% if selected_finish %}<input type="hidden" name="finish" value="{{ selected_finish }}">{% endif %}{% if selected_type %}<input type="hidden" name="type" value="{{ selected_type }}">{% endif %}{% if selected_color %}<input type="hidden" name="color" value="{{ selected_color }}">{% endif %}{% if selected_location %}<input type="hidden" name="location" value="{{ selected_location }}">{% endif %}{% if selected_vending %}<input type="hidden" name="vending" value="{{ selected_vending }}">{% endif %}
+          <label for="owner">Owner</label><select id="owner" name="owner" onchange="this.form.submit()"><option value="">All owners</option>{% for owner in owners %}<option value="{{ owner }}" {% if selected_owner == owner %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select>
+        </form>
 
-      <form class="owner-filter" method="get" action="{{ url_for('index') }}">
-        <input type="hidden" name="q" value="{{ search }}">
-        <input type="hidden" name="sort" value="{{ sort_key }}">
-        <input type="hidden" name="dir" value="{{ direction }}">
-        <input type="hidden" name="view" value="{{ view }}">
-        {% if selected_owner %}<input type="hidden" name="owner" value="{{ selected_owner }}">{% endif %}
-        {% if selected_type %}<input type="hidden" name="type" value="{{ selected_type }}">{% endif %}
-        {% if selected_color %}<input type="hidden" name="color" value="{{ selected_color }}">{% endif %}
-        {% if selected_location %}<input type="hidden" name="location" value="{{ selected_location }}">{% endif %}
-        <label for="finish">Finish</label>
-        <select id="finish" name="finish" onchange="this.form.submit()">
-          <option value="">Normal + Foil</option>
-          <option value="normal" {% if selected_finish == 'normal' %}selected{% endif %}>Normal only</option>
-          <option value="foil" {% if selected_finish == 'foil' %}selected{% endif %}>Foil only</option>
-        </select>
-      </form>
+        <form class="owner-filter" method="get" action="{{ url_for('index') }}">
+          <input type="hidden" name="q" value="{{ search }}"><input type="hidden" name="sort" value="{{ sort_key }}"><input type="hidden" name="dir" value="{{ direction }}"><input type="hidden" name="view" value="{{ view }}">
+          {% if selected_owner %}<input type="hidden" name="owner" value="{{ selected_owner }}">{% endif %}{% if selected_type %}<input type="hidden" name="type" value="{{ selected_type }}">{% endif %}{% if selected_color %}<input type="hidden" name="color" value="{{ selected_color }}">{% endif %}{% if selected_location %}<input type="hidden" name="location" value="{{ selected_location }}">{% endif %}{% if selected_vending %}<input type="hidden" name="vending" value="{{ selected_vending }}">{% endif %}
+          <label for="finish">Finish</label><select id="finish" name="finish" onchange="this.form.submit()"><option value="">Normal + Foil</option><option value="normal" {% if selected_finish == 'normal' %}selected{% endif %}>Normal only</option><option value="foil" {% if selected_finish == 'foil' %}selected{% endif %}>Foil only</option></select>
+        </form>
 
-      <div class="view-toggle" aria-label="View mode">
-        <a class="button {% if view == 'list' %}{% else %}secondary{% endif %}" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, sort=sort_key, dir=direction, view='list') }}">☷ List</a>
-        <a class="button {% if view == 'grid' %}{% else %}secondary{% endif %}" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, sort=sort_key, dir=direction, view='grid') }}">▦ Grid</a>
+        <div class="view-toggle" aria-label="View mode">
+          <a class="button {% if view == 'list' %}{% else %}secondary{% endif %}" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view='list') }}">☷ List</a>
+          <a class="button {% if view == 'grid' %}{% else %}secondary{% endif %}" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view='grid') }}">▦ Grid</a>
+        </div>
       </div>
     </section>
 
@@ -160,8 +141,9 @@
         <label>Card type<select name="type" onchange="this.form.submit()"><option value="">All types</option>{% for t in ['Legendary','Creature','Artifact','Enchantment','Instant','Sorcery','Planeswalker','Land','Battle'] %}<option value="{{ t }}" {% if selected_type == t %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></label>
         <label>Color<select name="color" onchange="this.form.submit()"><option value="">All colors</option><option value="W" {% if selected_color == 'W' %}selected{% endif %}>White</option><option value="U" {% if selected_color == 'U' %}selected{% endif %}>Blue</option><option value="B" {% if selected_color == 'B' %}selected{% endif %}>Black</option><option value="R" {% if selected_color == 'R' %}selected{% endif %}>Red</option><option value="G" {% if selected_color == 'G' %}selected{% endif %}>Green</option><option value="colorless" {% if selected_color == 'colorless' %}selected{% endif %}>Colorless</option><option value="multicolor" {% if selected_color == 'multicolor' %}selected{% endif %}>Multicolor</option></select></label>
         <label>Location<select name="location" onchange="this.form.submit()"><option value="">All locations</option>{% for location in locations %}<option value="{{ location }}" {% if selected_location == location %}selected{% endif %}>{{ location }}</option>{% endfor %}</select></label>
-        {% if selected_type or selected_color or selected_location %}<a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, sort=sort_key, dir=direction, view=view) }}">Clear filters</a>{% endif %}
-        <span class="filter-note">Type/color filters use Scryfall metadata. Enrich older cards from Admin if needed.</span>
+        <label>Vending status<select name="vending" onchange="this.form.submit()"><option value="" {% if not selected_vending %}selected{% endif %}>All cards</option><option value="yes" {% if selected_vending == 'yes' %}selected{% endif %}>For vending</option><option value="no" {% if selected_vending == 'no' %}selected{% endif %}>Not for vending</option></select></label>
+        {% if selected_type or selected_color or selected_location or selected_vending %}<a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, sort=sort_key, dir=direction, view=view) }}">Clear filters</a>{% endif %}
+        <span class="filter-note">Search supports set:, cn:, t:, c:, o:, r:, is:foil, owner:, loc:, deck:, vending:, order: and direction:. Enrich older cards for type/rules filters.</span>
       </form>
     </section>
 
@@ -175,10 +157,28 @@
       <span class="hint">Finish is stored separately, so normal and foil quantities no longer get mixed together.</span>
     </section>
 
+    {% if admin_user %}
+    <section class="bulk-edit-bar" id="bulkEditBar">
+      <div class="bulk-selection-row">
+        <label class="check-row"><input type="checkbox" id="selectAllInventory"> Select all {{ result_count }} matching rows</label>
+        <span><strong id="bulkSelectedCount">0</strong> selected</span>
+        <button type="button" class="button secondary" id="clearInventorySelection">Clear selection</button>
+      </div>
+      <div class="bulk-controls-row">
+        <label>For vending<select id="bulkVending"><option value="unchanged">No change</option><option value="1">Mark for vending</option><option value="0">Remove from vending</option></select></label>
+        <label>Storage location<input id="bulkLocation" type="text" list="location-options" placeholder="Leave unchanged"></label>
+        <label>Deck assignment<select id="bulkDeck"><option value="unchanged">No change</option><option value="none">Unassigned / free pool</option>{% for deck in decks %}<option value="{{ deck.id }}">{{ deck.name }}</option>{% endfor %}</select></label>
+        <button type="button" class="button" id="applyBulkEdit">Apply to selected</button>
+      </div>
+      <div class="status" id="bulkEditStatus" role="status" aria-live="polite"></div>
+    </section>
+    {% endif %}
+
     {% if view == 'grid' %}
     <section class="card-grid">
       {% for item in inventory %}
       <article class="card-tile" id="tile-{{ item.id }}">
+        {% if admin_user %}<label class="inventory-select-label"><input class="inventory-select" type="checkbox" value="{{ item.id }}" aria-label="Select {{ item.name }} for bulk editing"> Select</label>{% endif %}
         <div class="tile-image-wrap">
           {% if item.image_url %}
           <img src="{{ item.image_url }}" class="card-image" alt="{{ item.name }}" loading="lazy" onclick="openImage(this.src, this.alt)" onerror="imageFailed(this)">
@@ -196,7 +196,13 @@
             <span>{{ item.owner }}</span>
             <span>Qty {{ item.quantity }}</span>
           </div>
-          <div class="subtle location-label">Location: {{ item.location }}</div>
+          <div class="subtle location-label">Storage: {{ item.location }}{% if item.deck_id %} · Deck assigned{% endif %}</div>
+          {% if admin_user %}
+          <div class="inventory-management-controls">
+            <label class="check-row vending-inline-toggle"><input type="checkbox" class="vending-input" data-id="{{ item.id }}" data-field="for_vending" {% if item.for_vending %}checked{% endif %} {% if item.deck_id %}disabled{% endif %}> For vending</label>
+            <label>Deck<select class="inline-input deck-input" data-id="{{ item.id }}" data-field="deck_id"><option value="none" {% if not item.deck_id %}selected{% endif %}>Unassigned</option>{% for deck in decks %}<option value="{{ deck.id }}" {% if item.deck_id == deck.id %}selected{% endif %}>{{ deck.name }}</option>{% endfor %}</select></label>
+          </div>
+          {% else %}<div class="subtle">{% if item.for_vending %}For vending{% endif %}</div>{% endif %}
           <div class="price-grid">
             <div><small>Scanned</small><strong>${{ '%.2f'|format(item.scanned_price|float) }}</strong></div>
             <div><small>Normal</small><strong>{% if item.curr_normal is not none %}${{ '%.2f'|format(item.curr_normal|float) }}{% else %}—{% endif %}</strong></div>
@@ -233,13 +239,15 @@
         <table>
           <thead>
             <tr>
-              <th>Card</th><th>Collector #</th><th>Set</th><th>Rarity</th><th>Finish</th><th>Owner</th><th>Qty</th><th>Location</th>
+              <th class="selection-column">{% if admin_user %}<input type="checkbox" id="selectAllInventoryTable" aria-label="Select all matching rows">{% endif %}</th>
+              <th>Card</th><th>Collector #</th><th>Set</th><th>Rarity</th><th>Finish</th><th>Owner</th><th>Qty</th><th>Storage location</th><th>Deck assignment</th><th>Vending</th>
               <th>Card Count</th><th>Scanned</th><th>Current (Norm)</th><th>Current (Foil)</th><th>Total Value</th><th>Scan Date</th><th></th>
             </tr>
           </thead>
           <tbody>
           {% for item in inventory %}
             <tr id="row-{{ item.id }}">
+              <td class="selection-column">{% if admin_user %}<input class="inventory-select" type="checkbox" value="{{ item.id }}" aria-label="Select {{ item.name }} for bulk editing">{% endif %}</td>
               <td class="name-cell">
                 <div class="name-with-thumb">
                   {% if item.image_url %}<img src="{{ item.image_url }}" class="thumb" alt="" loading="lazy" onclick="openImage(this.src, this.closest('td').querySelector('.card-title').textContent)" onerror="imageFailed(this)">{% else %}<div class="thumb placeholder-thumb">—</div>{% endif %}
@@ -255,7 +263,9 @@
               <td><span class="finish-pill {{ item.finish }}">{{ item.finish|capitalize }}</span></td>
               <td>{% if admin_user %}<select class="inline-input owner-input" data-id="{{ item.id }}" data-field="owner" aria-label="Owner for {{ item.name }}">{% for owner in owners %}<option value="{{ owner }}" {% if owner == item.owner %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select>{% else %}{{ item.owner }}{% endif %}</td>
               <td>{% if admin_user %}<input class="qty-input" type="number" min="1" step="1" data-id="{{ item.id }}" data-field="quantity" value="{{ item.quantity }}" aria-label="Quantity for {{ item.name }}">{% else %}{{ item.quantity }}{% endif %}</td>
-              <td>{% if admin_user %}<input class="location-input" type="text" data-id="{{ item.id }}" data-field="location" value="{{ item.location|e }}" aria-label="Location for {{ item.name }}">{% else %}{{ item.location }}{% endif %}</td>
+              <td>{% if admin_user %}<input class="location-input" type="text" data-id="{{ item.id }}" data-field="location" value="{{ item.location|e }}" aria-label="Storage location for {{ item.name }}">{% else %}{{ item.location }}{% endif %}</td>
+              <td>{% if admin_user %}<select class="inline-input deck-input" data-id="{{ item.id }}" data-field="deck_id" aria-label="Deck assignment for {{ item.name }}"><option value="none" {% if not item.deck_id %}selected{% endif %}>Unassigned</option>{% for deck in decks %}<option value="{{ deck.id }}" {% if item.deck_id == deck.id %}selected{% endif %}>{{ deck.name }}</option>{% endfor %}</select>{% elif item.deck_id %}{% for deck in decks %}{% if deck.id == item.deck_id %}{{ deck.name }}{% endif %}{% endfor %}{% else %}Unassigned{% endif %}</td>
+              <td>{% if admin_user %}<label class="check-row vending-cell"><input type="checkbox" class="vending-input" data-id="{{ item.id }}" data-field="for_vending" {% if item.for_vending %}checked{% endif %} {% if item.deck_id %}disabled{% endif %} aria-label="For vending: {{ item.name }}"></label>{% elif item.for_vending %}Yes{% else %}No{% endif %}</td>
               <td><span class="count-pair">N {{ item.card_normal_qty }} · F {{ item.card_foil_qty }}</span></td>
               <td><span class="pill scanned">${{ '%.2f'|format(item.scanned_price|float) }}</span></td>
               <td><span class="pill normal">{% if item.curr_normal is not none %}${{ '%.2f'|format(item.curr_normal|float) }}{% else %}—{% endif %}</span></td>
@@ -277,7 +287,7 @@
               </td>
             </tr>
           {% else %}
-            <tr><td colspan="14" class="empty">No cards match the current filters.</td></tr>
+            <tr><td colspan="18" class="empty">No cards match the current filters.</td></tr>
           {% endfor %}
           </tbody>
         </table>
@@ -336,7 +346,7 @@
     <form id="moveForm" method="dialog">
       <h2>Move cards</h2>
       <p id="moveCardName" class="subtle"></p>
-      <div class="count-editor"><label>Quantity to move<input id="moveQuantity" type="number" min="1" step="1" required></label><label>Destination<input id="moveDestination" type="text" list="location-options" placeholder="Free or deck name" required></label></div>
+      <div class="count-editor"><label>Quantity to move<input id="moveQuantity" type="number" min="1" step="1" required></label><label>Destination<input id="moveDestination" type="text" list="location-options" placeholder="Physical storage location (e.g. Free, Binder 2)" required></label></div>
       <div id="moveStatus" class="status"></div>
       <div class="dialog-actions"><button class="button secondary" type="button" onclick="moveDialog.close()">Cancel</button><button class="button" type="submit">Move</button></div>
     </form>
@@ -593,7 +603,7 @@ function renderInventorySuggestions(items) {
 }
 function fetchInventorySuggestions() {
   const term = inventorySearchInput.value.trim();
-  if (term.length < 2) { hideInventorySuggestions(); return; }
+  if (term.length < 2 || /(?:^|\s)-?[a-z][a-z0-9_]*(?::|>=|<=|=|>|<)/i.test(term)) { hideInventorySuggestions(); return; }
   const results = [];
   for (const card of inventorySearchIndex) {
     const scored = scoreInventorySuggestion(card, term);
@@ -676,19 +686,86 @@ async function openOracle(sid, name) {
 document.querySelectorAll('.oracle-button').forEach(btn => btn.addEventListener('click', () => openOracle(btn.dataset.scryfall, btn.dataset.name)));
 
 async function saveField(input) {
+  let value = input.dataset.field === 'for_vending' ? input.checked : input.value;
+  if (input.dataset.field === 'deck_id' && value === 'none') value = null;
   const response = await fetch('{{ url_for('update_inventory') }}', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({id: input.dataset.id, field: input.dataset.field, value: input.value})
+    body: JSON.stringify({id: input.dataset.id, field: input.dataset.field, value})
   });
-  if (!response.ok) input.classList.add('error');
-  else input.classList.remove('error');
+  if (!response.ok) {
+    input.classList.add('error');
+    const data = await response.json().catch(() => ({}));
+    if (data.error) alert(data.error);
+  } else {
+    input.classList.remove('error');
+    if (input.dataset.field === 'deck_id' && value !== null) {
+      const container = input.closest('.inventory-management-controls') || input.closest('tr');
+      const vendingBox = container?.querySelector('.vending-input');
+      if (vendingBox) { vendingBox.checked = false; vendingBox.disabled = true; }
+    } else if (input.dataset.field === 'deck_id' && value === null) {
+      const container = input.closest('.inventory-management-controls') || input.closest('tr');
+      const vendingBox = container?.querySelector('.vending-input');
+      if (vendingBox) vendingBox.disabled = false;
+    }
+  }
 }
 
-document.querySelectorAll('.inline-input, .qty-input, .finish-input, .location-input').forEach(input => {
+document.querySelectorAll('.inline-input, .qty-input, .finish-input, .location-input, .vending-input, .deck-input').forEach(input => {
   input.addEventListener('change', () => saveField(input));
   input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
 });
+
+const bulkStatus = document.getElementById('bulkEditStatus');
+const bulkCount = document.getElementById('bulkSelectedCount');
+const selectAllInventory = document.getElementById('selectAllInventory');
+const selectAllInventoryTable = document.getElementById('selectAllInventoryTable');
+function inventoryCheckboxes() { return [...document.querySelectorAll('.inventory-select')]; }
+function syncBulkSelection() {
+  const boxes = inventoryCheckboxes();
+  const selected = boxes.filter(box => box.checked).length;
+  if (bulkCount) bulkCount.textContent = String(selected);
+  [selectAllInventory, selectAllInventoryTable].filter(Boolean).forEach(box => {
+    box.checked = boxes.length > 0 && boxes.every(item => item.checked);
+    box.indeterminate = selected > 0 && selected < boxes.length;
+  });
+}
+[selectAllInventory, selectAllInventoryTable].filter(Boolean).forEach(box => box.addEventListener('change', () => {
+  inventoryCheckboxes().forEach(item => { item.checked = box.checked; });
+  syncBulkSelection();
+}));
+document.querySelectorAll('.inventory-select').forEach(box => box.addEventListener('change', syncBulkSelection));
+document.getElementById('clearInventorySelection')?.addEventListener('click', () => {
+  inventoryCheckboxes().forEach(item => { item.checked = false; });
+  syncBulkSelection();
+});
+document.getElementById('applyBulkEdit')?.addEventListener('click', async () => {
+  const ids = inventoryCheckboxes().filter(box => box.checked).map(box => Number(box.value));
+  if (!ids.length) { bulkStatus.textContent = 'Select the cards to change first.'; return; }
+  const forVending = document.getElementById('bulkVending').value;
+  const location = document.getElementById('bulkLocation').value.trim();
+  const deck = document.getElementById('bulkDeck').value;
+  if (forVending === 'unchanged' && !location && deck === 'unchanged') {
+    bulkStatus.textContent = 'Choose at least one change to apply.'; return;
+  }
+  if (deck !== 'unchanged' && deck !== 'none' && forVending === '1') {
+    bulkStatus.textContent = 'Choose either a deck assignment or Mark for vending, not both. Cards assigned to decks are not sellable.'; return;
+  }
+  if (!confirm(`Apply the selected changes to ${ids.length} inventory row(s)?`)) return;
+  bulkStatus.textContent = 'Applying changes…';
+  const payload = {ids};
+  if (forVending !== 'unchanged') payload.for_vending = forVending;
+  if (location) payload.location = location;
+  if (deck !== 'unchanged') payload.deck_id = deck;
+  try {
+    const r = await fetch('{{ url_for('bulk_update_inventory') }}', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.success) { bulkStatus.textContent = data.error || 'Bulk update failed.'; return; }
+    bulkStatus.textContent = `Updated ${data.updated} row(s). Reloading…`;
+    window.location.reload();
+  } catch (_) { bulkStatus.textContent = 'Could not reach the server. No success was reported.'; }
+});
+syncBulkSelection();
 
 document.querySelectorAll('.delete-button').forEach(button => {
   button.addEventListener('click', async () => {

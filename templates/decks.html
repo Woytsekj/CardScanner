@@ -19,7 +19,7 @@
 <section class="admin-grid">
   <div class="admin-panel">
     <h2>Import a deck</h2>
-    <p class="subtle">Paste a public Archidekt deck URL or a text decklist. When <strong>Add to inventory</strong> is enabled, the default location is now the deck name so precons don't land in Free storage by accident.</p>
+    <p class="subtle">Import the decklist and, optionally, inventory copies. Physical storage location is independent of the deck assignment.</p>
     <form method="post" action="{{ url_for('decks_import') }}" class="manual-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label>Deck name (optional)<input name="deck_name" id="deckNameInput" maxlength="200" placeholder="Example: Wakanda Forever - Marvel Super Heroes"></label>
       <label>Archidekt URL<input name="source_url" placeholder="https://archidekt.com/decks/123456"></label>
@@ -27,12 +27,12 @@
       <label>Paste decklist<textarea name="deck_text" rows="12" placeholder="1 Sol Ring\n1 Arcane Signet\n1 Command Tower"></textarea></label>
       <label class="check-row"><input type="checkbox" name="include_extra"> Include sideboard / maybeboard / considering cards</label>
       <label class="check-row"><input type="checkbox" name="add_inventory" id="addInventoryCheck"> Also add these cards to inventory</label>
-      <label class="check-row"><input type="checkbox" name="store_free"> Keep imported inventory copies in Free storage instead of the deck location</label>
+      <label class="check-row"><input type="checkbox" name="store_free"> Leave imported inventory copies unassigned to this deck (free pool)</label>
       <div class="form-grid-2">
         <label>Owner<select name="owner">{% for owner in owners %}<option value="{{ owner }}">{{ owner }}</option>{% endfor %}</select></label>
-        <label>Inventory location<input name="location" id="locationInput" value="" list="location-options" placeholder="Defaults to the deck name"></label>
+        <label>Physical storage location<input name="location" id="locationInput" value="Free" list="location-options" placeholder="Free or a storage place"></label>
       </div>
-      <p class="subtle">Leave Inventory location blank to use the deck name. Use a custom value such as <em>Storage Box 3</em> when that's where the cards physically belong.</p>
+      <p class="subtle">When adding cards to inventory, they are assigned to this deck unless the free-pool checkbox is checked. The location is only where the cards are stored (for example Free, Binder 1, Storage Box 3).</p>
       <button class="button" type="submit">Import Deck</button>
     </form>
   </div>
@@ -48,7 +48,7 @@
           <span class="badge">Open</span>
         </a>
         {% if session.get('is_admin') %}
-        <form method="post" action="{{ url_for('delete_deck', deck_id=deck.id) }}" onsubmit="return confirm('Delete this saved deck? All inventory cards assigned to it will be returned to Free; inventory itself will not be deleted.');"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <form method="post" action="{{ url_for('delete_deck', deck_id=deck.id) }}" onsubmit="return confirm('Delete this saved deck? Its assigned inventory copies will become unassigned and keep their physical storage locations. Inventory itself will not be deleted.');"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button class="button secondary" type="submit">Delete</button>
         </form>
         {% endif %}
@@ -61,17 +61,12 @@
 </main>
 <datalist id="location-options">{% for location in locations %}<option value="{{ location }}">{% endfor %}</datalist>
 <script>
-const deckNameInput = document.getElementById('deckNameInput');
-const locationInput = document.getElementById('locationInput');
+// Deck assignment and physical storage are independent; changing the deck name
+// must never rewrite a physical storage location.
 const addInventoryCheck = document.getElementById('addInventoryCheck');
-function maybeFillDeckLocation(){
-  if (!locationInput.value.trim() && deckNameInput.value.trim()) locationInput.value = deckNameInput.value.trim();
-}
-deckNameInput?.addEventListener('blur', maybeFillDeckLocation);
-deckNameInput?.addEventListener('input', () => {
-  if (!locationInput.dataset.manual) locationInput.value = deckNameInput.value;
+const locationInput = document.getElementById('locationInput');
+addInventoryCheck?.addEventListener('change', () => {
+  if (addInventoryCheck.checked && !locationInput.value.trim()) locationInput.value = 'Free';
 });
-locationInput?.addEventListener('input', () => { locationInput.dataset.manual = locationInput.value.trim() ? '1' : ''; });
-addInventoryCheck?.addEventListener('change', () => { if (addInventoryCheck.checked) maybeFillDeckLocation(); });
 </script>
 </body></html>

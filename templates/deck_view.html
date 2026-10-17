@@ -15,7 +15,7 @@
 <section class="summary-grid">
   <div class="summary-card"><span>Required</span><strong>{{ stats.required }}</strong></div>
   <div class="summary-card summary-have"><span>Assigned to deck</span><strong>{{ stats.assigned }}</strong></div>
-  <div class="summary-card summary-have"><span>Free copies available</span><strong>{{ stats.free_available }}</strong></div>
+  <div class="summary-card summary-have"><span>Unassigned copies available</span><strong>{{ stats.free_available }}</strong></div>
   <div class="summary-card summary-buy"><span>Still need</span><strong>{{ stats.missing }}</strong></div>
 </section>
 <section class="toolbar deck-owner-bar">
@@ -24,9 +24,9 @@
     <label class="check-row"><input type="checkbox" name="fuzzy" value="1" {% if fuzzy %}checked{% endif %} onchange="this.form.submit()"> Fuzzy mode — any printing of the same card</label>
   </form>
   {% if session.get('is_admin') %}
-  <form method="post" action="{{ url_for('assign_free_to_deck', deck_id=deck.id) }}" class="inline-form" onsubmit="return confirm('Move available matching cards from Free into this deck location?');"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <form method="post" action="{{ url_for('assign_free_to_deck', deck_id=deck.id) }}" class="inline-form" onsubmit="return confirm('Assign matching unassigned inventory copies to this deck? Their physical storage locations will stay the same.');"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="owner" value="{{ selected_owner }}"><input type="hidden" name="fuzzy" value="{{ '1' if fuzzy else '0' }}">
-    <button class="button" type="submit">Move Matching Free Cards to Deck</button>
+    <button class="button" type="submit">Assign Matching Unassigned Cards</button>
   </form>
   {% endif %}
   <a class="button secondary" href="{{ url_for('deck_missing_csv', deck_id=deck.id, owner=selected_owner, fuzzy='1' if fuzzy else '0') }}">Export Buy List CSV</a>
@@ -75,9 +75,9 @@
 {% endif %}
 
 <section class="table-card">
-  <div class="section-heading"><div><h2>Deck comparison</h2><p class="subtle">A card is satisfied by copies already assigned to this deck plus matching copies still in Free.{% if fuzzy %} <strong>Fuzzy mode is ON:</strong> set, collector number, finish, and printing are ignored; any printing of the same Oracle card counts.{% else %} Exact mode respects the requested printing and finish.{% endif %}</p></div></div>
+  <div class="section-heading"><div><h2>Deck comparison</h2><p class="subtle">A card is satisfied by copies assigned to this deck plus matching copies in the unassigned pool, regardless of physical storage location.{% if fuzzy %} <strong>Fuzzy mode is ON:</strong> set, collector number, finish, and printing are ignored; any printing of the same Oracle card counts.{% else %} Exact mode respects the requested printing and finish.{% endif %}</p></div></div>
   <div class="table-wrap">
-    <table><thead><tr><th>Card</th><th>Category</th><th>Finish</th><th>Required</th><th>Assigned</th><th>Free available</th><th>Missing</th><th>Set</th><th>Collector #</th><th></th></tr></thead><tbody>
+    <table><thead><tr><th>Card</th><th>Category</th><th>Finish</th><th>Required</th><th>Assigned</th><th>Unassigned available</th><th>Missing</th><th>Set</th><th>Collector #</th><th></th></tr></thead><tbody>
     {% for item in comparison %}
       <tr class="{% if item.missing %}needs-row{% else %}have-row{% endif %}">
         <td class="name-cell"><div class="name-with-thumb">{% if item.image_url %}<img src="{{ item.image_url }}" class="thumb" alt="" loading="lazy">{% else %}<div class="thumb placeholder-thumb">—</div>{% endif %}<div><div class="card-title">{{ item.name }}</div>{% if item.tcgplayer_id %}<div class="subtle">TCGplayer #{{ item.tcgplayer_id }}</div>{% endif %}</div></div></td>
