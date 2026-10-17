@@ -14,7 +14,7 @@ import requests
 import threading
 import time
 
-from flask import Flask, g, jsonify, render_template, request, send_file, redirect, url_for, session, flash
+from flask import Flask, g, jsonify, render_template, request, send_file, send_from_directory, redirect, url_for, session, flash
 from functools import wraps
 from secrets import token_urlsafe
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -747,23 +747,38 @@ def migrate_db() -> None:
     c.execute("CREATE INDEX IF NOT EXISTS idx_card_metadata_colors ON card_metadata(colors_text COLLATE NOCASE)")
     c.execute("""CREATE TABLE IF NOT EXISTS decklists (
         id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'manual',
-        source_url TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        source_url TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        tags_json TEXT NOT NULL DEFAULT '[]', person_name TEXT,
+        cover_filename TEXT, cover_scryfall_id TEXT
     )""")
     c.execute("""CREATE TABLE IF NOT EXISTS deck_cards (
         id INTEGER PRIMARY KEY AUTOINCREMENT, deck_id INTEGER NOT NULL, name TEXT NOT NULL,
         quantity INTEGER NOT NULL DEFAULT 1, scryfall_id TEXT, set_code TEXT,
         collector_number TEXT, category TEXT, finish TEXT DEFAULT 'normal', tcgplayer_id TEXT,
+        role_tags_json TEXT NOT NULL DEFAULT '[]',
         FOREIGN KEY(deck_id) REFERENCES decklists(id) ON DELETE CASCADE
     )""")
     for _column, ddl in (
         ("finish", "ALTER TABLE deck_cards ADD COLUMN finish TEXT DEFAULT 'normal'"),
         ("tcgplayer_id", "ALTER TABLE deck_cards ADD COLUMN tcgplayer_id TEXT"),
+        ("role_tags_json", "ALTER TABLE deck_cards ADD COLUMN role_tags_json TEXT NOT NULL DEFAULT '[]'"),
+    ):
+        try:
+            c.execute(ddl)
+        except sqlite3.OperationalError:
+            pass
+    for _column, ddl in (
+        ("tags_json", "ALTER TABLE decklists ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'"),
+        ("person_name", "ALTER TABLE decklists ADD COLUMN person_name TEXT"),
+        ("cover_filename", "ALTER TABLE decklists ADD COLUMN cover_filename TEXT"),
+        ("cover_scryfall_id", "ALTER TABLE decklists ADD COLUMN cover_scryfall_id TEXT"),
     ):
         try:
             c.execute(ddl)
         except sqlite3.OperationalError:
             pass
     c.execute("UPDATE deck_cards SET finish='normal' WHERE finish IS NULL OR TRIM(finish)=''")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_decklists_person ON decklists(person_name COLLATE NOCASE)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_deck_cards_deck ON deck_cards(deck_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_deck_cards_name ON deck_cards(name COLLATE NOCASE)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_deck_cards_scryfall ON deck_cards(scryfall_id)")
@@ -2772,10 +2787,74 @@ def _norm_card_name(value: Any) -> str:
     return " ".join(str(value or "").strip().casefold().split())
 
 
+def _looks_like_uuid(value: Any) -> bool:
+    return bool(re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}", str(value or "").strip()))
+
+
 def _extract_archidekt_id(value: str) -> str | None:
-    import re
-    m = re.search(r"archidekt\.com/decks/(\d+)", value or "", re.I)
-    return m.group(1) if m else None
+    match = re.search(r"archidekt\.com/decks/(\d+)", value or "", re.I)
+    return match.group(1) if match else None
+
+
+def _extract_moxfield_id(value: str) -> str | None:
+    match = re.search(r"moxfield\.com/decks/([A-Za-z0-9_-]+)", value or "", re.I)
+    return match.group(1) if match else None
+
+
+def _clean_tag_list(values: Any, *, limit: int = 30) -> list[str]:
+    """Normalize imported/user-entered tags while preserving display casing."""
+    if values is None:
+        items: list[Any] = []
+    elif isinstance(values, str):
+        items = re.split(r"[,;|]", values)
+    elif isinstance(values, dict):
+        if any(k in values for k in ("name", "label", "value")):
+            items = [values.get("name") or values.get("label") or values.get("value")]
+        else:
+            items = [key for key, enabled in values.items() if enabled]
+    elif isinstance(values, (list, tuple, set)):
+        items = list(values)
+    else:
+        items = [values]
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if isinstance(item, dict):
+            item = item.get("name") or item.get("label") or item.get("tag") or item.get("value")
+        if item is None:
+            continue
+        tag = " ".join(str(item).replace("\x00", "").split()).strip().lstrip("#").strip()
+        if not tag:
+            continue
+        tag = tag[:48]
+        key = tag.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(tag)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _deck_tags_from_payload(payload: dict[str, Any]) -> list[str]:
+    tags: list[str] = []
+    for field in ("tags", "deckTags", "deck_tags", "deckTagsList", "customTags", "custom_tags"):
+        value = payload.get(field)
+        if value:
+            tags.extend(_clean_tag_list(value))
+    return _clean_tag_list(tags)
+
+
+def _entry_role_tags(entry: dict[str, Any], categories: Any = None) -> list[str]:
+    tags: list[str] = []
+    if categories:
+        tags.extend(_clean_tag_list(categories))
+    for field in ("tags", "customTags", "custom_tags", "roleTags", "role_tags", "categories", "categoryTags"):
+        value = entry.get(field)
+        if value:
+            tags.extend(_clean_tag_list(value))
+    return _clean_tag_list(tags)
 
 
 def fetch_archidekt_deck(deck_id: str) -> dict[str, Any]:
@@ -2787,6 +2866,29 @@ def fetch_archidekt_deck(deck_id: str) -> dict[str, Any]:
     if not isinstance(payload, dict) or not isinstance(payload.get("cards"), list):
         raise ValueError("Archidekt returned an unexpected deck format.")
     return payload
+
+
+def fetch_moxfield_deck(deck_id: str) -> dict[str, Any]:
+    """Fetch a public Moxfield deck. Private decks still require an exported file."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36 MTGScannerInventory/1.0",
+        "Accept": "application/json",
+        "Referer": "https://www.moxfield.com/",
+        "Origin": "https://www.moxfield.com",
+    }
+    failures: list[str] = []
+    for version in ("v3", "v2"):
+        url = f"https://api2.moxfield.com/{version}/decks/all/{deck_id}"
+        try:
+            response = requests.get(url, headers=headers, timeout=20)
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, dict) and any(k in payload for k in ("mainboard", "commanders", "boards", "cards")):
+                return payload
+            failures.append(f"{version} returned an unexpected deck format")
+        except (requests.RequestException, ValueError) as exc:
+            failures.append(f"{version}: {exc}")
+    raise ValueError("Could not fetch this Moxfield deck. Make sure it is public; for private decks, upload a Moxfield JSON/CSV export. " + "; ".join(failures))
 
 
 def normalize_archidekt_cards(payload: dict[str, Any], include_extra: bool = False) -> list[dict[str, Any]]:
@@ -2829,42 +2931,222 @@ def normalize_archidekt_cards(payload: dict[str, Any], include_extra: bool = Fal
         )
         finish = normalize_finish(finish_raw)
         tcgplayer_id = card_obj.get("tcgplayerId") or card_obj.get("tcgplayer_id") or card_obj.get("tcgplayer")
+        role_tags = _entry_role_tags(entry, cats)
         raw.append({
             "name": str(name), "quantity": qty, "scryfall_id": sid,
             "set_code": str(set_code).upper() if set_code else None,
             "collector_number": str(collector_number) if collector_number else None,
             "category": category, "finish": finish,
-            "tcgplayer_id": _normalize_tcgplayer_id(tcgplayer_id),
+            "tcgplayer_id": _normalize_tcgplayer_id(tcgplayer_id), "role_tags": role_tags,
         })
-    merged: dict[tuple[str, str|None, str], dict[str, Any]] = {}
+    merged: dict[tuple[str, str | None, str, tuple[str, ...]], dict[str, Any]] = {}
     for card in raw:
-        key = (_norm_card_name(card["name"]), card.get("scryfall_id"), card.get("category") or "Mainboard")
+        key = (_norm_card_name(card["name"]), card.get("scryfall_id"), card.get("category") or "Mainboard", tuple(t.casefold() for t in card.get("role_tags", [])))
         if key not in merged:
             merged[key] = dict(card)
         else:
             merged[key]["quantity"] += card["quantity"]
     return list(merged.values())
 
+
+def normalize_moxfield_deck(payload: dict[str, Any], include_extra: bool = False) -> tuple[list[dict[str, Any]], list[str]]:
+    """Normalize a public Moxfield API payload while retaining card tags/categories."""
+    boards = payload.get("boards") if isinstance(payload.get("boards"), dict) else {}
+    board_specs = (
+        ("commanders", "Commander"), ("mainboard", "Mainboard"), ("sideboard", "Sideboard"),
+        ("maybeboard", "Maybeboard"), ("considering", "Considering"), ("companions", "Companion"),
+    )
+    excluded = {"sideboard", "maybeboard", "considering"}
+    raw: list[dict[str, Any]] = []
+    for board_key, section_name in board_specs:
+        board = payload.get(board_key)
+        if not board:
+            board = boards.get(board_key) or boards.get(board_key.title())
+        if not board:
+            continue
+        if not include_extra and board_key in excluded:
+            continue
+        entries = list(board.values()) if isinstance(board, dict) else list(board) if isinstance(board, list) else []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            card_obj = entry.get("card") if isinstance(entry.get("card"), dict) else entry
+            name = card_obj.get("name") or card_obj.get("displayName") or entry.get("name")
+            if not name:
+                continue
+            try:
+                qty = max(1, int(entry.get("quantity", entry.get("qty", entry.get("count", 1)))))
+            except (TypeError, ValueError):
+                qty = 1
+            explicit_section = str(entry.get("board") or entry.get("zone") or entry.get("section") or "").strip()
+            category_value = str(entry.get("category") or "").strip()
+            structural_categories = {"mainboard", "deck", "commander", "commanders", "sideboard", "maybeboard", "considering", "companion"}
+            if explicit_section:
+                category = explicit_section[:100]
+            elif category_value.casefold() in structural_categories:
+                category = category_value[:100]
+            else:
+                category = section_name
+            sid_raw = card_obj.get("scryfall_id") or card_obj.get("scryfallId") or entry.get("scryfall_id") or entry.get("scryfallId")
+            sid = str(sid_raw).strip() if _looks_like_uuid(sid_raw) else None
+            set_code = card_obj.get("set") or card_obj.get("set_code") or card_obj.get("setCode") or entry.get("set") or entry.get("set_code")
+            collector_number = card_obj.get("cn") or card_obj.get("collector_number") or card_obj.get("collectorNumber") or entry.get("cn") or entry.get("collector_number")
+            is_foil = entry.get("isFoil") or entry.get("is_foil") or card_obj.get("isFoil")
+            finish = "foil" if is_foil else normalize_finish(entry.get("finish") or entry.get("printing") or card_obj.get("finish"))
+            tcg_id = card_obj.get("tcgplayerId") or card_obj.get("tcgplayer_id") or entry.get("tcgplayerId")
+            role_tags = _entry_role_tags(entry)
+            # Some exports expose user tags one level below the card object.
+            role_tags = _clean_tag_list(role_tags + _entry_role_tags(card_obj))
+            if category.casefold() not in {"mainboard", "sideboard", "maybeboard", "considering", "commander", "companion"}:
+                role_tags = _clean_tag_list(role_tags + [category])
+            raw.append({
+                "name": str(name), "quantity": qty, "scryfall_id": sid,
+                "set_code": str(set_code).upper() if set_code else None,
+                "collector_number": str(collector_number) if collector_number else None,
+                "category": category, "finish": finish,
+                "tcgplayer_id": _normalize_tcgplayer_id(tcg_id),
+                "role_tags": role_tags,
+            })
+    # Some clients provide a flat cards array instead of board dictionaries.
+    if not raw and isinstance(payload.get("cards"), list):
+        for entry in payload["cards"]:
+            if not isinstance(entry, dict):
+                continue
+            section = str(entry.get("board") or entry.get("zone") or "Mainboard")
+            if not include_extra and section.casefold() in excluded:
+                continue
+            card = entry.get("card") if isinstance(entry.get("card"), dict) else entry
+            name = card.get("name") or entry.get("name")
+            if not name:
+                continue
+            role_tags = _clean_tag_list(_entry_role_tags(entry) + _entry_role_tags(card))
+            try: qty = max(1, int(entry.get("quantity", entry.get("qty", 1)) or 1))
+            except (TypeError, ValueError): qty = 1
+            sid_raw = card.get("scryfall_id") or card.get("scryfallId")
+            raw.append({"name": str(name), "quantity": qty, "scryfall_id": str(sid_raw) if _looks_like_uuid(sid_raw) else None,
+                        "set_code": card.get("set") or card.get("set_code"), "collector_number": card.get("cn") or card.get("collector_number"),
+                        "category": section, "finish": "foil" if entry.get("isFoil") else normalize_finish(entry.get("finish")),
+                        "tcgplayer_id": _normalize_tcgplayer_id(card.get("tcgplayerId")), "role_tags": role_tags})
+    merged: dict[tuple[str, str | None, str, tuple[str, ...]], dict[str, Any]] = {}
+    for card in raw:
+        key = (_norm_card_name(card["name"]), card.get("scryfall_id"), card.get("category") or "Mainboard", tuple(t.casefold() for t in card.get("role_tags", [])))
+        if key not in merged:
+            merged[key] = dict(card)
+        else:
+            merged[key]["quantity"] += card["quantity"]
+    return list(merged.values()), _deck_tags_from_payload(payload)
+
+
 def parse_text_decklist(text: str) -> list[dict[str, Any]]:
-    import re
-    merged={}; section="Mainboard"
-    for raw in (text or "").splitlines():
-        line=raw.strip()
-        if not line or line.startswith("#"): continue
-        low=line.casefold().rstrip(":")
-        if low in {"commander","commanders","sideboard","maybeboard","mainboard","deck"}: section=line.rstrip(":"); continue
-        m=re.match(r"^(\d+)\s*x?\s+(.+?)\s*$",line,re.I)
-        if not m: continue
-        qty=int(m.group(1)); name=re.sub(r"\s+\([A-Za-z0-9]{2,8}\)\s+[0-9]+[A-Za-z*]*$","",m.group(2).strip()).strip(); key=(_norm_card_name(name),section)
-        if key not in merged: merged[key]={"name":name,"quantity":qty,"scryfall_id":None,"set_code":None,"collector_number":None,"category":section}
-        else: merged[key]["quantity"] += qty
+    """Parse common deck text, including Moxfield-style #Category sections."""
+    section = "Mainboard"
+    active_tags: list[str] = []
+    merged: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]] = {}
+    structural = {"commander", "commanders", "sideboard", "maybeboard", "mainboard", "deck", "considering", "companion"}
+    for raw_line in (text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            heading = line.lstrip("#").strip().rstrip(":").strip()
+            if heading.casefold() in structural:
+                section = heading.title() if heading.casefold() != "mainboard" else "Mainboard"
+                active_tags = []
+            elif heading:
+                # Moxfield-style tagged sections: preserve the heading on each card.
+                active_tags = _clean_tag_list(re.split(r"[,;|]", heading))
+            continue
+        low = line.casefold().rstrip(":")
+        if low in structural:
+            section = line.rstrip(":").title()
+            if low == "mainboard": section = "Mainboard"
+            active_tags = []
+            continue
+        match = re.match(r"^(\d+)\s*x?\s+(.+?)\s*$", line, re.I)
+        if not match:
+            continue
+        qty = max(1, int(match.group(1)))
+        name = re.sub(r"\s+\([A-Za-z0-9]{2,8}\)\s+[0-9]+[A-Za-z*]*$", "", match.group(2).strip()).strip()
+        role_tags = _clean_tag_list(active_tags)
+        key = (_norm_card_name(name), section, tuple(t.casefold() for t in role_tags))
+        if key not in merged:
+            merged[key] = {"name": name, "quantity": qty, "scryfall_id": None, "set_code": None,
+                           "collector_number": None, "category": section, "role_tags": role_tags}
+        else:
+            merged[key]["quantity"] += qty
     return list(merged.values())
 
 
-def _looks_like_uuid(value: Any) -> bool:
-    import re
-    return bool(re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}", str(value or "").strip()))
+def parse_deck_csv(text: str, include_extra: bool = False) -> tuple[list[dict[str, Any]], list[str]]:
+    """Parse CSV deck/collection exports and preserve tag/category columns when present."""
+    reader = csv.DictReader(io.StringIO(text, newline=None))
+    if not reader.fieldnames:
+        raise ValueError("CSV deck file has no header row.")
+    def get(row: dict[str, Any], *keys: str) -> Any:
+        lowered = {str(k).strip().casefold(): v for k, v in row.items() if k is not None}
+        for key in keys:
+            value = lowered.get(key.casefold())
+            if value not in (None, ""):
+                return value
+        return None
+    cards: list[dict[str, Any]] = []
+    deck_tags: list[str] = []
+    for row in reader:
+        name = get(row, "name", "card name", "simple name", "product name")
+        if not name:
+            continue
+        section_raw = str(get(row, "board", "zone", "section", "deck section") or "Mainboard").strip()
+        category_raw = str(get(row, "category", "categories") or "").strip()
+        structural = {"mainboard", "deck", "commander", "commanders", "sideboard", "maybeboard", "considering", "companion"}
+        section = category_raw if category_raw.casefold() in structural else section_raw
+        if not include_extra and section.casefold() in {"sideboard", "maybeboard", "considering"}:
+            continue
+        if get(row, "deck tags", "deck_tags", "deck tag"):
+            deck_tags.extend(_clean_tag_list(get(row, "deck tags", "deck_tags", "deck tag")))
+        role_values: list[str] = []
+        for col in ("tags", "tag", "custom tags", "custom_tags", "categories", "card categories", "role tags", "role_tags"):
+            if get(row, col): role_values.extend(_clean_tag_list(get(row, col)))
+        if category_raw and category_raw.casefold() not in structural:
+            role_values.extend(_clean_tag_list(category_raw))
+        roles = _clean_tag_list(role_values)
+        try: qty = max(1, int(float(get(row, "quantity", "qty", "count", "amount") or 1)))
+        except (TypeError, ValueError): qty = 1
+        finish_value = get(row, "finish", "printing", "treatment")
+        if str(get(row, "foil") or "").casefold() in {"true", "yes", "1", "foil", "y"}:
+            finish_value = "foil"
+        sid_raw = get(row, "scryfall id", "scryfall_id", "scryfall uuid")
+        card = {
+            "name": str(name).strip(), "quantity": qty,
+            "scryfall_id": str(sid_raw).strip() if _looks_like_uuid(sid_raw) else None,
+            "set_code": str(get(row, "set code", "set_code", "set") or "").strip().upper() or None,
+            "collector_number": str(get(row, "collector number", "collector_number", "collector #", "cn") or "").strip() or None,
+            "category": section or "Mainboard", "finish": normalize_finish(finish_value),
+            "tcgplayer_id": _normalize_tcgplayer_id(get(row, "tcgplayer id", "tcgplayer_id")), "role_tags": roles,
+        }
+        cards.append(card)
+    return cards, _clean_tag_list(deck_tags)
 
+
+def deck_cover_directory() -> Path:
+    path = DATA_DIR / "deck_covers"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _remove_deck_cover_file(filename: str | None) -> None:
+    if filename and re.fullmatch(r"[0-9a-f]{32}\.(?:jpg|jpeg|png|webp)", filename):
+        try: (deck_cover_directory() / filename).unlink()
+        except OSError: pass
+
+
+def deck_cover_url(deck: Any) -> str | None:
+    filename = deck.get("cover_filename") if hasattr(deck, "get") else None
+    sid = deck.get("cover_scryfall_id") if hasattr(deck, "get") else None
+    if filename:
+        return url_for("deck_cover_file", filename=filename)
+    if sid:
+        return scryfall_image_url(str(sid))
+    return None
 
 def resolve_local_printing(name: str, scryfall_id: str|None=None, set_code: str|None=None, collector_number: str|None=None) -> dict[str,Any]:
     """Resolve an exact printing against the local card-art catalog.
@@ -2918,14 +3200,24 @@ def resolve_local_printing(name: str, scryfall_id: str|None=None, set_code: str|
         return fallback
 
 
-def save_deck(name: str, source: str, source_url: str|None, cards:list[dict[str,Any]])->int:
-    now=datetime.now(timezone.utc).isoformat()
-    conn=connect_inventory()
-    conn.execute("INSERT INTO decklists(name,source,source_url,created_at,updated_at) VALUES (?,?,?,?,?)",(name,source,source_url,now,now))
-    deck_id=int(conn.execute("SELECT last_insert_rowid() FROM decklists").fetchone()[0])
+def save_deck(
+    name: str, source: str, source_url: str | None, cards: list[dict[str, Any]],
+    *, deck_tags: list[str] | None = None, person_name: str | None = None,
+) -> int:
+    now = datetime.now(timezone.utc).isoformat()
+    conn = connect_inventory()
+    conn.execute(
+        "INSERT INTO decklists(name,source,source_url,created_at,updated_at,tags_json,person_name) VALUES (?,?,?,?,?,?,?)",
+        (name, source, source_url, now, now, json.dumps(_clean_tag_list(deck_tags or []), ensure_ascii=False), person_name or None),
+    )
+    deck_id = int(conn.execute("SELECT last_insert_rowid() FROM decklists").fetchone()[0])
     conn.executemany(
-        "INSERT INTO deck_cards(deck_id,name,quantity,scryfall_id,set_code,collector_number,category,finish,tcgplayer_id) VALUES (?,?,?,?,?,?,?,?,?)",
-        [(deck_id,c["name"],int(c["quantity"]),c.get("scryfall_id"),c.get("set_code"),c.get("collector_number"),c.get("category"),normalize_finish(c.get("finish")),c.get("tcgplayer_id")) for c in cards]
+        """INSERT INTO deck_cards
+           (deck_id,name,quantity,scryfall_id,set_code,collector_number,category,finish,tcgplayer_id,role_tags_json)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        [(deck_id, c["name"], int(c["quantity"]), c.get("scryfall_id"), c.get("set_code"),
+          c.get("collector_number"), c.get("category"), normalize_finish(c.get("finish")),
+          c.get("tcgplayer_id"), json.dumps(_clean_tag_list(c.get("role_tags") or []), ensure_ascii=False)) for c in cards],
     )
     conn.commit()
     conn.close()
@@ -2940,7 +3232,7 @@ def deck_comparison(deck_id: int, owner: str, fuzzy: bool = False) -> tuple[list
         return [], {"required": 0, "owned": 0, "assigned": 0, "free_available": 0, "missing": 0, "complete": False, "fuzzy": fuzzy}
     cards = conn.execute(
         """SELECT dc.id,dc.name,dc.quantity,dc.scryfall_id,dc.set_code,dc.collector_number,
-                  dc.category,dc.finish,dc.tcgplayer_id,cm.oracle_id AS card_oracle_id
+                  dc.category,dc.finish,dc.tcgplayer_id,dc.role_tags_json,cm.oracle_id AS card_oracle_id
            FROM deck_cards dc LEFT JOIN card_metadata cm ON cm.scryfall_id=dc.scryfall_id
            WHERE dc.deck_id=?
            ORDER BY CASE WHEN LOWER(COALESCE(dc.category,''))='commander' THEN 0 ELSE 1 END,
@@ -3015,7 +3307,11 @@ def deck_comparison(deck_id: int, owner: str, fuzzy: bool = False) -> tuple[list
         assigned_total += assigned
         free_total += free_av
         missing += m
-        out.append({"id": r["id"], "name": r["name"], "category": r["category"] or "Mainboard",
+        try:
+            role_tags = _clean_tag_list(json.loads(r["role_tags_json"] or "[]"))
+        except (TypeError, json.JSONDecodeError):
+            role_tags = []
+        out.append({"id": r["id"], "name": r["name"], "category": r["category"] or "Mainboard", "role_tags": role_tags,
                     "required": required, "owned": h, "assigned": assigned, "free_available": free_av,
                     "missing": m, "scryfall_id": r["scryfall_id"], "set_code": r["set_code"],
                     "collector_number": r["collector_number"], "finish": finish, "tcgplayer_id": r["tcgplayer_id"],
@@ -3027,96 +3323,338 @@ def deck_comparison(deck_id: int, owner: str, fuzzy: bool = False) -> tuple[list
 @app.get("/decks")
 @admin_required
 def decks_page():
-    conn=connect_inventory(); decks=conn.execute("SELECT d.*,COALESCE(SUM(dc.quantity),0) card_count FROM decklists d LEFT JOIN deck_cards dc ON dc.deck_id=d.id GROUP BY d.id ORDER BY d.updated_at DESC").fetchall(); owners=active_people(conn); locations=[r[0] for r in conn.execute("SELECT DISTINCT COALESCE(location,'Free') FROM inventory ORDER BY COALESCE(location,'Free') COLLATE NOCASE").fetchall()]; conn.close(); return render_template("decks.html",decks=decks,owners=owners,locations=locations,message=request.args.get("message",""))
+    query = str(request.args.get("q") or "").strip().casefold()
+    selected_tag = str(request.args.get("tag") or "").strip()
+    selected_person = str(request.args.get("person") or "").strip()
+    conn = connect_inventory()
+    rows = conn.execute(
+        "SELECT d.*,COALESCE(SUM(dc.quantity),0) card_count FROM decklists d "
+        "LEFT JOIN deck_cards dc ON dc.deck_id=d.id GROUP BY d.id ORDER BY d.updated_at DESC, d.name COLLATE NOCASE"
+    ).fetchall()
+    owners = active_people(conn)
+    locations = [r[0] for r in conn.execute("SELECT DISTINCT COALESCE(location,'Free') FROM inventory ORDER BY COALESCE(location,'Free') COLLATE NOCASE").fetchall()]
+    conn.close()
+    decks: list[dict[str, Any]] = []
+    all_tags: dict[str, str] = {}
+    for row in rows:
+        deck = dict(row)
+        try:
+            deck["tags"] = _clean_tag_list(json.loads(deck.get("tags_json") or "[]"))
+        except (TypeError, json.JSONDecodeError):
+            deck["tags"] = []
+        for tag in deck["tags"]:
+            all_tags.setdefault(tag.casefold(), tag)
+        deck["cover_url"] = deck_cover_url(deck)
+        deck["person_name"] = str(deck.get("person_name") or "").strip()
+        if query and query not in " ".join([deck.get("name") or "", deck.get("source") or "", deck["person_name"], " ".join(deck["tags"])]).casefold():
+            continue
+        if selected_tag and selected_tag.casefold() not in {t.casefold() for t in deck["tags"]}:
+            continue
+        if selected_person and selected_person.casefold() != (deck["person_name"] or "Unassigned").casefold():
+            continue
+        decks.append(deck)
+    current_user_row = current_user()
+    default_person = str(current_user_row["person_name"] or "").strip() if current_user_row else ""
+    if not default_person and owners:
+        default_person = owners[0]
+    person_options = sorted({str(d.get("person_name") or "Unassigned") for d in (dict(r) for r in rows)}, key=str.casefold)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for deck in decks:
+        group_name = deck.get("person_name") or "Unassigned"
+        grouped.setdefault(group_name, []).append(deck)
+    deck_groups = sorted(grouped.items(), key=lambda item: (item[0] == "Unassigned", item[0].casefold()))
+    return render_template(
+        "decks.html", decks=decks, deck_groups=deck_groups, owners=owners, locations=locations,
+        message=request.args.get("message", ""), q=request.args.get("q", ""), selected_tag=selected_tag,
+        selected_person=selected_person, tag_options=sorted(all_tags.values(), key=str.casefold),
+        person_options=person_options, default_person=default_person,
+    )
 
 
 @app.post("/decks/import")
+@admin_required
 def decks_import():
-    source_url=str(request.form.get("source_url") or "").strip(); pasted=request.form.get("deck_text") or ""; deck_name=str(request.form.get("deck_name") or "").strip()[:200]; include_extra=bool(request.form.get("include_extra")); add_inventory=bool(request.form.get("add_inventory")); store_free=bool(request.form.get("store_free")); owner=str(request.form.get("owner") or "").strip()[:100] or "Me"; location=str(request.form.get("location") or "").strip()[:120]
+    source_url = str(request.form.get("source_url") or "").strip()
+    pasted = request.form.get("deck_text") or ""
+    deck_name = str(request.form.get("deck_name") or "").strip()[:200]
+    include_extra = bool(request.form.get("include_extra"))
+    add_inventory = bool(request.form.get("add_inventory"))
+    store_free = bool(request.form.get("store_free"))
+    owner = str(request.form.get("owner") or "").strip()[:100] or "Me"
+    location = str(request.form.get("location") or "").strip()[:120]
+    source_file = request.files.get("deck_file")
+    imported_tags: list[str] = []
+    uploaded_payload: dict[str, Any] | None = None
     try:
         if source_url:
-            deck_id=_extract_archidekt_id(source_url)
-            if not deck_id: raise ValueError("Could not find an Archidekt deck ID in that URL.")
-            payload=fetch_archidekt_deck(deck_id); cards=normalize_archidekt_cards(payload,include_extra); deck_name=deck_name or str(payload.get("name") or f"Archidekt Deck {deck_id}"); source="archidekt"
+            archidekt_id = _extract_archidekt_id(source_url)
+            moxfield_id = _extract_moxfield_id(source_url)
+            if archidekt_id:
+                payload = fetch_archidekt_deck(archidekt_id)
+                cards = normalize_archidekt_cards(payload, include_extra)
+                imported_tags = _deck_tags_from_payload(payload)
+                deck_name = deck_name or str(payload.get("name") or f"Archidekt Deck {archidekt_id}")
+                source = "archidekt"
+            elif moxfield_id:
+                payload = fetch_moxfield_deck(moxfield_id)
+                cards, imported_tags = normalize_moxfield_deck(payload, include_extra)
+                deck_name = deck_name or str(payload.get("name") or payload.get("title") or f"Moxfield Deck {moxfield_id}")
+                source = "moxfield"
+            else:
+                raise ValueError("Enter a valid Archidekt or Moxfield deck URL. Only public decks can be fetched by URL.")
+        elif source_file and source_file.filename:
+            filename = source_file.filename.lower()
+            raw_data = source_file.read()
+            try:
+                file_text = raw_data.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                file_text = raw_data.decode("latin-1")
+            if filename.endswith(".json"):
+                try:
+                    uploaded_payload = json.loads(file_text)
+                except json.JSONDecodeError as exc:
+                    raise ValueError("Uploaded JSON could not be parsed.") from exc
+                if not isinstance(uploaded_payload, dict):
+                    raise ValueError("Uploaded JSON must contain a deck object.")
+                if any(k in uploaded_payload for k in ("mainboard", "commanders", "boards")):
+                    cards, imported_tags = normalize_moxfield_deck(uploaded_payload, include_extra)
+                    source = "moxfield-json"
+                    deck_name = deck_name or str(uploaded_payload.get("name") or uploaded_payload.get("title") or "Imported Moxfield Deck")
+                elif isinstance(uploaded_payload.get("cards"), list):
+                    cards = normalize_archidekt_cards(uploaded_payload, include_extra)
+                    imported_tags = _deck_tags_from_payload(uploaded_payload)
+                    source = "archidekt-json"
+                    deck_name = deck_name or str(uploaded_payload.get("name") or "Imported Archidekt Deck")
+                else:
+                    raise ValueError("Unrecognized deck JSON. Expected an Archidekt or Moxfield deck export.")
+            elif filename.endswith(".csv"):
+                cards, imported_tags = parse_deck_csv(file_text, include_extra)
+                source = "deck-csv"
+                deck_name = deck_name or Path(source_file.filename).stem[:200] or "Imported Deck"
+            elif filename.endswith(".txt"):
+                cards = parse_text_decklist(file_text)
+                source = "text-file"
+                deck_name = deck_name or Path(source_file.filename).stem[:200] or "Imported Deck"
+            else:
+                raise ValueError("Upload a .json, .csv, or .txt deck export.")
         else:
-            cards=parse_text_decklist(pasted); source="text"; deck_name=deck_name or "Imported Deck"
-        if not cards: raise ValueError("No cards were found in the decklist.")
-        resolved_cards=[]
-        for c in cards:
-            resolved=resolve_local_printing(c["name"],c.get("scryfall_id"),c.get("set_code"),c.get("collector_number"))
-            merged=dict(c)
-            for k,v in resolved.items():
-                if v is not None and v != "":
-                    merged[k]=v
+            cards = parse_text_decklist(pasted)
+            source = "text"
+            deck_name = deck_name or "Imported Deck"
+        if not cards:
+            raise ValueError("No cards were found in the decklist.")
+        deck_tags = _clean_tag_list(imported_tags + _clean_tag_list(request.form.get("deck_tags") or ""))
+        deck_person = str(request.form.get("deck_person") or "").strip()[:100]
+        conn = connect_inventory()
+        people = set(active_people(conn))
+        conn.close()
+        if deck_person and deck_person not in people:
+            raise ValueError(f"Deck for person '{deck_person}' is not an active person.")
+        if not deck_person:
+            user = current_user()
+            mapped = str(user["person_name"] or "").strip() if user else ""
+            deck_person = mapped if mapped in people else (owner if owner in people else "")
+        resolved_cards = []
+        for card in cards:
+            resolved = resolve_local_printing(card["name"], card.get("scryfall_id"), card.get("set_code"), card.get("collector_number"))
+            merged = dict(card)
+            for key, value in resolved.items():
+                if value is not None and value != "":
+                    merged[key] = value
+            merged["role_tags"] = _clean_tag_list(card.get("role_tags") or [])
             resolved_cards.append(merged)
-        cards=resolved_cards
-        deck_db_id=save_deck(deck_name,source,source_url or None,cards)
-        if add_inventory and not session.get("is_admin"):
-            raise PermissionError("Adding an imported deck directly to inventory requires an admin login.")
+        cards = resolved_cards
+        deck_db_id = save_deck(deck_name, source, source_url or None, cards, deck_tags=deck_tags, person_name=deck_person or None)
         if add_inventory:
-            # Physical storage is independent of deck membership. The checkbox decides
-            # whether imported copies stay in the unassigned pool or are assigned to this deck.
             target_location = location or "Free"
             target_deck_id = None if store_free else deck_db_id
-            conn=connect_inventory(); ensure_people_and_auth(conn)
-            if not conn.execute("SELECT 1 FROM people WHERE name=? AND active=1",(owner,)).fetchone():
+            conn = connect_inventory()
+            ensure_people_and_auth(conn)
+            if not conn.execute("SELECT 1 FROM people WHERE name=? AND active=1", (owner,)).fetchone():
+                conn.close()
                 raise ValueError(f"Owner '{owner}' is not active")
-            now_iso=datetime.now(timezone.utc).isoformat()
-            price_snapshot=get_tcg_prices()
-            for c in cards:
-                sid=c.get("scryfall_id"); finish=normalize_finish(c.get("finish")); existing=None
+            now_iso = datetime.now(timezone.utc).isoformat()
+            price_snapshot = get_tcg_prices()
+            for card in cards:
+                sid = card.get("scryfall_id")
+                finish = normalize_finish(card.get("finish"))
+                existing = None
                 if sid:
-                    existing=conn.execute(
+                    existing = conn.execute(
                         """SELECT id,price,tcgplayer_id FROM inventory WHERE scryfall_id=? AND owner=?
                            AND IFNULL(NULLIF(finish,''),'normal')=? AND COALESCE(location,'Free')=?
                            AND IFNULL(deck_id,0)=IFNULL(?,0) AND COALESCE(for_vending,0)=0 LIMIT 1""",
-                        (sid,owner,finish,target_location,target_deck_id),
+                        (sid, owner, finish, target_location, target_deck_id),
                     ).fetchone()
-                tcgplayer_id=_normalize_tcgplayer_id(c.get("tcgplayer_id"))
+                tcgplayer_id = _normalize_tcgplayer_id(card.get("tcgplayer_id"))
                 if existing and not tcgplayer_id:
-                    tcgplayer_id=_normalize_tcgplayer_id(existing["tcgplayer_id"])
-                current_prices=price_snapshot.get(tcgplayer_id, {}) if tcgplayer_id else {}
-                snapshot_price=current_prices.get(finish)
+                    tcgplayer_id = _normalize_tcgplayer_id(existing["tcgplayer_id"])
+                current_prices = price_snapshot.get(tcgplayer_id, {}) if tcgplayer_id else {}
+                snapshot_price = current_prices.get(finish)
                 if snapshot_price is not None:
-                    snapshot_price=f"{to_float(snapshot_price):.2f}"
+                    snapshot_price = f"{to_float(snapshot_price):.2f}"
                 if existing:
                     conn.execute(
                         """UPDATE inventory SET quantity=quantity+?,scan_time=?,price=COALESCE(?,price),
                            collector_number=COALESCE(?,collector_number),tcgplayer_id=COALESCE(?,tcgplayer_id),deck_id=?,
                            for_vending=CASE WHEN ? IS NOT NULL THEN 0 ELSE for_vending END WHERE id=?""",
-                        (int(c["quantity"]),now_iso,snapshot_price,c.get("collector_number"),tcgplayer_id,target_deck_id,target_deck_id,existing["id"])
+                        (int(card["quantity"]), now_iso, snapshot_price, card.get("collector_number"), tcgplayer_id, target_deck_id, target_deck_id, existing["id"]),
                     )
                 else:
                     conn.execute(
                         """INSERT INTO inventory(scryfall_id,name,set_code,rarity,price,owner,quantity,scan_time,finish,collector_number,tcgplayer_id,location,deck_id,for_vending)
                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (sid,c["name"],c.get("set_code") or "",c.get("rarity") or "Common",snapshot_price or "0.00",owner,int(c["quantity"]),now_iso,finish,c.get("collector_number"),tcgplayer_id,target_location,target_deck_id,0)
+                        (sid, card["name"], card.get("set_code") or "", card.get("rarity") or "Common", snapshot_price or "0.00", owner, int(card["quantity"]), now_iso, finish, card.get("collector_number"), tcgplayer_id, target_location, target_deck_id, 0),
                     )
-            conn.commit(); conn.close()
-        return redirect(url_for("deck_view",deck_id=deck_db_id,owner=owner,message=f"Imported {deck_name}."))
-    except Exception as exc: return redirect(url_for("decks_page",message=f"Deck import failed: {exc}"))
+            conn.commit()
+            conn.close()
+        return redirect(url_for("deck_view", deck_id=deck_db_id, owner=deck_person or owner, message=f"Imported {deck_name} with {len(deck_tags)} deck tag(s)."))
+    except Exception as exc:
+        return redirect(url_for("decks_page", message=f"Deck import failed: {exc}"))
+
+@app.post("/decks/<int:deck_id>/settings")
+@admin_required
+def update_deck_settings(deck_id: int):
+    name = " ".join(str(request.form.get("name") or "").split())[:200]
+    if not name:
+        return redirect(url_for("deck_view", deck_id=deck_id, message="Deck name cannot be empty."))
+    tags = _clean_tag_list(request.form.get("deck_tags") or "")
+    person_name = str(request.form.get("person_name") or "").strip()[:100]
+    conn = connect_inventory()
+    if not conn.execute("SELECT 1 FROM decklists WHERE id=?", (deck_id,)).fetchone():
+        conn.close()
+        return redirect(url_for("decks_page", message="Deck not found."))
+    if person_name and not conn.execute("SELECT 1 FROM people WHERE name=? COLLATE NOCASE AND active=1", (person_name,)).fetchone():
+        conn.close()
+        return redirect(url_for("deck_view", deck_id=deck_id, message="Select an active person for this deck."))
+    conn.execute(
+        "UPDATE decklists SET name=?, tags_json=?, person_name=?, updated_at=? WHERE id=?",
+        (name, json.dumps(tags, ensure_ascii=False), person_name or None, datetime.now(timezone.utc).isoformat(), deck_id),
+    )
+    conn.commit()
+    conn.close()
+    return redirect(url_for("deck_view", deck_id=deck_id, message="Deck settings saved."))
+
+
+@app.get("/deck-covers/<filename>")
+@admin_required
+def deck_cover_file(filename: str):
+    # Only app-generated names are accepted; never serve arbitrary DATA_DIR files.
+    if not re.fullmatch(r"[0-9a-f]{32}\.(?:jpg|jpeg|png|webp)", filename):
+        return "Not found", 404
+    return send_from_directory(deck_cover_directory(), filename, conditional=True, max_age=3600)
+
+
+def _valid_cover_upload(upload) -> tuple[bytes, str]:
+    if not upload or not upload.filename:
+        raise ValueError("Choose an image file to upload.")
+    ext = Path(upload.filename).suffix.lower()
+    allowed = {".jpg": "jpg", ".jpeg": "jpeg", ".png": "png", ".webp": "webp"}
+    if ext not in allowed:
+        raise ValueError("Cover image must be JPG, PNG, or WebP.")
+    raw = upload.read(5 * 1024 * 1024 + 1)
+    if not raw:
+        raise ValueError("The selected cover image is empty.")
+    if len(raw) > 5 * 1024 * 1024:
+        raise ValueError("Cover images must be 5 MB or smaller.")
+    valid = (
+        (ext in {".jpg", ".jpeg"} and raw.startswith(b"\xff\xd8\xff"))
+        or (ext == ".png" and raw.startswith(b"\x89PNG\r\n\x1a\n"))
+        or (ext == ".webp" and raw.startswith(b"RIFF") and raw[8:12] == b"WEBP")
+    )
+    if not valid:
+        raise ValueError("The file contents do not match a supported image format.")
+    return raw, allowed[ext]
+
+
+@app.post("/decks/<int:deck_id>/cover")
+@admin_required
+def update_deck_cover(deck_id: int):
+    mode = str(request.form.get("cover_mode") or "none").strip().lower()
+    conn = connect_inventory()
+    deck = conn.execute("SELECT cover_filename FROM decklists WHERE id=?", (deck_id,)).fetchone()
+    if not deck:
+        conn.close()
+        return redirect(url_for("decks_page", message="Deck not found."))
+    old_filename = deck["cover_filename"]
+    if mode == "keep":
+        conn.close()
+        return redirect(url_for("deck_view", deck_id=deck_id, message="Current cover kept."))
+    new_filename = None
+    cover_scryfall_id = None
+    try:
+        if mode == "upload":
+            raw, ext = _valid_cover_upload(request.files.get("cover_image"))
+            new_filename = f"{uuid4().hex}.{ext}"
+            cover_path = deck_cover_directory() / new_filename
+            cover_path.write_bytes(raw)
+        elif mode == "card":
+            cover_scryfall_id = str(request.form.get("cover_scryfall_id") or "").strip()
+            row = conn.execute(
+                "SELECT 1 FROM deck_cards WHERE deck_id=? AND scryfall_id=? LIMIT 1",
+                (deck_id, cover_scryfall_id),
+            ).fetchone()
+            if not cover_scryfall_id or not row:
+                raise ValueError("Choose a card printing that is actually in this deck.")
+        elif mode != "none":
+            raise ValueError("Choose uploaded image, card image, or no cover.")
+        conn.execute(
+            "UPDATE decklists SET cover_filename=?, cover_scryfall_id=?, updated_at=? WHERE id=?",
+            (new_filename, cover_scryfall_id, datetime.now(timezone.utc).isoformat(), deck_id),
+        )
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        if new_filename:
+            try: (deck_cover_directory() / new_filename).unlink()
+            except OSError: pass
+        conn.close()
+        return redirect(url_for("deck_view", deck_id=deck_id, message=f"Could not update cover: {exc}"))
+    conn.close()
+    if old_filename and old_filename != new_filename:
+        _remove_deck_cover_file(old_filename)
+    return redirect(url_for("deck_view", deck_id=deck_id, message="Deck cover updated."))
 
 
 @app.get("/decks/<int:deck_id>")
 @admin_required
 def deck_view(deck_id:int):
-    owner=str(request.args.get("owner") or "").strip()
-    fuzzy=request.args.get("fuzzy","0").strip().lower() in {"1","true","yes","on"}
-    conn=connect_inventory()
-    deck=conn.execute("SELECT * FROM decklists WHERE id=?",(deck_id,)).fetchone()
-    owners=active_people(conn)
-    deck_cards=conn.execute(
+    owner = str(request.args.get("owner") or "").strip()
+    fuzzy = request.args.get("fuzzy", "0").strip().lower() in {"1", "true", "yes", "on"}
+    conn = connect_inventory()
+    deck_row = conn.execute("SELECT * FROM decklists WHERE id=?", (deck_id,)).fetchone()
+    owners = active_people(conn)
+    deck_cards_rows = conn.execute(
         "SELECT * FROM deck_cards WHERE deck_id=? ORDER BY CASE WHEN LOWER(COALESCE(category,''))='commander' THEN 0 ELSE 1 END, category, name COLLATE NOCASE, id",
         (deck_id,),
     ).fetchall()
     conn.close()
-    if not deck: return redirect(url_for("decks_page",message="Deck not found."))
+    if not deck_row:
+        return redirect(url_for("decks_page", message="Deck not found."))
+    deck = dict(deck_row)
+    try: deck["tags"] = _clean_tag_list(json.loads(deck.get("tags_json") or "[]"))
+    except (TypeError, json.JSONDecodeError): deck["tags"] = []
+    deck["cover_url"] = deck_cover_url(deck)
+    deck_cards: list[dict[str, Any]] = []
+    for row in deck_cards_rows:
+        card = dict(row)
+        try: card["role_tags"] = _clean_tag_list(json.loads(card.get("role_tags_json") or "[]"))
+        except (TypeError, json.JSONDecodeError): card["role_tags"] = []
+        deck_cards.append(card)
+    cover_cards = [card for card in deck_cards if card.get("scryfall_id")]
     if "owner" not in request.args:
-        user = current_user()
-        mapped_person = str(user["person_name"] or "").strip() if user else ""
-        owner = mapped_person if mapped_person else (owners[0] if owners else "")
-    comparison,stats=deck_comparison(deck_id,owner,fuzzy=fuzzy)
-    return render_template("deck_view.html",deck=deck,deck_cards=deck_cards,comparison=comparison,stats=stats,owners=owners,selected_owner=owner,fuzzy=fuzzy,message=request.args.get("message",""))
+        if deck.get("person_name"):
+            owner = str(deck["person_name"])
+        else:
+            user = current_user()
+            mapped_person = str(user["person_name"] or "").strip() if user else ""
+            owner = mapped_person if mapped_person else (owners[0] if owners else "")
+    comparison, stats = deck_comparison(deck_id, owner, fuzzy=fuzzy)
+    return render_template(
+        "deck_view.html", deck=deck, deck_cards=deck_cards, comparison=comparison, stats=stats,
+        owners=owners, selected_owner=owner, fuzzy=fuzzy, cover_cards=cover_cards,
+        message=request.args.get("message", ""),
+    )
 
 
 @app.post("/decks/<int:deck_id>/cards/<int:card_id>/edit")
@@ -3132,6 +3670,7 @@ def edit_deck_card(deck_id:int, card_id:int):
     set_code=str(request.form.get("set_code") or "").strip().upper()[:20] or None
     collector=str(request.form.get("collector_number") or "").strip()[:30] or None
     category=str(request.form.get("category") or "Mainboard").strip()[:100] or "Mainboard"
+    role_tags = _clean_tag_list(request.form.get("role_tags") or "")
     finish=normalize_finish(request.form.get("finish"))
     scryfall_id=str(request.form.get("scryfall_id") or "").strip() or None
     tcgplayer_id=_normalize_tcgplayer_id(request.form.get("tcgplayer_id"))
@@ -3150,9 +3689,9 @@ def edit_deck_card(deck_id:int, card_id:int):
     if not conn.execute("SELECT 1 FROM decklists WHERE id=?",(deck_id,)).fetchone():
         conn.close(); return redirect(url_for("decks_page",message="Deck not found."))
     conn.execute(
-        """UPDATE deck_cards SET name=?,quantity=?,scryfall_id=?,set_code=?,collector_number=?,category=?,finish=?,tcgplayer_id=?
+        """UPDATE deck_cards SET name=?,quantity=?,scryfall_id=?,set_code=?,collector_number=?,category=?,finish=?,tcgplayer_id=?,role_tags_json=?
            WHERE id=? AND deck_id=?""",
-        (name,qty,scryfall_id,set_code,collector,category,finish,tcgplayer_id,card_id,deck_id),
+        (name,qty,scryfall_id,set_code,collector,category,finish,tcgplayer_id,json.dumps(role_tags, ensure_ascii=False),card_id,deck_id),
     )
     conn.execute("UPDATE decklists SET updated_at=? WHERE id=?",(datetime.now(timezone.utc).isoformat(),deck_id))
     conn.commit(); conn.close()
@@ -3170,6 +3709,7 @@ def add_deck_card(deck_id:int):
     set_code=str(request.form.get("set_code") or "").strip().upper()[:20] or None
     collector=str(request.form.get("collector_number") or "").strip()[:30] or None
     category=str(request.form.get("category") or "Mainboard").strip()[:100] or "Mainboard"
+    role_tags = _clean_tag_list(request.form.get("role_tags") or "")
     finish=normalize_finish(request.form.get("finish"))
     tcgplayer_id=_normalize_tcgplayer_id(request.form.get("tcgplayer_id"))
     scryfall_id=str(request.form.get("scryfall_id") or "").strip() or None
@@ -3180,7 +3720,7 @@ def add_deck_card(deck_id:int):
     conn=connect_inventory()
     if not conn.execute("SELECT 1 FROM decklists WHERE id=?",(deck_id,)).fetchone():
         conn.close(); return redirect(url_for("decks_page",message="Deck not found."))
-    conn.execute("INSERT INTO deck_cards(deck_id,name,quantity,scryfall_id,set_code,collector_number,category,finish,tcgplayer_id) VALUES (?,?,?,?,?,?,?,?,?)",(deck_id,name,qty,scryfall_id,set_code,collector,category,finish,tcgplayer_id))
+    conn.execute("INSERT INTO deck_cards(deck_id,name,quantity,scryfall_id,set_code,collector_number,category,finish,tcgplayer_id,role_tags_json) VALUES (?,?,?,?,?,?,?,?,?,?)",(deck_id,name,qty,scryfall_id,set_code,collector,category,finish,tcgplayer_id,json.dumps(role_tags, ensure_ascii=False)))
     conn.execute("UPDATE decklists SET updated_at=? WHERE id=?",(datetime.now(timezone.utc).isoformat(),deck_id)); conn.commit(); conn.close()
     return redirect(url_for("deck_view",deck_id=deck_id,message=f"Added {name} to the deck."))
 
@@ -3445,7 +3985,7 @@ def delete_deck(deck_id: int):
     conn = connect_inventory()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        deck = conn.execute("SELECT id,name FROM decklists WHERE id=?", (deck_id,)).fetchone()
+        deck = conn.execute("SELECT id,name,cover_filename FROM decklists WHERE id=?", (deck_id,)).fetchone()
         if not deck:
             conn.rollback()
             return redirect(url_for("decks_page", message="Deck not found."))
@@ -3456,6 +3996,8 @@ def delete_deck(deck_id: int):
         conn.execute("DELETE FROM deck_cards WHERE deck_id=?", (deck_id,))
         cur = conn.execute("DELETE FROM decklists WHERE id=?", (deck_id,))
         conn.commit()
+        if cur.rowcount and deck["cover_filename"]:
+            _remove_deck_cover_file(deck["cover_filename"])
         message = f"Deck deleted. Unassigned {moved_qty} inventory copies; physical storage locations were preserved." if cur.rowcount else "Deck not found."
         return redirect(url_for("decks_page", message=message))
     except Exception as exc:

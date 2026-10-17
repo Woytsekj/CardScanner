@@ -498,3 +498,43 @@ body[data-vending-mode="select"] .vendor-selection-toolbar .selection-action { d
 .vending-card.multi-selected { outline: 2px solid var(--green); outline-offset: -2px; }
 body.selection-dragging { cursor: crosshair; }
 body[data-vending-mode="select"] .vending-card { cursor: crosshair; }
+
+/* Deck dashboard, deck/card tags, and persistent cover artwork. */
+.deck-dashboard-filters { margin-bottom: 16px; padding: 14px; }
+.deck-filter-form { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 10px; }
+.deck-filter-form label { min-width: 180px; flex: 1 1 180px; }
+.deck-filter-form input, .deck-filter-form select { width: 100%; }
+.deck-dashboard-layout { align-items: start; }
+.deck-person-group { margin-top: 18px; }
+.deck-person-group > h3 { margin: 0 0 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.deck-dashboard-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(255px, 1fr)); gap: 14px; }
+.deck-dashboard-card { min-width: 0; display: grid; grid-template-columns: 98px minmax(0, 1fr); overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--panel, #1c1c1c); }
+.deck-dashboard-cover { display: block; min-height: 142px; background: var(--panel-2, #242424); overflow: hidden; }
+.deck-dashboard-cover img { display: block; width: 100%; height: 100%; min-height: 142px; object-fit: cover; }
+.deck-cover-placeholder { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 5px; min-height: 142px; height: 100%; color: var(--muted); background: linear-gradient(145deg, #252525, #161616); }
+.deck-cover-placeholder span { font-size: 25px; font-weight: 800; letter-spacing: .08em; }
+.deck-cover-placeholder small { font-size: 11px; }
+.deck-dashboard-copy { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 7px; padding: 11px; }
+.deck-dashboard-title { color: var(--text); font-weight: 750; font-size: 15px; text-decoration: none; overflow-wrap: anywhere; }
+.deck-dashboard-title:hover { color: var(--green); }
+.deck-dashboard-meta, .deck-dashboard-updated { font-size: 12px; }
+.deck-tag-list { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.deck-tag { display: inline-flex; align-items: center; max-width: 100%; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel-2, #242424); color: var(--text); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.deck-dashboard-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 4px; }
+.deck-dashboard-actions form { margin: 0; }
+.deck-header-main { display: flex; align-items: center; gap: 14px; }
+.deck-header-cover { display: block; width: 56px; height: 78px; flex: 0 0 auto; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); }
+.deck-settings-grid { margin-bottom: 14px; }
+.deck-cover-settings-preview { display: block; width: 120px; height: 168px; margin: 4px 0 14px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
+.deck-cover-settings-preview.deck-cover-placeholder { min-height: 168px; }
+.deck-settings-grid .manual-form { display: flex; flex-direction: column; gap: 12px; }
+.role-tags-input { min-width: 145px; width: 100%; }
+.deck-editor-table { min-width: 1050px; }
+.deck-editor-table td { vertical-align: middle; }
+.deck-view-tags { margin-top: 6px; }
+@media (max-width: 900px) {
+  .deck-dashboard-card { grid-template-columns: 82px minmax(0,1fr); }
+  .deck-dashboard-grid { grid-template-columns: 1fr; }
+  .deck-filter-form label { min-width: 100%; }
+  .deck-header-main { align-items: flex-start; }
+}
