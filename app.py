@@ -724,18 +724,37 @@ def migrate_db() -> None:
 
 
 def attach_art_join(conn: sqlite3.Connection) -> str:
-    if not DB_ART.exists():
-        return "LEFT JOIN (SELECT NULL AS scryfall_id, NULL AS tcgplayer_id, NULL AS collector_number) a ON 1=0"
-    try:
-        conn.execute("ATTACH DATABASE ? AS art_db", (str(DB_ART),))
-        conn.execute("SELECT 1 FROM art_db.card_art LIMIT 1").fetchone()
-        return "LEFT JOIN art_db.card_art a ON i.scryfall_id = a.scryfall_id"
-    except sqlite3.Error:
+    art_join = (
+        "LEFT JOIN (SELECT NULL AS scryfall_id, "
+        "NULL AS tcgplayer_id, NULL AS collector_number) a ON 1=0"
+    )
+
+    if DB_ART.exists():
         try:
-            conn.execute("DETACH DATABASE art_db")
+            conn.execute(
+                "ATTACH DATABASE ? AS art_db",
+                (str(DB_ART),),
+            )
+            conn.execute(
+                "SELECT 1 FROM art_db.card_art LIMIT 1"
+            ).fetchone()
+
+            art_join = (
+                "LEFT JOIN art_db.card_art a "
+                "ON i.scryfall_id = a.scryfall_id"
+            )
         except sqlite3.Error:
-            pass
-        return "LEFT JOIN (SELECT NULL AS scryfall_id, NULL AS tcgplayer_id, NULL AS collector_number) a ON 1=0"
+            try:
+                conn.execute("DETACH DATABASE art_db")
+            except sqlite3.Error:
+                pass
+
+    mapping_join = (
+        "LEFT JOIN card_price_mapping m "
+        "ON m.scryfall_id = i.scryfall_id"
+    )
+
+    return f"{art_join}\n{mapping_join}"
 
 
 def to_float(value: Any, default: float = 0.0) -> float:
@@ -887,7 +906,11 @@ def inventory_rows(search: str, owner_filter: str, finish_filter: str, sort_key:
                IFNULL(i.quantity, 1) AS quantity, IFNULL(i.owner, 'Me') AS owner,
                IFNULL(NULLIF(i.finish, ''), 'normal') AS finish,
                COALESCE(i.collector_number, a.collector_number) AS collector_number,
-               COALESCE(i.tcgplayer_id, a.tcgplayer_id) AS tcgplayer_id,
+               COALESCE(
+                    NULLIF(TRIM(i.tcgplayer_id), ''),
+                    NULLIF(TRIM(a.tcgplayer_id), ''),
+                    NULLIF(TRIM(m.tcgplayer_id), '')
+                 ) AS tcgplayer_id,
                COALESCE(i.location, 'Free') AS location,
                i.deck_id,
                cm.type_line, cm.colors_text, cm.mana_value, cm.oracle_text, cm.oracle_id, cm.legalities_json, cm.updated_at AS metadata_updated_at,
@@ -2228,7 +2251,11 @@ def api_price_history(tcg_id: str):
     owned = conn.execute(
         f"""SELECT COUNT(*) FROM inventory i
             {join_sql}
-            WHERE COALESCE(NULLIF(TRIM(i.tcgplayer_id), ''), a.tcgplayer_id) = ?""",
+            WHERE COALESCE(
+                NULLIF(TRIM(i.tcgplayer_id), ''),
+                NULLIF(TRIM(a.tcgplayer_id), ''),
+                NULLIF(TRIM(m.tcgplayer_id), '')
+            ) = ?""",
         (tcg_id,),
     ).fetchone()[0]
     if not owned:

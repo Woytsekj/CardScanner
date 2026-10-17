@@ -71,6 +71,30 @@ def get_last_updated() -> str:
     return response.text.strip()
 
 
+def build_price_map(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Normalize TCGCSV rows into TCGplayer ID -> normal/foil prices."""
+    price_map: dict[str, dict[str, Any]] = {}
+    for item in items:
+        pid_raw = item.get("productId")
+        if not pid_raw:
+            continue
+        try:
+            pid = str(int(float(pid_raw)))
+        except (TypeError, ValueError):
+            continue
+        entry = price_map.setdefault(pid, {"normal": None, "foil": None})
+        subtype = str(item.get("subTypeName") or "").lower()
+        variant = "foil" if ("foil" in subtype or "etched" in subtype) else "normal"
+        value = item.get("marketPrice")
+        if value is None:
+            value = item.get("midPrice")
+        if value is None:
+            value = item.get("lowPrice")
+        if value is not None and entry[variant] is None:
+            entry[variant] = value
+    return price_map
+
+
 def load_saved_marker() -> str:
     try:
         return LAST_SEEN_FILE.read_text(encoding="utf-8").strip()
@@ -109,26 +133,58 @@ def ensure_history_tables(conn: sqlite3.Connection) -> None:
 
 
 def owned_products(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    join_sql = "LEFT JOIN (SELECT NULL AS scryfall_id, NULL AS tcgplayer_id) a ON 1=0"
+    """Return owned TCGplayer products, resolving IDs from every supported source."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS card_price_mapping (
+            scryfall_id TEXT PRIMARY KEY,
+            tcgplayer_id TEXT,
+            finishes_json TEXT,
+            card_name TEXT,
+            set_code TEXT,
+            collector_number TEXT,
+            resolved_at TEXT NOT NULL
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_card_price_mapping_tcg "
+        "ON card_price_mapping(tcgplayer_id)"
+    )
+
+    # Provide the alias even if the optional art database is missing/unavailable.
+    join_sql = (
+        "LEFT JOIN (SELECT NULL AS scryfall_id, NULL AS tcgplayer_id) a ON 1=0"
+    )
     if DB_ART.exists():
+        attached = False
         try:
             conn.execute("ATTACH DATABASE ? AS art_db", (str(DB_ART),))
+            attached = True
             conn.execute("SELECT 1 FROM art_db.card_art LIMIT 1").fetchone()
             join_sql = "LEFT JOIN art_db.card_art a ON i.scryfall_id = a.scryfall_id"
         except sqlite3.Error:
-            try:
-                conn.execute("DETACH DATABASE art_db")
-            except sqlite3.Error:
-                pass
-    tcg_id_sql = "COALESCE(NULLIF(TRIM(i.tcgplayer_id), ''), a.tcgplayer_id)"
+            if attached:
+                try:
+                    conn.execute("DETACH DATABASE art_db")
+                except sqlite3.Error:
+                    pass
+
+    # Mapping-table IDs must remain joined regardless of whether the art DB exists.
+    join_sql += "\nLEFT JOIN card_price_mapping m ON m.scryfall_id = i.scryfall_id"
+    tcg_id_sql = (
+        "COALESCE("
+        "NULLIF(TRIM(i.tcgplayer_id), ''), "
+        "NULLIF(TRIM(a.tcgplayer_id), ''), "
+        "NULLIF(TRIM(m.tcgplayer_id), '')"
+        ")"
+    )
     rows = conn.execute(
         f"""SELECT {tcg_id_sql} AS tcgplayer_id,
-                  MAX(scryfall_id) AS scryfall_id,
-                  MAX(name) AS name,
-                  MAX(set_code) AS set_code,
-                  MAX(collector_number) AS collector_number,
-                  SUM(CASE WHEN IFNULL(NULLIF(finish,''),'normal')='normal' THEN IFNULL(quantity,1) ELSE 0 END) AS normal_qty,
-                  SUM(CASE WHEN IFNULL(NULLIF(finish,''),'normal')='foil' THEN IFNULL(quantity,1) ELSE 0 END) AS foil_qty
+                  MAX(i.scryfall_id) AS scryfall_id,
+                  MAX(i.name) AS name,
+                  MAX(i.set_code) AS set_code,
+                  MAX(i.collector_number) AS collector_number,
+                  SUM(CASE WHEN IFNULL(NULLIF(i.finish,''),'normal')='normal' THEN IFNULL(i.quantity,1) ELSE 0 END) AS normal_qty,
+                  SUM(CASE WHEN IFNULL(NULLIF(i.finish,''),'normal')='foil' THEN IFNULL(i.quantity,1) ELSE 0 END) AS foil_qty
            FROM inventory i
            {join_sql}
            WHERE {tcg_id_sql} IS NOT NULL AND TRIM({tcg_id_sql}) <> ''
@@ -284,8 +340,30 @@ def sync_prices(force: bool = False) -> bool:
     # data directory from getting stuck with no prices.
     snapshot_missing = not PRICES_FILE.exists()
     if not force and not snapshot_missing and previous and marker == previous:
-        print(f"No TCGCSV update detected ({marker}); nothing to do.")
-        return False
+        # A card can become trackable even if TCGCSV has not published new prices.
+        # Reuse the saved snapshot to record the first history point for newly
+        # mapped cards rather than skipping history capture entirely.
+        try:
+            saved_snapshot = json.loads(PRICES_FILE.read_text(encoding="utf-8"))
+            saved_prices = saved_snapshot.get("results") if isinstance(saved_snapshot, dict) else None
+            if not isinstance(saved_prices, list):
+                raise ValueError("saved snapshot does not contain a results list")
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            print(f"[warn] Saved price snapshot cannot be used ({exc}); rebuilding TCGCSV build {marker}.")
+        else:
+            history_rows, alerts_sent = record_history_and_alerts(build_price_map(saved_prices), marker)
+            try:
+                meta = json.loads(META_FILE.read_text(encoding="utf-8"))
+                if not isinstance(meta, dict):
+                    meta = {}
+            except (OSError, json.JSONDecodeError):
+                meta = {}
+            meta["history_rows_recorded"] = history_rows
+            meta["alerts_sent"] = alerts_sent
+            meta["history_checked_at"] = datetime.now(timezone.utc).isoformat()
+            META_FILE.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+            print(f"No TCGCSV update detected ({marker}); recorded {history_rows:,} new history point(s) from the saved snapshot.")
+            return False
     if snapshot_missing and previous and marker == previous:
         print(f"Price snapshot is missing; rebuilding TCGCSV build {marker}.")
 
@@ -332,25 +410,7 @@ def sync_prices(force: bool = False) -> bool:
         return False
 
     # Build a quick productId -> normal/foil map for history capture.
-    price_map: dict[str, dict[str, Any]] = {}
-    for item in all_prices:
-        pid_raw = item.get("productId")
-        if not pid_raw:
-            continue
-        try:
-            pid = str(int(float(pid_raw)))
-        except (TypeError, ValueError):
-            continue
-        entry = price_map.setdefault(pid, {"normal": None, "foil": None})
-        subtype = str(item.get("subTypeName") or "").lower()
-        variant = "foil" if ("foil" in subtype or "etched" in subtype) else "normal"
-        value = item.get("marketPrice")
-        if value is None:
-            value = item.get("midPrice")
-        if value is None:
-            value = item.get("lowPrice")
-        if value is not None and entry[variant] is None:
-            entry[variant] = value
+    price_map = build_price_map(all_prices)
 
     tmp = PRICES_FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps({"success": True, "sourceUpdated": marker, "results": all_prices}, separators=(",", ":")), encoding="utf-8")
