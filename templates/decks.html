@@ -7,7 +7,7 @@
 <script src="{{ url_for('static', filename='security.js') }}" defer></script>
 </head><body>
 <header class="topbar">
-  <div><h1>Decks & Deck Builder</h1><div class="subtle">Import Archidekt lists, edit them, and see what you already own.</div></div>
+  <div><h1>Deck Dashboard</h1><div class="subtle">Browse decks by person and tags. Open a deck to edit its cards, roles, and cover.</div></div>
   <div class="actions">
     <a class="button secondary" href="{{ url_for('index') }}">Inventory</a>
     <a class="button secondary" href="{{ url_for('vending_view') }}">Vending</a>
@@ -16,53 +16,73 @@
 </header>
 <main>
 {% if message %}<div class="status admin-message">{{ message }}</div>{% endif %}
-<section class="admin-grid">
+<section class="deck-dashboard-filters table-card">
+  <form method="get" action="{{ url_for('decks_page') }}" class="deck-filter-form">
+    <label>Search decks<input type="search" name="q" value="{{ q }}" placeholder="Deck name, person, or tag"></label>
+    <label>Tag<select name="tag"><option value="">All tags</option>{% for tag in tag_options %}<option value="{{ tag }}" {% if selected_tag|lower == tag|lower %}selected{% endif %}>{{ tag }}</option>{% endfor %}</select></label>
+    <label>Deck for<select name="person"><option value="">All people</option>{% for person in person_options %}<option value="{{ person }}" {% if selected_person == person %}selected{% endif %}>{{ person }}</option>{% endfor %}</select></label>
+    <button class="button" type="submit">Filter</button>
+    <a class="button secondary" href="{{ url_for('decks_page') }}">Clear</a>
+  </form>
+</section>
+<section class="admin-grid deck-dashboard-layout">
   <div class="admin-panel">
     <h2>Import a deck</h2>
-    <p class="subtle">Import the decklist and, optionally, inventory copies. Physical storage location is independent of the deck assignment.</p>
-    <form method="post" action="{{ url_for('decks_import') }}" class="manual-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <p class="subtle">Import from a public Archidekt or Moxfield URL, paste a decklist, or upload a JSON/CSV/TXT export. Supported tag/category fields are retained on import.</p>
+    <form method="post" action="{{ url_for('decks_import') }}" class="manual-form" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label>Deck name (optional)<input name="deck_name" id="deckNameInput" maxlength="200" placeholder="Example: Wakanda Forever - Marvel Super Heroes"></label>
-      <label>Archidekt URL<input name="source_url" placeholder="https://archidekt.com/decks/123456"></label>
-      <div class="subtle" style="text-align:center">— OR —</div>
-      <label>Paste decklist<textarea name="deck_text" rows="12" placeholder="1 Sol Ring\n1 Arcane Signet\n1 Command Tower"></textarea></label>
+      <label>Archidekt or public Moxfield URL<input name="source_url" placeholder="https://archidekt.com/decks/123456 or https://www.moxfield.com/decks/abc123"></label>
+      <label>Or upload a deck export<input type="file" name="deck_file" accept=".json,.csv,.txt,application/json,text/csv,text/plain"></label>
+      <div class="subtle" style="text-align:center">— OR PASTE A DECKLIST —</div>
+      <label>Paste decklist<textarea name="deck_text" rows="9" placeholder="1 Sol Ring\n1 Arcane Signet\n\n#Ramp\n1 Cultivate"></textarea></label>
+      <label>Additional deck tags<input name="deck_tags" placeholder="Commander, Upgrading, Budget (comma-separated)"></label>
+      <div class="form-grid-2">
+        <label>Deck for<select name="deck_person"><option value="">Use my default person (or inventory owner)</option>{% for owner in owners %}<option value="{{ owner }}" {% if owner == default_person %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select></label>
+        <label>Inventory owner (only if adding copies)<select name="owner">{% for owner in owners %}<option value="{{ owner }}" {% if owner == default_person %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select></label>
+      </div>
       <label class="check-row"><input type="checkbox" name="include_extra"> Include sideboard / maybeboard / considering cards</label>
       <label class="check-row"><input type="checkbox" name="add_inventory" id="addInventoryCheck"> Also add these cards to inventory</label>
       <label class="check-row"><input type="checkbox" name="store_free"> Leave imported inventory copies unassigned to this deck (free pool)</label>
-      <div class="form-grid-2">
-        <label>Owner<select name="owner">{% for owner in owners %}<option value="{{ owner }}">{{ owner }}</option>{% endfor %}</select></label>
-        <label>Physical storage location<input name="location" id="locationInput" value="Free" list="location-options" placeholder="Free or a storage place"></label>
-      </div>
-      <p class="subtle">When adding cards to inventory, they are assigned to this deck unless the free-pool checkbox is checked. The location is only where the cards are stored (for example Free, Binder 1, Storage Box 3).</p>
+      <label>Physical storage location<input name="location" id="locationInput" value="Free" list="location-options" placeholder="Free or a storage place"></label>
+      <p class="subtle">Deck tags organize the dashboard. Card-role tags are stored per deck card; a Moxfield/Archidekt export only carries tags if its format includes them.</p>
       <button class="button" type="submit">Import Deck</button>
     </form>
   </div>
 
   <div class="admin-panel">
-    <h2>Stored decks</h2>
-    {% if decks %}
-    <div class="person-list">
-      {% for deck in decks %}
-      <div class="deck-list-row">
-        <a href="{{ url_for('deck_view', deck_id=deck.id) }}">
-          <span><strong>{{ deck.name }}</strong><small>{{ deck.source|capitalize }} · {{ deck.card_count }} cards · {{ deck.updated_at|localdt }}</small></span>
-          <span class="badge">Open</span>
-        </a>
-        {% if session.get('is_admin') %}
-        <form method="post" action="{{ url_for('delete_deck', deck_id=deck.id) }}" onsubmit="return confirm('Delete this saved deck? Its assigned inventory copies will become unassigned and keep their physical storage locations. Inventory itself will not be deleted.');"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button class="button secondary" type="submit">Delete</button>
-        </form>
-        {% endif %}
-      </div>
+    <div class="section-heading"><div><h2>Stored decks</h2><p class="subtle">{{ decks|length }} deck(s) match the current filters. Cards are grouped by the person the deck is for.</p></div></div>
+    {% if deck_groups %}
+      {% for person, group_decks in deck_groups %}
+      <section class="deck-person-group">
+        <h3>{{ person }} <span class="subtle">· {{ group_decks|length }}</span></h3>
+        <div class="deck-dashboard-grid">
+          {% for deck in group_decks %}
+          <article class="deck-dashboard-card">
+            <a class="deck-dashboard-cover" href="{{ url_for('deck_view', deck_id=deck.id) }}" aria-label="Open {{ deck.name }}">
+              {% if deck.cover_url %}<img src="{{ deck.cover_url }}" alt="Cover for {{ deck.name }}" loading="lazy">{% else %}<div class="deck-cover-placeholder"><span>MTG</span><small>No cover yet</small></div>{% endif %}
+            </a>
+            <div class="deck-dashboard-copy">
+              <a class="deck-dashboard-title" href="{{ url_for('deck_view', deck_id=deck.id) }}">{{ deck.name }}</a>
+              <div class="deck-dashboard-meta">{{ deck.source|capitalize }} · {{ deck.card_count }} cards</div>
+              <div class="deck-tag-list">{% for tag in deck.tags %}<span class="deck-tag">{{ tag }}</span>{% else %}<span class="subtle">No tags</span>{% endfor %}</div>
+              <div class="deck-dashboard-updated subtle">Updated {{ deck.updated_at|localdt }}</div>
+              <div class="deck-dashboard-actions">
+                <a class="button" href="{{ url_for('deck_view', deck_id=deck.id) }}">Open deck</a>
+                {% if session.get('is_admin') %}<form method="post" action="{{ url_for('delete_deck', deck_id=deck.id) }}" onsubmit="return confirm('Delete this saved deck? Its assigned inventory copies will become unassigned and keep their physical storage locations. Inventory itself will not be deleted.');"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Delete</button></form>{% endif %}
+              </div>
+            </div>
+          </article>
+          {% endfor %}
+        </div>
+      </section>
       {% endfor %}
-    </div>
-    {% else %}<div class="empty">No saved decks yet.</div>{% endif %}
+    {% else %}<div class="empty">No saved decks match these filters.</div>{% endif %}
   </div>
 </section>
 </main>
 <datalist id="location-options">{% for location in locations %}<option value="{{ location }}">{% endfor %}</datalist>
 <script>
-// Deck assignment and physical storage are independent; changing the deck name
-// must never rewrite a physical storage location.
 const addInventoryCheck = document.getElementById('addInventoryCheck');
 const locationInput = document.getElementById('locationInput');
 addInventoryCheck?.addEventListener('change', () => {

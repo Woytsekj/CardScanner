@@ -5,10 +5,13 @@ or access Scryfall/TCGCSV.
 """
 from __future__ import annotations
 
+import io
+import json
 import os
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -440,6 +443,197 @@ class InventoryManagementTests(unittest.TestCase):
         self.assertIn('data-mode="edit"', page)
         self.assertIn('multi-select.js', page)
         self.assertIn('edit-only-control', page)
+
+    def test_deck_and_role_tags_migrate_on_existing_schema(self) -> None:
+        legacy_db = self.root / "legacy-deck-schema.db"
+        now = datetime.now(timezone.utc).isoformat()
+        with sqlite3.connect(legacy_db) as conn:
+            conn.execute("CREATE TABLE decklists (id INTEGER PRIMARY KEY, name TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'manual', source_url TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+            conn.execute("CREATE TABLE deck_cards (id INTEGER PRIMARY KEY, deck_id INTEGER NOT NULL, name TEXT NOT NULL, quantity INTEGER NOT NULL DEFAULT 1, scryfall_id TEXT, set_code TEXT, collector_number TEXT, category TEXT, finish TEXT DEFAULT 'normal', tcgplayer_id TEXT)")
+            conn.execute("INSERT INTO decklists(id,name,source,created_at,updated_at) VALUES(1,'Old deck','manual',?,?)", (now, now))
+            conn.execute("INSERT INTO deck_cards(id,deck_id,name,quantity) VALUES(1,1,'Sol Ring',1)")
+        original_db, original_auth = app_module.DB_INV, app_module._AUTH_READY
+        try:
+            app_module.DB_INV = legacy_db
+            app_module._AUTH_READY = False
+            app_module.migrate_db()
+            with sqlite3.connect(legacy_db) as conn:
+                deck_columns = {row[1] for row in conn.execute("PRAGMA table_info(decklists)")}
+                card_columns = {row[1] for row in conn.execute("PRAGMA table_info(deck_cards)")}
+                self.assertTrue({"tags_json", "person_name", "cover_filename", "cover_scryfall_id"}.issubset(deck_columns))
+                self.assertIn("role_tags_json", card_columns)
+                self.assertEqual(conn.execute("SELECT tags_json FROM decklists WHERE id=1").fetchone()[0], "[]")
+                self.assertEqual(conn.execute("SELECT role_tags_json FROM deck_cards WHERE id=1").fetchone()[0], "[]")
+        finally:
+            app_module.DB_INV, app_module._AUTH_READY = original_db, original_auth
+
+    def test_archidekt_import_normalizes_deck_tags_and_card_categories(self) -> None:
+        payload = {
+            "name": "Tagged Archidekt Deck",
+            "tags": [{"name": "Budget"}, {"name": "Upgrading"}],
+            "categories": [{"name": "Ramp", "includedInDeck": True}],
+            "cards": [{"quantity": 1, "categories": ["Ramp", "Card Draw"],
+                       "card": {"name": "Sol Ring", "displayName": "Sol Ring", "edition": {"editionCode": "cmm", "collectorNumber": "123"}}}],
+        }
+        cards = app_module.normalize_archidekt_cards(payload)
+        self.assertEqual(app_module._deck_tags_from_payload(payload), ["Budget", "Upgrading"])
+        self.assertEqual(cards[0]["name"], "Sol Ring")
+        self.assertEqual(set(cards[0]["role_tags"]), {"Ramp", "Card Draw"})
+
+    def test_moxfield_payload_preserves_deck_and_card_tags(self) -> None:
+        payload = {
+            "name": "Moxfield Tagged Deck",
+            "tags": ["Aristocrats", "Upgrading"],
+            "mainboard": {
+                "abc": {"quantity": 1, "card": {"name": "Blood Artist", "set": "2x2", "cn": "73"}, "tags": ["Combo", "Drain"]},
+            },
+        }
+        cards, deck_tags = app_module.normalize_moxfield_deck(payload)
+        self.assertEqual(deck_tags, ["Aristocrats", "Upgrading"])
+        self.assertEqual(cards[0]["name"], "Blood Artist")
+        self.assertEqual(cards[0]["set_code"], "2X2")
+        self.assertEqual(set(cards[0]["role_tags"]), {"Combo", "Drain"})
+
+    def test_moxfield_style_text_sections_preserve_role_tags(self) -> None:
+        cards = app_module.parse_text_decklist("#Ramp\n1 Sol Ring\n#Card Draw\n1 Phyrexian Arena")
+        self.assertEqual(cards[0]["role_tags"], ["Ramp"])
+        self.assertEqual(cards[1]["role_tags"], ["Card Draw"])
+
+    def test_deck_csv_import_preserves_card_and_deck_tags(self) -> None:
+        csv_text = "Name,Quantity,Board,Tags,Deck Tags,Set,Collector Number\nSol Ring,1,Mainboard,\"Ramp; Artifact\",\"Budget, Upgrading\",cmm,123\n"
+        cards, deck_tags = app_module.parse_deck_csv(csv_text)
+        self.assertEqual(cards[0]["role_tags"], ["Ramp", "Artifact"])
+        self.assertEqual(deck_tags, ["Budget", "Upgrading"])
+        self.assertEqual(cards[0]["set_code"], "CMM")
+
+    def test_deck_settings_save_person_and_deck_tags(self) -> None:
+        deck_id = self.add_deck("Settings test deck")
+        response = self.client.post(
+            f"/decks/{deck_id}/settings",
+            data={"csrf_token": self.csrf, "name": "Updated deck", "person_name": "Friend", "deck_tags": "Budget, Upgrading, Budget"},
+            base_url="http://localhost",
+        )
+        self.assertEqual(response.status_code, 302)
+        conn = self.connect()
+        row = conn.execute("SELECT name,person_name,tags_json FROM decklists WHERE id=?", (deck_id,)).fetchone()
+        conn.close()
+        self.assertEqual(row["name"], "Updated deck")
+        self.assertEqual(row["person_name"], "Friend")
+        self.assertEqual(json.loads(row["tags_json"]), ["Budget", "Upgrading"])
+
+    def test_deck_card_role_tags_can_be_added_and_edited(self) -> None:
+        deck_id = self.add_deck("Role tags deck")
+        conn = self.connect()
+        cur = conn.execute("INSERT INTO deck_cards(deck_id,name,quantity,category,finish,role_tags_json) VALUES(?,?,?,?,?,?)", (deck_id,"Sol Ring",1,"Mainboard","normal","[]"))
+        card_id = cur.lastrowid
+        conn.commit(); conn.close()
+        response = self.client.post(
+            f"/decks/{deck_id}/cards/{card_id}/edit",
+            data={"csrf_token": self.csrf, "name": "Sol Ring", "quantity": "1", "category": "Mainboard", "role_tags": "Ramp, Artifact", "finish": "normal"},
+            base_url="http://localhost",
+        )
+        self.assertEqual(response.status_code, 302)
+        conn = self.connect()
+        row = conn.execute("SELECT role_tags_json FROM deck_cards WHERE id=?", (card_id,)).fetchone()
+        conn.close()
+        self.assertEqual(json.loads(row["role_tags_json"]), ["Ramp", "Artifact"])
+
+    def test_deck_cover_upload_is_validated_and_served_from_persistent_data_dir(self) -> None:
+        deck_id = self.add_deck("Cover deck")
+        original_data_dir = app_module.DATA_DIR
+        app_module.DATA_DIR = self.root / "cover-data"
+        try:
+            response = self.client.post(
+                f"/decks/{deck_id}/cover",
+                data={"csrf_token": self.csrf, "cover_mode": "upload", "cover_image": (io.BytesIO(b"\xff\xd8\xff" + b"jpeg-test-content"), "cover.jpg")},
+                content_type="multipart/form-data",
+                base_url="http://localhost",
+            )
+            self.assertEqual(response.status_code, 302)
+            conn = self.connect()
+            # DB_INV was assigned to a separate test path, so use the application's test DB.
+            row = conn.execute("SELECT cover_filename FROM decklists WHERE id=?", (deck_id,)).fetchone()
+            conn.close()
+            self.assertTrue(row["cover_filename"].endswith(".jpg"))
+            cover_path = app_module.DATA_DIR / "deck_covers" / row["cover_filename"]
+            self.assertTrue(cover_path.exists())
+            cover_response = self.client.get(f"/deck-covers/{row['cover_filename']}", base_url="http://localhost")
+            self.assertEqual(cover_response.status_code, 200)
+            self.assertEqual(cover_response.data, b"\xff\xd8\xff" + b"jpeg-test-content")
+        finally:
+            app_module.DATA_DIR = original_data_dir
+
+    def test_deck_dashboard_renders_tags_and_filters_by_tag(self) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        conn = self.connect()
+        conn.execute("INSERT INTO decklists(name,source,created_at,updated_at,tags_json,person_name) VALUES(?,?,?,?,?,?)", ("Budget Commander", "manual", now, now, json.dumps(["Budget", "Commander"]), "Friend"))
+        conn.execute("INSERT INTO decklists(name,source,created_at,updated_at,tags_json,person_name) VALUES(?,?,?,?,?,?)", ("Upgrading Deck", "manual", now, now, json.dumps(["Upgrading"]), "Me"))
+        conn.commit(); conn.close()
+        response = self.client.get("/decks?tag=Budget", base_url="http://localhost")
+        self.assertEqual(response.status_code, 200)
+        page = response.get_data(as_text=True)
+        self.assertIn("Budget Commander", page)
+        self.assertNotIn("Upgrading Deck", page)
+        self.assertIn("deck-dashboard-grid", page)
+
+    def test_deck_import_route_persists_moxfield_tags(self) -> None:
+        payload = {
+            "name": "Imported Moxfield Tags",
+            "tags": ["Combo", "Budget"],
+            "mainboard": {"c1": {"quantity": 1, "card": {"name": "Sol Ring"}, "tags": ["Ramp"]}},
+        }
+        with patch.object(app_module, "fetch_moxfield_deck", return_value=payload):
+            response = self.client.post(
+                "/decks/import",
+                data={"csrf_token": self.csrf, "source_url": "https://www.moxfield.com/decks/AbCd1234", "deck_person": "Friend"},
+                base_url="http://localhost",
+            )
+        self.assertEqual(response.status_code, 302)
+        conn = self.connect()
+        deck = conn.execute("SELECT id,tags_json,person_name FROM decklists WHERE name='Imported Moxfield Tags'").fetchone()
+        card = conn.execute("SELECT role_tags_json FROM deck_cards WHERE deck_id=?", (deck["id"],)).fetchone()
+        conn.close()
+        self.assertEqual(json.loads(deck["tags_json"]), ["Combo", "Budget"])
+        self.assertEqual(deck["person_name"], "Friend")
+        self.assertEqual(json.loads(card["role_tags_json"]), ["Ramp"])
+
+    def test_deck_cover_rejects_svg_upload(self) -> None:
+        deck_id = self.add_deck("Reject unsafe cover")
+        original_data_dir = app_module.DATA_DIR
+        app_module.DATA_DIR = self.root / "cover-data-svg"
+        try:
+            response = self.client.post(
+                f"/decks/{deck_id}/cover",
+                data={"csrf_token": self.csrf, "cover_mode": "upload", "cover_image": (io.BytesIO(b"<svg xmlns='http://www.w3.org/2000/svg'></svg>"), "cover.svg")},
+                content_type="multipart/form-data",
+                base_url="http://localhost",
+            )
+            self.assertEqual(response.status_code, 302)
+            conn = self.connect()
+            row = conn.execute("SELECT cover_filename,cover_scryfall_id FROM decklists WHERE id=?", (deck_id,)).fetchone()
+            conn.close()
+            self.assertIsNone(row["cover_filename"])
+            self.assertIsNone(row["cover_scryfall_id"])
+            self.assertFalse((app_module.DATA_DIR / "deck_covers").exists())
+        finally:
+            app_module.DATA_DIR = original_data_dir
+
+    def test_deck_cover_can_only_use_a_card_in_that_deck(self) -> None:
+        target_deck = self.add_deck("Cover target")
+        other_deck = self.add_deck("Other deck")
+        conn = self.connect()
+        conn.execute("INSERT INTO deck_cards(deck_id,name,quantity,scryfall_id) VALUES(?,?,?,?)", (other_deck, "Other card", 1, "sid-card-not-in-target"))
+        conn.commit(); conn.close()
+        response = self.client.post(
+            f"/decks/{target_deck}/cover",
+            data={"csrf_token": self.csrf, "cover_mode": "card", "cover_scryfall_id": "sid-card-not-in-target"},
+            base_url="http://localhost",
+        )
+        self.assertEqual(response.status_code, 302)
+        conn = self.connect()
+        row = conn.execute("SELECT cover_scryfall_id FROM decklists WHERE id=?", (target_deck,)).fetchone()
+        conn.close()
+        self.assertIsNone(row["cover_scryfall_id"])
 
 
 if __name__ == "__main__":
