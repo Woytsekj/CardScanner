@@ -5,7 +5,7 @@
 <title>Vending · MTG Scanner Inventory</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
 <script src="{{ url_for('static', filename='security.js') }}" defer></script>
-</head><body>
+</head><body data-vending-mode="browse">
 <header class="topbar">
   <div><h1>Vending View</h1><div class="subtle">Cards marked for vending across all storage locations · {{ result_count }} matching rows</div></div>
   <div class="actions"><a class="button secondary" href="{{ url_for('index') }}">Inventory</a><a class="button secondary" href="{{ url_for('decks_page') }}">Decks</a><a class="button" href="{{ url_for('vending_export_csv', owner=selected_owner, q=search, min_value=min_value) }}">Export Vendor CSV</a></div>
@@ -26,16 +26,32 @@
 <section class="vendor-selection-toolbar">
   <div><strong><span id="vendorSelectedCount">0</span> selected</strong><span class="subtle" id="vendorSelectedLabelCount"> · 0 labels</span></div>
   <div class="actions">
-    <button type="button" class="button secondary" id="vendorSelectAll">Select all visible</button>
-    <button type="button" class="button secondary" id="vendorClearSelected">Clear selection</button>
-    <button type="button" class="button" id="vendorPrintLabels" disabled>Print selected labels</button>
+    <button type="button" class="button secondary vendor-mode-button active" data-mode="browse" aria-pressed="true">Browse</button>
+    <button type="button" class="button secondary vendor-mode-button" data-mode="select" aria-pressed="false">Select mode</button>
+    <button type="button" class="button secondary selection-action" id="vendorSelectAll">Select all visible</button>
+    <button type="button" class="button secondary selection-action" id="vendorClearSelected">Clear selection</button>
+    <button type="button" class="button selection-action" id="vendorPrintLabels" disabled>Print selected labels</button>
   </div>
 </section>
+{% if admin_user %}
+<section class="bulk-edit-bar vendor-bulk-edit-bar" id="vendorBulkEditBar" hidden>
+  <div class="bulk-selection-row"><strong>Bulk edit selected vending rows</strong><span class="subtle">Changes apply to the selected inventory rows.</span></div>
+  <div class="bulk-controls-row">
+    <label>Owner<select id="vendorBulkOwner"><option value="unchanged">No change</option>{% for owner in owners %}<option value="{{ owner }}">{{ owner }}</option>{% endfor %}</select></label>
+    <label>Storage location<input id="vendorBulkLocation" type="text" list="vendor-location-options" placeholder="Leave unchanged"></label>
+    <label>Vending status<select id="vendorBulkVending"><option value="unchanged">No change</option><option value="0">Remove from vending</option></select></label>
+    <label>Deck assignment<select id="vendorBulkDeck"><option value="unchanged">No change</option><option value="none">Unassigned / free pool</option>{% for deck in decks %}<option value="{{ deck.id }}">{{ deck.name }}</option>{% endfor %}</select></label>
+    <button type="button" class="button" id="vendorApplyBulkEdit">Apply changes</button>
+  </div>
+  <div class="status" id="vendorBulkStatus" role="status" aria-live="polite"></div>
+</section>
+<datalist id="vendor-location-options">{% for location in locations %}<option value="{{ location }}">{% endfor %}</datalist>
+{% endif %}
 <section class="vending-grid grid-view">
 {% for item in inventory %}
 <article class="grid-card vending-card" data-item-id="{{ item.id }}">
   <label class="vendor-card-select"><input type="checkbox" class="vendor-select-checkbox" value="{{ item.id }}" aria-label="Select {{ item.name }} for printing"><span>Select</span></label>
-  <div class="grid-image-wrap">{% if item.image_url %}<img src="{{ item.image_url }}" class="grid-card-image" alt="{{ item.name }}" loading="lazy">{% else %}<div class="grid-card-image placeholder-thumb">—</div>{% endif %}</div>
+  <div class="grid-image-wrap">{% if item.image_url %}<img src="{{ item.image_url }}" class="grid-card-image vendor-oracle-image" alt="{{ item.name }}" data-scryfall="{{ item.scryfall_id or '' }}" data-name="{{ item.name|e }}" loading="lazy">{% else %}<div class="grid-card-image placeholder-thumb">—</div>{% endif %}</div>
   <div class="grid-card-body">
     <h3>{{ item.name }}</h3>
     {% if item.alternate_names %}<div class="alternate-name">{{ item.alternate_names }}</div>{% endif %}
@@ -49,6 +65,21 @@
 {% else %}<div class="empty">No vending cards match the current filters.</div>{% endfor %}
 </section>
 </main>
+<dialog id="vendorOracleDialog" class="price-history-dialog oracle-dialog">
+  <button class="dialog-close" type="button" onclick="document.getElementById('vendorOracleDialog').close()">×</button>
+  <h2 id="vendorOracleTitle">Card details</h2>
+  <div class="oracle-switch-actions"><button type="button" class="button secondary" id="vendorOracleSwitch">Show card image</button><span class="subtle">Click the rules text or image to switch views.</span></div>
+  <section id="vendorOracleTextPanel" class="oracle-switch-panel" role="button" tabindex="0" aria-label="Switch to card image">
+    <div id="vendorOracleSubtitle" class="subtle"></div>
+    <div id="vendorOracleTypeLine" class="oracle-type-line"></div>
+    <div id="vendorOracleManaCost" class="oracle-mana-cost"></div>
+    <pre id="vendorOracleText" class="oracle-text"></pre>
+    <h3>Legality</h3><div id="vendorOracleLegalities" class="legality-grid"></div>
+  </section>
+  <button type="button" id="vendorOracleImagePanel" class="oracle-image-panel" hidden aria-label="Switch to Oracle text"><img id="vendorOracleImage" src="" alt=""><span>Click image to return to Oracle text</span></button>
+  <div id="vendorOracleStatus" class="status"></div>
+</dialog>
+<script src="{{ url_for('static', filename='multi-select.js') }}"></script>
 <script>
 const vendingSearchInput = document.getElementById('vendingSearchInput');
 const vendingSearchSuggestions = document.getElementById('vendingSearchSuggestions');
@@ -164,21 +195,107 @@ function loadVendorSelection() {
   try { return new Set(JSON.parse(localStorage.getItem(vendorSelectionKey) || '[]').map(String)); } catch (_) { return new Set(); }
 }
 function saveVendorSelection(set) { localStorage.setItem(vendorSelectionKey, JSON.stringify([...set])); }
-function syncVendorSelectionUI() {
-  const selected=loadVendorSelection();
+const vendorModeButtons = [...document.querySelectorAll('.vendor-mode-button')];
+function setVendorMode(mode) {
+  if (!['browse','select'].includes(mode)) mode='browse';
+  const previous=document.body.dataset.vendingMode || 'browse';
+  document.body.dataset.vendingMode=mode;
+  vendorModeButtons.forEach(btn => {
+    const active=btn.dataset.mode===mode;
+    btn.classList.toggle('active',active);
+    btn.setAttribute('aria-pressed',active?'true':'false');
+  });
+  document.querySelectorAll('.vendor-select-checkbox').forEach(cb => { cb.tabIndex=mode==='select'?0:-1; });
+  if (previous==='select' && mode!=='select') {
+    vendorSelection.clearAnchorAndDrag();
+    saveVendorSelection(new Set());
+    document.querySelectorAll('.vendor-select-checkbox').forEach(cb => { cb.checked=false; });
+  }
+  const bulkBar=document.getElementById('vendorBulkEditBar');
+  if (bulkBar) bulkBar.hidden=mode!=='select';
+  syncVendorSelectionUI();
+}
+vendorModeButtons.forEach(btn=>btn.addEventListener('click',()=>setVendorMode(btn.dataset.mode)));
+function syncVendorSelectionUI(fromCheckboxes=false) {
+  let selected=loadVendorSelection();
+  const checkboxes=[...document.querySelectorAll('.vendor-select-checkbox')];
+  if (fromCheckboxes) {
+    // Replace selection state for currently displayed rows while retaining rows hidden by filters.
+    const visibleIds=new Set(checkboxes.map(cb=>String(cb.value)));
+    visibleIds.forEach(id=>selected.delete(id));
+    checkboxes.forEach(cb=>{if(cb.checked)selected.add(String(cb.value));});
+    saveVendorSelection(selected);
+  }
   let visible=0;
-  document.querySelectorAll('.vendor-select-checkbox').forEach(cb => { cb.checked=selected.has(String(cb.value)); if (cb.checked) visible++; });
+  checkboxes.forEach(cb => { cb.checked=selected.has(String(cb.value)); if (cb.checked) visible++; });
   const total=selected.size;
   vendorSelectedCount.textContent=String(total);
   vendorSelectedLabelCount.textContent=' · ' + String(total) + ' label' + (total===1?'':'s') + ' (one per selected row)';
-  vendorPrintLabels.disabled=total===0;
+  vendorPrintLabels.disabled=total===0 || document.body.dataset.vendingMode!=='select';
   document.querySelectorAll('.vending-card').forEach(card => card.classList.toggle('vendor-card-selected', selected.has(String(card.dataset.itemId))));
   if (vendorSelectAll) vendorSelectAll.textContent = visible && visible === document.querySelectorAll('.vendor-select-checkbox').length ? 'Deselect visible' : 'Select all visible';
 }
-document.querySelectorAll('.vendor-select-checkbox').forEach(cb => cb.addEventListener('change', () => { const s=loadVendorSelection(); const id=String(cb.value); if(cb.checked)s.add(id);else s.delete(id); saveVendorSelection(s); syncVendorSelectionUI(); }));
-if (vendorSelectAll) vendorSelectAll.addEventListener('click', () => { const s=loadVendorSelection(); const visible=[...document.querySelectorAll('.vendor-select-checkbox')]; const allVisible=visible.length && visible.every(cb => s.has(String(cb.value))); visible.forEach(cb => allVisible ? s.delete(String(cb.value)) : s.add(String(cb.value))); saveVendorSelection(s); syncVendorSelectionUI(); });
-if (vendorClearSelected) vendorClearSelected.addEventListener('click', () => { saveVendorSelection(new Set()); syncVendorSelectionUI(); });
+const vendorSelection = window.CardScannerMultiSelect.bind({
+  checkboxSelector: '.vendor-select-checkbox',
+  isActive: () => document.body.dataset.vendingMode === 'select',
+  onChange: () => syncVendorSelectionUI(true),
+  itemSelector: '.vending-card',
+  excludedSelector: '.vendor-card-select,input,button,a,select,textarea,label',
+  itemClass: 'selection-drag-target',
+});
+if (vendorSelectAll) vendorSelectAll.addEventListener('click', () => { if(document.body.dataset.vendingMode!=='select') return; const s=loadVendorSelection(); const visible=[...document.querySelectorAll('.vendor-select-checkbox')]; const allVisible=visible.length && visible.every(cb => s.has(String(cb.value))); visible.forEach(cb => allVisible ? s.delete(String(cb.value)) : s.add(String(cb.value))); saveVendorSelection(s); syncVendorSelectionUI(); vendorSelection.refresh(); });
+if (vendorClearSelected) vendorClearSelected.addEventListener('click', () => { if(document.body.dataset.vendingMode!=='select') return; saveVendorSelection(new Set()); vendorSelection.resetAnchor(); syncVendorSelectionUI(); vendorSelection.refresh(); });
 if (vendorPrintLabels) vendorPrintLabels.addEventListener('click', () => { const ids=[...loadVendorSelection()]; if(!ids.length)return; window.location.href='{{ url_for("vending_labels") }}?ids='+encodeURIComponent(ids.join(',')); });
+
+// Vending uses the same compact, click-to-switch card detail panel as Inventory.
+const vd=document.getElementById('vendorOracleDialog');
+const vTitle=document.getElementById('vendorOracleTitle'), vSub=document.getElementById('vendorOracleSubtitle');
+const vType=document.getElementById('vendorOracleTypeLine'), vMana=document.getElementById('vendorOracleManaCost');
+const vText=document.getElementById('vendorOracleText'), vLeg=document.getElementById('vendorOracleLegalities');
+const vStatus=document.getElementById('vendorOracleStatus'), vTextPanel=document.getElementById('vendorOracleTextPanel');
+const vImagePanel=document.getElementById('vendorOracleImagePanel'), vImage=document.getElementById('vendorOracleImage'), vSwitch=document.getElementById('vendorOracleSwitch');
+function switchVendorDetails(mode){const image=mode==='image';vTextPanel.hidden=image;vImagePanel.hidden=!image;vSwitch.textContent=image?'Show Oracle text':'Show card image';}
+function escapeVendorDetails(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+document.querySelectorAll('.vendor-oracle-image').forEach(img=>img.addEventListener('click',async()=>{
+  if(document.body.dataset.vendingMode==='select')return;
+  const sid=img.dataset.scryfall||'';vTitle.textContent=img.dataset.name||img.alt||'Card details';vSub.textContent='Loading cached metadata…';vType.textContent='';vMana.textContent='';vText.textContent='';vLeg.innerHTML='';vStatus.textContent='';vImage.src=img.currentSrc||img.src;vImage.alt=img.alt||'';switchVendorDetails('image');vd.showModal();
+  if(!sid){vSub.textContent='No Scryfall ID is available for this card.';return;}
+  try{const r=await fetch('/api/card-info/'+encodeURIComponent(sid));const data=await r.json().catch(()=>({}));if(!r.ok||!data.success){vStatus.textContent=data.error||'No cached Oracle metadata.';return;}const c=data.card||{};vSub.textContent=c.colors?'Colors: '+c.colors:'';vType.textContent=c.type_line||'';vMana.textContent=c.mana_cost||'';vText.textContent=c.oracle_text||'No Oracle text.';const legal=c.legalities||{};vLeg.innerHTML=Object.keys(legal).sort((a,b)=>a.localeCompare(b)).map(k=>`<div class="legality-chip ${escapeVendorDetails(legal[k])}"><strong>${escapeVendorDetails(k)}</strong><span>${escapeVendorDetails(String(legal[k]).replace(/^./,m=>m.toUpperCase()))}</span></div>`).join('');}catch(_){vStatus.textContent='Could not load cached Oracle metadata.';}
+}));
+vTextPanel.addEventListener('click',()=>switchVendorDetails('image'));
+vTextPanel.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();switchVendorDetails('image');}});
+vImagePanel.addEventListener('click',()=>switchVendorDetails('text'));
+vSwitch.addEventListener('click',()=>switchVendorDetails(vImagePanel.hidden?'image':'text'));
+const vendorBulkButton=document.getElementById('vendorApplyBulkEdit');
+if (vendorBulkButton) vendorBulkButton.addEventListener('click', async () => {
+  const ids=[...loadVendorSelection()].map(Number).filter(Number.isFinite);
+  const owner=document.getElementById('vendorBulkOwner').value;
+  const location=document.getElementById('vendorBulkLocation').value.trim();
+  const vending=document.getElementById('vendorBulkVending').value;
+  const deck=document.getElementById('vendorBulkDeck').value;
+  const status=document.getElementById('vendorBulkStatus');
+  if(!ids.length){status.textContent='Select one or more cards first.';return;}
+  if(owner==='unchanged'&&!location&&vending==='unchanged'&&deck==='unchanged'){status.textContent='Choose at least one change.';return;}
+  if(!confirm(`Apply changes to ${ids.length} selected vending row(s)?`))return;
+  const payload={ids};
+  if(owner!=='unchanged')payload.owner=owner;
+  if(location)payload.location=location;
+  if(vending!=='unchanged')payload.for_vending=vending;
+  if(deck!=='unchanged')payload.deck_id=deck;
+  status.textContent='Applying changes…'; vendorBulkButton.disabled=true;
+  try{
+    const token=document.querySelector('meta[name="csrf-token"]')?.content||'';
+    const response=await fetch('/admin/inventory/bulk-update',{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':token},body:JSON.stringify(payload)});
+    const data=await response.json().catch(()=>({}));
+    if(!response.ok||!data.success){status.textContent=data.error||'Bulk update failed.';return;}
+    status.textContent=`Updated ${data.updated} row(s). Refreshing…`;
+    saveVendorSelection(new Set());
+    window.location.reload();
+  }catch(_){status.textContent='Could not update the selected rows. Check your connection and try again.';}
+  finally{vendorBulkButton.disabled=false;}
+});
+saveVendorSelection(new Set());
+setVendorMode('browse');
 syncVendorSelectionUI();
 </script>
 </body></html>

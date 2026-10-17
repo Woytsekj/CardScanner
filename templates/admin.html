@@ -133,10 +133,12 @@
 
   {% if admin_is_superadmin %}
   <form method="post" action="{{ url_for('add_user') }}" class="manual-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="form-grid-2">
       <label>Username<input name="username" maxlength="150" required></label>
       <label>Password<input type="password" name="password" minlength="12" autocomplete="new-password" required></label>
       <label>Role<select name="role"><option value="vendor">Vendor</option><option value="admin">Admin</option></select></label>
+      <label>Linked person (optional)<select name="person_id"><option value="">No linked person</option>{% for person in account_people %}<option value="{{ person.id }}">{{ person.name }}</option>{% endfor %}</select></label>
     </div>
     <button class="button" type="submit">Create User</button>
   </form>
@@ -152,10 +154,21 @@
           <strong>{{ user.username }}</strong>
           {% if user.is_superadmin %}<span class="badge">Superadmin</span>{% endif %}
         </div>
-        <div class="subtle">{{ user.role|capitalize }} · {{ 'Active' if user.active else 'Inactive' }}{% if user.last_login_at %} · Last login {{ user.last_login_at|localdt }}{% endif %}</div>
+        <div class="subtle">{{ user.role|capitalize }} · {{ 'Active' if user.active else 'Inactive' }} · Collection: {{ user.person_name or 'Not linked' }}{% if user.last_login_at %} · Last login {{ user.last_login_at|localdt }}{% endif %}</div>
       </div>
 
       {% if admin_is_superadmin %}
+      <form method="post" action="{{ url_for('assign_user_person', username=user.username) }}" class="search-inline user-person-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label>Default collection
+          <select name="person_id" aria-label="Person linked to {{ user.username }}">
+            <option value="">No linked person</option>
+            {% for person in account_people %}<option value="{{ person.id }}" {% if user.person_id == person.id %}selected{% endif %}>{{ person.name }}</option>{% endfor %}
+          </select>
+        </label>
+        <button class="button secondary" type="submit">Save person</button>
+      </form>
+
       <form method="post" action="{{ url_for('rename_user', username=user.username) }}" class="search-inline">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input name="new_username" value="{{ user.username }}" maxlength="150" required aria-label="New username for {{ user.username }}">

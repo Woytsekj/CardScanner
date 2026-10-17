@@ -412,3 +412,89 @@ dialog input[type=file] { width:100%; margin:14px 0; }
   .bulk-controls-row label { flex: 1 1 100%; }
   .filter-note { min-width: 100%; }
 }
+
+/* Safe browsing/editing modes: keep mutation controls out of the default view. */
+.interaction-mode-toggle {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+.interaction-mode-toggle .mode-button.active {
+  background: var(--green);
+  border-color: var(--green);
+  color: #fff;
+}
+.edit-only-control { display: none !important; }
+body[data-inventory-mode="edit"] .edit-only-control { display: inline-block !important; }
+body[data-inventory-mode="edit"] .inventory-management-controls.edit-only-control { display: flex !important; }
+body[data-inventory-mode="edit"] .edit-only-control.vending-cell { display: flex !important; }
+body[data-inventory-mode="edit"] .edit-value { display: none !important; }
+.selection-column { display: none; }
+.inventory-select-label { display: none !important; }
+#bulkEditBar { display: none; }
+body[data-inventory-mode="select"] .selection-column { display: table-cell; }
+body[data-inventory-mode="select"] .inventory-select-label { display: flex !important; }
+body[data-inventory-mode="select"] #bulkEditBar { display: flex; }
+body[data-inventory-mode="select"] .card-tile { cursor: crosshair; }
+body.selection-dragging, body.selection-dragging * { user-select: none !important; -webkit-user-select: none !important; }
+body.selection-dragging img { -webkit-user-drag: none; }
+.card-tile.selection-drag-target, .vending-card.selection-drag-target { outline: 2px solid var(--green); outline-offset: -2px; }
+
+/* Keep the search, filters, and result list visually separated at every width. */
+#inventoryToolbar { gap: 14px; margin-bottom: 14px; }
+#inventoryToolbar .toolbar-controls { row-gap: 14px; padding-top: 3px; }
+.filter-bar { margin-top: 14px; margin-bottom: 14px; padding: 12px 14px; }
+.meta-row { margin: 12px 0 14px; line-height: 1.55; }
+.bulk-edit-bar { margin: 14px 0 18px; }
+
+/* Click-to-switch card image / Oracle detail panel. */
+.oracle-image-trigger { cursor: pointer; }
+.oracle-switch-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 8px 0 14px; }
+.oracle-switch-panel { cursor: pointer; border: 1px solid transparent; border-radius: 8px; padding: 8px; }
+.oracle-switch-panel:focus-visible { outline: 2px solid var(--green); }
+.oracle-image-panel { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 240px; padding: 12px; color: var(--text); background: #111; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+.oracle-image-panel[hidden] { display: none !important; }
+.oracle-image-panel img { display: block; max-height: min(68vh, 650px); max-width: min(100%, 420px); object-fit: contain; border-radius: 8px; }
+.oracle-image-panel span { color: var(--muted); font-size: 13px; }
+
+.user-person-form { align-items: flex-end; min-width: 240px; }
+.user-person-form label { min-width: 170px; flex: 1; }
+.user-person-form select { width: 100%; }
+@media (max-width: 900px) {
+  .interaction-mode-toggle { width: 100%; padding-left: 0; border-left: 0; border-top: 1px solid var(--border); padding-top: 8px; }
+  .user-person-form { width: 100%; flex-wrap: wrap; }
+}
+
+
+/* Vending reuses the Inventory selection utility; selection actions stay hidden while browsing. */
+.vendor-card-select { display:none; }
+body[data-vending-mode="select"] .vendor-card-select { display:flex; }
+.vendor-selection-toolbar .selection-action { display:none; }
+body[data-vending-mode="select"] .vendor-selection-toolbar .selection-action { display:inline-flex; }
+.vendor-mode-button.active { background:var(--green); border-color:var(--green); color:#fff; }
+.vendor-bulk-edit-bar[hidden] { display:none !important; }
+.vendor-bulk-edit-bar { display:flex; flex-direction:column; gap:12px; }
+.vendor-bulk-edit-bar .bulk-controls-row { align-items:flex-end; }
+.vendor-bulk-edit-bar .status { min-height:20px; }
+@media (max-width:900px) {
+  .vendor-selection-toolbar { align-items:stretch; }
+  .vendor-selection-toolbar > .actions { flex-wrap:wrap; }
+  .vendor-bulk-edit-bar .bulk-controls-row label { flex:1 1 100%; }
+}
+
+.selection-marquee {
+  position: fixed;
+  z-index: 9999;
+  pointer-events: none;
+  border: 1px solid var(--green);
+  border-radius: 3px;
+  background: rgba(30, 155, 98, .15);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .35);
+}
+.card-tile.multi-selected,
+.vending-card.multi-selected { outline: 2px solid var(--green); outline-offset: -2px; }
+body.selection-dragging { cursor: crosshair; }
+body[data-vending-mode="select"] .vending-card { cursor: crosshair; }
