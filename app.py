@@ -2041,20 +2041,42 @@ def set_counts():
     conn = connect_inventory()
     ensure_people_and_auth(conn)
     rows = conn.execute("SELECT id, finish FROM inventory WHERE scryfall_id = ? AND owner = ?", (scryfall_id, owner)).fetchall()
+    # Capture metadata before changing or deleting any finish row. If the only
+    # existing row is Normal and the requested Normal quantity is zero, querying
+    # for a source row inside the later Foil branch would find nothing and silently
+    # lose the card. Keep this snapshot so finish changes can safely replace a row.
+    source = conn.execute(
+        "SELECT name,set_code,rarity,price,collector_number,tcgplayer_id,location,deck_id,for_vending "
+        "FROM inventory WHERE scryfall_id = ? AND owner = ? ORDER BY id LIMIT 1",
+        (scryfall_id, owner),
+    ).fetchone()
+    if not source:
+        conn.close()
+        return jsonify({"success": False, "error": "No inventory row found for this card and owner."}), 404
+
     # Preserve card metadata from any existing row. Create missing finish rows only if needed.
-    for finish, qty in (("normal", normal_qty), ("foil", foil_qty)):
-        row = next((r for r in rows if normalize_finish(r["finish"]) == finish), None)
-        if row:
-            if qty == 0:
-                conn.execute("DELETE FROM inventory WHERE id = ?", (row["id"],))
-            else:
-                conn.execute("UPDATE inventory SET quantity = ? WHERE id = ?", (qty, row["id"]))
-        elif qty > 0:
-            source = conn.execute("SELECT name,set_code,rarity,price,collector_number,tcgplayer_id,location,deck_id,for_vending FROM inventory WHERE scryfall_id = ? AND owner = ? LIMIT 1", (scryfall_id, owner)).fetchone()
-            if source:
-                conn.execute("""INSERT INTO inventory(scryfall_id,name,set_code,rarity,price,owner,quantity,finish,collector_number,tcgplayer_id,location,deck_id,for_vending) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", (scryfall_id, source["name"], source["set_code"], source["rarity"], source["price"], owner, qty, finish, source["collector_number"], source["tcgplayer_id"], source["location"] or "Free", source["deck_id"], source["for_vending"]))
-    conn.commit()
-    conn.close()
+    try:
+        for finish, qty in (("normal", normal_qty), ("foil", foil_qty)):
+            row = next((r for r in rows if normalize_finish(r["finish"]) == finish), None)
+            if row:
+                if qty == 0:
+                    conn.execute("DELETE FROM inventory WHERE id = ?", (row["id"],))
+                else:
+                    conn.execute("UPDATE inventory SET quantity = ? WHERE id = ?", (qty, row["id"]))
+            elif qty > 0:
+                conn.execute(
+                    """INSERT INTO inventory(scryfall_id,name,set_code,rarity,price,owner,quantity,finish,collector_number,tcgplayer_id,location,deck_id,for_vending)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (scryfall_id, source["name"], source["set_code"], source["rarity"], source["price"], owner,
+                     qty, finish, source["collector_number"], source["tcgplayer_id"], source["location"] or "Free",
+                     source["deck_id"], source["for_vending"]),
+                )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
     return jsonify({"success": True})
 
 

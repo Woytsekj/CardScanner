@@ -636,5 +636,50 @@ class InventoryManagementTests(unittest.TestCase):
         self.assertIsNone(row["cover_scryfall_id"])
 
 
+    def test_set_counts_can_convert_only_normal_row_to_foil_without_losing_card(self) -> None:
+        sid = "sid-halo-fountain-miku"
+        original_id = self.add_card(
+            "Halo Fountain", owner="Jonathan", location="Miku Binder", set_code="slx",
+            collector_number="123", scryfall_id=sid, finish="normal", quantity=1, for_vending=0,
+        )
+        response = self.post_json(
+            "/admin/set_counts",
+            {"scryfall_id": sid, "owner": "Jonathan", "normal": 0, "foil": 1},
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self.assertTrue(response.get_json()["success"])
+
+        conn = self.connect()
+        rows = conn.execute(
+            "SELECT id,name,set_code,collector_number,owner,quantity,finish,price,location,deck_id,for_vending "
+            "FROM inventory WHERE scryfall_id=? AND owner=? ORDER BY finish",
+            (sid, "Jonathan"),
+        ).fetchall()
+        conn.close()
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertNotEqual(row["id"], original_id)
+        self.assertEqual(row["name"], "Halo Fountain")
+        self.assertEqual(row["set_code"], "slx")
+        self.assertEqual(row["collector_number"], "123")
+        self.assertEqual(row["quantity"], 1)
+        self.assertEqual(row["finish"], "foil")
+        self.assertEqual(row["price"], "1.00")
+        self.assertEqual(row["location"], "Miku Binder")
+        self.assertEqual(row["deck_id"], None)
+        self.assertEqual(row["for_vending"], 0)
+
+    def test_set_counts_rejects_unknown_card_without_mutating_inventory(self) -> None:
+        response = self.post_json(
+            "/admin/set_counts",
+            {"scryfall_id": "missing-scryfall-id", "owner": "Jonathan", "normal": 0, "foil": 1},
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(response.get_json()["success"])
+        conn = self.connect()
+        count = conn.execute("SELECT COUNT(*) FROM inventory").fetchone()[0]
+        conn.close()
+        self.assertEqual(count, 0)
+
 if __name__ == "__main__":
     unittest.main()
