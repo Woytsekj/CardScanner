@@ -14,7 +14,7 @@ The client is kept separate from the web application so it can be installed and 
 - `scanner_engine.py` — card detection, image processing, OCR, and matching logic.
 - `start_scanner.fish` — desktop launcher; uses the desktop's default webcam by default. The legacy phone-to-PC stream is optional.
 - `setup_phone_camera.fish` — helper for the optional legacy phone camera / loopback device.
-- `mobile-app/` — installable Android-friendly PWA; uses the phone's own camera and OCR to suggest a card name, then lets you confirm the exact Scryfall printing. It does not require a USB/scrcpy connection and is not a native APK.
+- `mobile-app/` — installable Android-friendly PWA; uses the phone's own camera, zoom controls, continuous capture workflow, and OCR-assisted set/collector-aware printing search. It does not require a USB/scrcpy connection and is not a native APK.
 - `camera_probe.py` — checks whether a video device is delivering frames.
 - `check_ocr_gpu.fish` — checks whether the current PyTorch environment can use CUDA/ROCm.
 - `scanner.env.fish.example` — example local configuration.
@@ -90,7 +90,7 @@ The example also includes optional camera settings and local fallback owner name
 
 1. Deploy the full repository and put the hostname/path behind a Cloudflare Access policy limited to you and invited friends.
 2. On the phone, open `https://YOUR-CARDS-HOST/scanner/mobile/`, sign in through Cloudflare Access and CardScanner, then use the browser menu's **Install app** or **Add to Home screen** option.
-3. Allow camera access and capture a card directly on the phone. No cable, `scrcpy`, loopback device, or PC camera stream is needed.
+3. Allow camera access, use the zoom slider/buttons to frame the card, and leave Continuous scan enabled to keep the camera running between cards. Capture prompts OCR and searches printings; verify the set code and collector number before saving. Queries can include a collector number and set code (for example `Forest 304 C21`) or use the optional Set code filter. No cable, `scrcpy`, loopback device, or PC camera stream is needed.
 4. Review the OCR name, choose the exact Scryfall printing, select the account person/location, set normal/foil and vending, and save.
 
 The PWA uses session-authenticated routes served by the main Flask application and an injected per-session CSRF token. It intentionally does not embed the scanner API key or a Cloudflare service-token secret.
@@ -175,5 +175,7 @@ The updated server validates person/account mappings, persists physical location
 ## Version notes
 
 **v39 full-repository update:** Adds account-aware person options, location and vending fields, stable scan IDs for retry safety, and an Android-friendly installable PWA at `/scanner/mobile/`. The main Flask server supplies the PWA and routes, validates session-scoped person access and CSRF, and persists vending independently from location. The PWA does not contain shared API keys or Cloudflare service-token secrets.
+
+**v39.1 mobile scanner update:** Adds controllable hardware zoom where supported and a digital-crop fallback, continuous capture that keeps the camera active between cards, automatic OCR-assisted printing search in continuous mode, and desktop-style queries that support optional collector numbers and set codes.
 
 This is an unofficial community project and is not affiliated with or endorsed by Wizards of the Coast. Magic: The Gathering is a trademark of Wizards of the Coast LLC.

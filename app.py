@@ -2679,7 +2679,7 @@ def api_people():
     return jsonify({"success": True, "people": people})
 
 
-APP_VERSION = "39.0"
+APP_VERSION = "39.1"
 
 
 def _scanner_person_options(conn: sqlite3.Connection, people_rows=None) -> list[dict[str, Any]]:
