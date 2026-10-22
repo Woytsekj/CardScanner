@@ -10,6 +10,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 import hmac
+import hashlib
 import requests
 import threading
 import time
@@ -551,6 +552,7 @@ def scanner_api_path_allowed(path: str) -> bool:
         path == "/api/health"
         or path == "/api/version"
         or path == "/api/people"
+        or path == "/api/scanner/options"
         or path.startswith("/api/price/")
         or path == "/api/scan"
         or path == "/api/scan/batch"
@@ -606,18 +608,36 @@ def security_headers(response):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-    response.headers.setdefault("X-Permitted-Cross-Domain-Policies", "none")
-    response.headers.setdefault("Content-Security-Policy",
-        "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline'; "
-        "style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data: https://cards.scryfall.io https://*.scryfall.com; "
-        "font-src 'self' data:; "
-        "connect-src 'self'; "
-        "frame-src 'none'; "
-        "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    is_scanner_mobile = request.path == "/scanner/mobile" or request.path.startswith("/scanner/mobile/")
+    response.headers.setdefault(
+        "Permissions-Policy",
+        "camera=(self), microphone=(), geolocation=()" if is_scanner_mobile
+        else "camera=(), microphone=(), geolocation=()"
     )
+    response.headers.setdefault("X-Permitted-Cross-Domain-Policies", "none")
+    # The mobile page uses Tesseract.js from jsDelivr and the Scryfall search API.
+    # Keep the broader allowances scoped to the scanner page; every other page retains
+    # the stricter self-only script/connect policy.
+    if is_scanner_mobile:
+        csp = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob: https://cards.scryfall.io https://*.scryfall.com; "
+            "font-src 'self' data:; "
+            "connect-src 'self' https://api.scryfall.com https://cdn.jsdelivr.net; "
+            "worker-src 'self' blob:; "
+            "media-src 'self' blob:; "
+            "frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+        )
+    else:
+        csp = (
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: https://cards.scryfall.io https://*.scryfall.com; "
+            "font-src 'self' data:; connect-src 'self'; frame-src 'none'; object-src 'none'; "
+            "base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+        )
+    response.headers.setdefault("Content-Security-Policy", csp)
     if PUBLIC_HTTPS and request.is_secure:
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return response
@@ -1246,22 +1266,74 @@ def insert_or_increment_scan(payload: dict[str, Any]) -> dict[str, Any]:
     if not scryfall_id or not name:
         raise ValueError("scryfall_id and name are required")
 
-    owner = str(payload.get("owner") or "Me").strip()[:100] or "Me"
+    submitted_owner = str(payload.get("owner") or "").strip()[:100]
+    owner = submitted_owner or "Me"
     finish = normalize_finish(payload.get("finish"))
 
+    # The client may provide person/account IDs for mapping, but these are never
+    # treated as authorization claims. Resolve the active person and linked account
+    # from the database; owner remains the existing canonical inventory key.
+    raw_person_id = payload.get("person_id")
+    person_id = None
+    expected_account_id = None
     owner_conn = connect_inventory()
     ensure_people_and_auth(owner_conn)
-    valid_owner = owner_conn.execute("SELECT 1 FROM people WHERE name = ? AND active=1", (owner,)).fetchone()
-    owner_conn.close()
+    try:
+        if raw_person_id not in (None, ""):
+            try:
+                person_id = int(raw_person_id)
+            except (TypeError, ValueError):
+                raise ValueError("person_id must identify an active server person")
+            person = owner_conn.execute(
+                """SELECT p.id, p.name, u.username AS account_id
+                   FROM people p LEFT JOIN users u ON u.person_id=p.id AND u.active=1
+                   WHERE p.id=? AND p.active=1""",
+                (person_id,),
+            ).fetchone()
+            if not person:
+                raise ValueError("Selected person is not active on the server")
+            canonical_owner = str(person["name"])
+            if submitted_owner and submitted_owner.casefold() != canonical_owner.casefold():
+                raise ValueError("Selected person ID and owner name do not match")
+            owner = canonical_owner
+            expected_account_id = str(person["account_id"] or "")
+            supplied_account_id = str(payload.get("account_id") or "").strip()
+            if supplied_account_id != expected_account_id:
+                raise ValueError("The selected person/account mapping is out of date. Refresh scanner options and try again.")
+        valid_owner = owner_conn.execute(
+            "SELECT id FROM people WHERE name = ? AND active=1 COLLATE NOCASE", (owner,)
+        ).fetchone()
+    finally:
+        owner_conn.close()
     if not valid_owner:
         raise ValueError(f"Owner '{owner}' is not an active person on the server")
+
     qty = parse_qty(payload.get("quantity"))
     price = str(payload.get("price") if payload.get("price") is not None else "0.00")
     set_code = str(payload.get("set_code") or "").upper()
     rarity = str(payload.get("rarity") or "Common")
     collector_number = str(payload.get("collector_number") or "").strip() or None
     tcgplayer_id = str(payload.get("tcgplayer_id") or "").strip() or None
-    location = str(payload.get("location") or "Free").strip()[:120] or "Free"
+    location_raw = payload.get("location")
+    if location_raw in (None, ""):
+        location_raw = payload.get("storage_location")
+    location = str(location_raw or "Free").strip()[:120] or "Free"
+    raw_location_id = payload.get("location_id")
+    if raw_location_id not in (None, "") and str(raw_location_id).strip().casefold() != location.casefold():
+        raise ValueError("Selected storage location ID and name do not match. Refresh scanner options and try again.")
+
+    raw_vending = payload.get("is_vending", payload.get("vending", payload.get("for_vending", False)))
+    if isinstance(raw_vending, bool):
+        is_vending = raw_vending
+    elif raw_vending in (0, 1):
+        is_vending = bool(raw_vending)
+    elif str(raw_vending).strip().lower() in {"true", "yes", "on", "1"}:
+        is_vending = True
+    elif str(raw_vending).strip().lower() in {"false", "no", "off", "0", "", "none"}:
+        is_vending = False
+    else:
+        raise ValueError("is_vending must be true or false")
+
     scan_time = str(payload.get("scan_time") or datetime.now(timezone.utc).isoformat())
     # Optional client-generated id. If a scan was saved but the response was lost,
     # the scanner's retry carries the same id and is acknowledged without
@@ -1271,25 +1343,29 @@ def insert_or_increment_scan(payload: dict[str, Any]) -> dict[str, Any]:
     conn = connect_inventory()
     if scan_id:
         conn.execute("CREATE TABLE IF NOT EXISTS scan_log (scan_id TEXT PRIMARY KEY, row_id INTEGER, quantity INTEGER, created_at TEXT NOT NULL)")
-        seen = conn.execute("SELECT row_id, quantity FROM scan_log WHERE scan_id=?", (scan_id,)).fetchone()
-        if seen:
-            conn.close()
-            return {"success": True, "id": seen["row_id"], "quantity": seen["quantity"], "owner": owner,
-                    "finish": finish, "name": name, "duplicate": True}
     if not tcgplayer_id and scryfall_id:
+        # Mapping resolution may commit its cache write, so complete it before the
+        # inventory transaction. The idempotency check itself must be serialized
+        # with the row write to prevent simultaneous retries incrementing twice.
         mapping = resolve_scryfall_mapping(scryfall_id, conn)
         tcgplayer_id = mapping.get("tcgplayer_id")
     try:
         conn.execute("BEGIN IMMEDIATE")
+        if scan_id:
+            seen = conn.execute("SELECT row_id, quantity FROM scan_log WHERE scan_id=?", (scan_id,)).fetchone()
+            if seen:
+                conn.rollback()
+                return {"success": True, "id": seen["row_id"], "quantity": seen["quantity"], "owner": owner,
+                        "finish": finish, "name": name, "duplicate": True}
         existing = conn.execute(
             """
             SELECT id, quantity FROM inventory
             WHERE scryfall_id = ? AND owner = ? AND IFNULL(NULLIF(finish,''),'normal') = ?
               AND COALESCE(location,'Free') = ? AND deck_id IS NULL
-              AND COALESCE(for_vending,0) = 0
+              AND COALESCE(for_vending,0) = ?
             ORDER BY id LIMIT 1
             """,
-            (scryfall_id, owner, finish, location),
+            (scryfall_id, owner, finish, location, int(is_vending)),
         ).fetchone()
         if existing:
             new_qty = int(existing["quantity"] or 0) + qty
@@ -1311,7 +1387,7 @@ def insert_or_increment_scan(payload: dict[str, Any]) -> dict[str, Any]:
                     (scryfall_id, name, set_code, rarity, price, owner, quantity, scan_time, finish, collector_number, tcgplayer_id, location, for_vending)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (scryfall_id, name, set_code, rarity, price, owner, qty, scan_time, finish, collector_number, tcgplayer_id, location, 0),
+                (scryfall_id, name, set_code, rarity, price, owner, qty, scan_time, finish, collector_number, tcgplayer_id, location, int(is_vending)),
             )
             row_id = cur.lastrowid
             new_qty = qty
@@ -1333,6 +1409,8 @@ def insert_or_increment_scan(payload: dict[str, Any]) -> dict[str, Any]:
         "owner": owner,
         "finish": finish,
         "name": name,
+        "location": location,
+        "is_vending": is_vending,
     }
 
 
@@ -1379,7 +1457,8 @@ def login_post():
     session["csrf_token"] = token_urlsafe(32)
     if int(user["is_admin"]) or int(user["is_superadmin"]) or str(user["role"]).lower() in {"admin", "superadmin"}:
         return redirect(next_url if next_url else url_for("index"))
-    return redirect(next_url if next_url and next_url.startswith("/vending") else url_for("vending_view"))
+    allowed_member_next = next_url.startswith("/vending") or next_url == "/scanner/mobile" or next_url.startswith("/scanner/mobile/")
+    return redirect(next_url if next_url and allowed_member_next else url_for("vending_view"))
 
 
 @app.post("/logout")
@@ -2600,7 +2679,217 @@ def api_people():
     return jsonify({"success": True, "people": people})
 
 
-APP_VERSION = "36.0"
+APP_VERSION = "39.0"
+
+
+def _scanner_person_options(conn: sqlite3.Connection, people_rows=None) -> list[dict[str, Any]]:
+    if people_rows is None:
+        people_rows = conn.execute(
+            """SELECT p.id, p.name, u.username AS account_id
+               FROM people p LEFT JOIN users u ON u.person_id=p.id AND u.active=1
+               WHERE p.active=1 ORDER BY p.name COLLATE NOCASE"""
+        ).fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "person_id": int(row["id"]),
+            "name": str(row["name"]),
+            # This app's current schema links at most one default person to each
+            # login account. The account ID is therefore the login username.
+            "account_id": str(row["account_id"]) if row["account_id"] else None,
+            "account_name": str(row["account_id"]) if row["account_id"] else None,
+        }
+        for row in people_rows
+    ]
+
+
+def _scanner_location_options(conn: sqlite3.Connection, owner: str | None = None) -> list[dict[str, str]]:
+    # Physical locations are plain labels in the current inventory schema (there is
+    # no location table/foreign key). Return observed names, with a stable ID equal
+    # to the name so clients can carry the choice without guessing numeric IDs.
+    if owner:
+        rows = conn.execute(
+            "SELECT DISTINCT COALESCE(location,'Free') AS name FROM inventory WHERE owner=? ORDER BY name COLLATE NOCASE",
+            (owner,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT DISTINCT COALESCE(location,'Free') AS name FROM inventory ORDER BY name COLLATE NOCASE"
+        ).fetchall()
+    names = [str(row["name"] or "Free") for row in rows]
+    if not any(n.casefold() == "free" for n in names):
+        names.insert(0, "Free")
+    return [{"id": name, "name": name} for name in names]
+
+
+@app.get("/api/scanner/options")
+def api_scanner_options():
+    """Compatibility options route for the trusted desktop scanner API key."""
+    if not SCANNER_API_KEY or not check_api_key():
+        return jsonify({"success": False, "error": "Invalid scanner API key"}), 401
+    conn = connect_inventory()
+    try:
+        ensure_people_and_auth(conn)
+        people = _scanner_person_options(conn)
+        accounts = conn.execute(
+            "SELECT username AS id, username AS name FROM users WHERE active=1 ORDER BY username COLLATE NOCASE"
+        ).fetchall()
+        locations = _scanner_location_options(conn)
+        return jsonify({
+            "success": True,
+            "people": people,
+            "persons": people,
+            "accounts": [dict(row) for row in accounts],
+            "locations": locations,
+            "storage_locations": locations,
+        })
+    finally:
+        conn.close()
+
+
+def _scanner_user_is_admin(user) -> bool:
+    return bool(user and (int(user["is_admin"] or 0) or int(user["is_superadmin"] or 0)
+                          or str(user["role"] or "").lower() in {"admin", "superadmin"}))
+
+
+def _scanner_mobile_authorized_people(conn: sqlite3.Connection, user) -> list[dict[str, Any]]:
+    ensure_people_and_auth(conn)
+    if _scanner_user_is_admin(user):
+        rows = conn.execute(
+            """SELECT p.id,p.name,u.username AS account_id
+               FROM people p LEFT JOIN users u ON u.person_id=p.id AND u.active=1
+               WHERE p.active=1 ORDER BY p.name COLLATE NOCASE"""
+        ).fetchall()
+    else:
+        if user["person_id"] is None:
+            return []
+        rows = conn.execute(
+            """SELECT p.id,p.name,u.username AS account_id
+               FROM people p JOIN users u ON u.person_id=p.id
+               WHERE p.active=1 AND u.active=1 AND u.username=? AND p.id=?""",
+            (user["username"], user["person_id"]),
+        ).fetchall()
+    return _scanner_person_options(conn, rows)
+
+
+@app.get("/scanner/mobile")
+@app.get("/scanner/mobile/")
+@login_required
+def scanner_mobile_index():
+    """Serve the PWA from the same origin and inject this session's CSRF token."""
+    user = current_user()
+    if user and str(user["role"] or "").lower() == "vendor" and not _scanner_user_is_admin(user):
+        return render_template("login.html", next_url="", error="This account does not have access to the scanner."), 403
+    index_path = BASE_DIR / "scanner-client" / "mobile-app" / "index.html"
+    html = index_path.read_text(encoding="utf-8")
+    html = html.replace("__CARD_SCANNER_CSRF_TOKEN__", ensure_csrf_token())
+    response = app.response_class(html, mimetype="text/html")
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+@app.get("/scanner/mobile/<path:asset>")
+@login_required
+def scanner_mobile_asset(asset: str):
+    user = current_user()
+    if user and str(user["role"] or "").lower() == "vendor" and not _scanner_user_is_admin(user):
+        return jsonify({"success": False, "error": "This account does not have access to the scanner."}), 403
+    base = BASE_DIR / "scanner-client" / "mobile-app"
+    if asset in {"", "index.html"}:
+        return scanner_mobile_index()
+    return send_from_directory(base, asset)
+
+
+@app.get("/api/scanner/mobile/options")
+@login_required
+def api_scanner_mobile_options():
+    user = current_user()
+    if not user:
+        return jsonify({"success": False, "error": "Login required"}), 401
+    if str(user["role"] or "").lower() == "vendor" and not _scanner_user_is_admin(user):
+        return jsonify({"success": False, "error": "Vendor accounts cannot scan cards."}), 403
+    conn = connect_inventory()
+    try:
+        people = _scanner_mobile_authorized_people(conn, user)
+        if not people and not _scanner_user_is_admin(user):
+            return jsonify({"success": False, "error": "This account is not linked to an active person. Ask the CardScanner administrator to map your account to a person."}), 403
+        if _scanner_user_is_admin(user):
+            locations = _scanner_location_options(conn)
+        else:
+            owner = people[0]["name"] if people else None
+            locations = _scanner_location_options(conn, owner)
+        return jsonify({"success": True, "people": people, "locations": locations, "storage_locations": locations,
+                        "account": {"id": str(user["username"]), "name": str(user["username"])}})
+    finally:
+        conn.close()
+
+
+@app.get("/api/scanner/mobile/price/<scryfall_id>")
+@login_required
+def api_scanner_mobile_price(scryfall_id: str):
+    user = current_user()
+    if not user or (str(user["role"] or "").lower() == "vendor" and not _scanner_user_is_admin(user)):
+        return jsonify({"success": False, "error": "Scanner access denied."}), 403
+    conn = connect_inventory()
+    try:
+        mapping = resolve_scryfall_mapping(scryfall_id, conn)
+    finally:
+        conn.close()
+    tcg_id = mapping.get("tcgplayer_id")
+    prices = get_tcg_prices().get(str(tcg_id), {"normal": None, "foil": None}) if tcg_id else {"normal": None, "foil": None}
+    return jsonify({"success": True, "scryfall_id": str(scryfall_id), "tcgplayer_id": tcg_id,
+                    "normal": prices.get("normal"), "foil": prices.get("foil"),
+                    "source_updated": get_price_meta().get("source_updated"),
+                    "snapshot_exists": PRICES_FILE.exists()})
+
+
+@app.post("/api/scanner/mobile/scan")
+@login_required
+def api_scanner_mobile_scan():
+    user = current_user()
+    if not user:
+        return jsonify({"success": False, "error": "Login required"}), 401
+    if str(user["role"] or "").lower() == "vendor" and not _scanner_user_is_admin(user):
+        return jsonify({"success": False, "error": "Vendor accounts cannot scan cards."}), 403
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"success": False, "error": "Expected a JSON scan payload."}), 400
+    try:
+        person_id = int(payload.get("person_id"))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Select a person/collection before saving."}), 400
+
+    conn = connect_inventory()
+    try:
+        ensure_people_and_auth(conn)
+        people = _scanner_mobile_authorized_people(conn, user)
+        selected = next((p for p in people if int(p["id"]) == person_id), None)
+        if selected is None:
+            return jsonify({"success": False, "error": "You are not authorized to scan into that person's collection."}), 403
+        expected_account_id = str(selected.get("account_id") or "")
+        supplied_account_id = str(payload.get("account_id") or "").strip()
+        if supplied_account_id != expected_account_id:
+            return jsonify({"success": False, "error": "The selected account/person mapping has changed. Reload scanner options and try again."}), 400
+        safe_payload = dict(payload)
+        # Never trust the submitted owner label: derive it from the authorized DB row.
+        safe_payload["owner"] = selected["name"]
+        safe_payload["person_id"] = selected["id"]
+        safe_payload["account_id"] = expected_account_id
+        # Namespace mobile idempotency keys by authenticated user/person so a
+        # client cannot collide with another user's scan-log entry.
+        original_scan_id = str(safe_payload.get("scan_id") or "").strip()
+        if original_scan_id:
+            scoped_id = f"{user['username']}\0{person_id}\0{original_scan_id}".encode("utf-8")
+            safe_payload["scan_id"] = hashlib.sha256(scoped_id).hexdigest()
+        result = insert_or_increment_scan(safe_payload)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception:
+        app.logger.exception("Authenticated mobile scan failed")
+        return jsonify({"success": False, "error": "Server error while saving scan."}), 500
+    finally:
+        conn.close()
 
 
 @app.get("/api/health")

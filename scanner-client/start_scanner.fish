@@ -51,7 +51,12 @@ set SCRCPY_PID ""
 set SCANNER_STATUS 0
 
 if not set -q MTG_SCRCPY_CAMERA
-    set MTG_SCRCPY_CAMERA "1"
+    # The Android PWA no longer needs the phone bridged into the desktop.
+    # Keep the legacy scrcpy route opt-in for users who still want it.
+    set MTG_SCRCPY_CAMERA "0"
+end
+if test "$MTG_SCRCPY_CAMERA" != "1"; and not set -q MTG_VIDEO_SOURCE
+    set -gx MTG_VIDEO_SOURCE "0"
 end
 if not set -q MTG_V4L2_DEVICE
     set MTG_V4L2_DEVICE "9"

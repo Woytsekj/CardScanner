@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from PySide6.QtCore import Qt, QTimer, QEvent
 from PySide6.QtGui import QImage, QPixmap, QFont, QKeyEvent, QIcon
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame, QHBoxLayout,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton,
     QSpinBox, QVBoxLayout, QWidget
 )
@@ -28,22 +28,9 @@ if not LOCAL_OWNER_FALLBACK:
     LOCAL_OWNER_FALLBACK = ["Me"]
 
 
-def fetch_people():
-    if not eng.SERVER_URL or not eng.SCANNER_API_KEY:
-        return LOCAL_OWNER_FALLBACK
-    try:
-        response = requests.get(
-            f"{eng.SERVER_URL}/api/people",
-            headers=eng.api_headers(),
-            timeout=eng.REQUEST_TIMEOUT,
-        )
-        response.raise_for_status()
-        data = response.json()
-        people = [str(x).strip() for x in data.get("people", []) if str(x).strip()]
-        return people or LOCAL_OWNER_FALLBACK
-    except Exception as exc:
-        print(f"[PEOPLE] Could not refresh from server: {exc}")
-        return LOCAL_OWNER_FALLBACK
+def fetch_scanner_options():
+    """Load normalized person/account mappings and physical storage locations."""
+    return eng.fetch_scanner_options()
 
 
 def _compact_collector(value):
@@ -398,6 +385,8 @@ class ScannerWindow(QMainWindow):
                 min-height:48px; border-radius:7px; border:1px solid #454545;
                 background:#242424; color:#f1f1f1; padding:0 14px; font-size:18px;
             }
+            QCheckBox { color:#f1f1f1; font-size:17px; spacing:10px; padding:8px; }
+            QCheckBox::indicator { width:24px; height:24px; }
             QComboBox:hover, QPushButton:hover { border-color:#6a6a6a; }
             QPushButton#primary { background:#208a5b; border-color:#2ca86f; font-weight:700; }
             QPushButton#danger { background:#5b2929; border-color:#8c4444; }
@@ -495,6 +484,28 @@ class ScannerWindow(QMainWindow):
 
         panel_layout.addLayout(controls)
 
+        # Location and vending are independent of deck assignment and owner.
+        # The server remains authoritative for any deck/vending conflicts.
+        inventory_controls = QHBoxLayout()
+        inventory_controls.setSpacing(10)
+        location_block = QVBoxLayout()
+        location_title = QLabel("Storage location")
+        location_title.setStyleSheet("color:#aaa; font-size:15px;")
+        self.location_combo = QComboBox()
+        self.location_combo.setEditable(True)
+        self.location_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.location_combo.setToolTip("Select a known location or type a new physical storage label.")
+        location_block.addWidget(location_title)
+        location_block.addWidget(self.location_combo)
+        inventory_controls.addLayout(location_block, 2)
+        self.vending_checkbox = QCheckBox("Mark for vending")
+        self.vending_checkbox.setToolTip(
+            "Mark this scanned copy for vending independently of its storage location. "
+            "Inventory rows already assigned to a deck cannot also be vending stock."
+        )
+        inventory_controls.addWidget(self.vending_checkbox, 1, Qt.AlignVCenter)
+        panel_layout.addLayout(inventory_controls)
+
         buttons = QHBoxLayout()
         buttons.setSpacing(10)
         self.refresh_people_button = QPushButton("Refresh People")
@@ -546,15 +557,66 @@ class ScannerWindow(QMainWindow):
         self.timer.start(30)
 
     def refresh_people(self):
-        current = self.owner_combo.currentText()
-        people = fetch_people()
+        current_person = self.owner_combo.currentData() if hasattr(self, "owner_combo") else None
+        current_name = self.owner_combo.currentText() if hasattr(self, "owner_combo") else ""
+        options = fetch_scanner_options()
+        self.scanner_options_endpoint_ok = bool(options.get("options_endpoint_ok"))
+        self.people_options = options.get("people", [])
         self.owner_combo.blockSignals(True)
         self.owner_combo.clear()
-        self.owner_combo.addItems(people)
-        if current in people:
-            self.owner_combo.setCurrentText(current)
+        for person in self.people_options:
+            name = str(person.get("name") or "Unknown person")
+            account = str(person.get("account_name") or "").strip()
+            label = f"{name} · {account}" if account else name
+            self.owner_combo.addItem(label, person)
+        restored_index = -1
+        for index in range(self.owner_combo.count()):
+            person = self.owner_combo.itemData(index) or {}
+            if current_person and (
+                (current_person.get("id") is not None and person.get("id") == current_person.get("id"))
+                or (person.get("name") == current_person.get("name") and person.get("account_id") == current_person.get("account_id"))
+            ):
+                restored_index = index
+                break
+            if not current_person and self.owner_combo.itemText(index) == current_name:
+                restored_index = index
+        if restored_index >= 0:
+            self.owner_combo.setCurrentIndex(restored_index)
         self.owner_combo.blockSignals(False)
-        self.set_status(f"Owner list refreshed — storing scans for {self.owner_combo.currentText()}.")
+
+        current_location = self.location_combo.currentData() if hasattr(self, "location_combo") else None
+        current_location_name = self.location_combo.currentText() if hasattr(self, "location_combo") else ""
+        self.location_combo.blockSignals(True)
+        self.location_combo.clear()
+        self.location_combo.addItem("Server default / none", None)
+        for location in options.get("locations", []):
+            self.location_combo.addItem(str(location.get("name") or "Unknown location"), location)
+        for index in range(self.location_combo.count()):
+            location = self.location_combo.itemData(index)
+            if current_location and isinstance(location, dict) and (
+                (current_location.get("id") is not None and location.get("id") == current_location.get("id"))
+                or location.get("name") == current_location.get("name")
+            ):
+                self.location_combo.setCurrentIndex(index)
+                break
+            if not current_location and self.location_combo.itemText(index) == current_location_name:
+                self.location_combo.setCurrentIndex(index)
+        # Preserve a user-entered location label even if it has not appeared in
+        # inventory before and therefore is not returned by the options endpoint.
+        if not current_location and current_location_name.strip() and current_location_name.strip().casefold() != "server default / none":
+            if self.location_combo.findText(current_location_name, Qt.MatchFixedString) < 0:
+                self.location_combo.setEditText(current_location_name)
+        self.location_combo.blockSignals(False)
+
+        selected = self.owner_combo.currentData() or {}
+        detail = selected.get("name") or self.owner_combo.currentText() or "no person selected"
+        if selected.get("account_name"):
+            detail += f" ({selected['account_name']})"
+        location_note = f" · {len(options.get('locations', []))} location(s)" if options.get("locations") else " · server-default location"
+        if not options.get("options_endpoint_ok") and eng.SERVER_URL and eng.SCANNER_API_KEY:
+            self.set_status(f"People refreshed — {detail}{location_note}. Legacy API detected; confirm the server supports location/vending fields.")
+        else:
+            self.set_status(f"Scanner options refreshed — storing scans for {detail}{location_note}.")
 
     def update_connection_status(self):
         if eng.SERVER_URL and eng.SCANNER_API_KEY:
@@ -937,16 +999,46 @@ class ScannerWindow(QMainWindow):
     def save_pending(self):
         if not self.pending_card:
             return
-        owner = self.owner_combo.currentText().strip() or "Me"
+        person = self.owner_combo.currentData() or {}
+        owner = str(person.get("name") or self.owner_combo.currentText()).strip() or "Me"
         finish = getattr(self, "pending_finish", eng.normalized_finish(self.is_foil_mode))
         quantity = max(1, int(getattr(self, "pending_quantity", 1)))
-        result = eng.save_scan(self.pending_card, self.pending_price, owner, finish, quantity=quantity)
+        location_data = self.location_combo.currentData()
+        location_name = location_data.get("name") if isinstance(location_data, dict) else None
+        location_id = location_data.get("id") if isinstance(location_data, dict) else None
+        if not location_name:
+            entered_location = self.location_combo.currentText().strip()
+            if entered_location and entered_location.casefold() != "server default / none":
+                location_name = entered_location[:120]
+        is_vending = self.vending_checkbox.isChecked()
+        if eng.SERVER_URL and eng.SCANNER_API_KEY and not getattr(self, "scanner_options_endpoint_ok", False):
+            if location_name or is_vending:
+                self.set_status(
+                    "Not saved: the server does not advertise the updated scanner options API. "
+                    "Install the main-server changes in SERVER_INTEGRATION.md before using location or vending fields."
+                )
+                return
+        result = eng.save_scan(
+            self.pending_card, self.pending_price, owner, finish, quantity=quantity,
+            person_id=person.get("id"), account_id=person.get("account_id"),
+            location=location_name, location_id=location_id, is_vending=is_vending,
+        )
+        if result.get("mode") == "rejected" or not result.get("success", True):
+            error = result.get("error") or "The server rejected this scan."
+            self.set_status(f"Not saved: {error}. Change the location/vending/person settings and retry.")
+            # Keep the pending card and Save button available so users can fix
+            # validation problems (especially deck/vending conflicts) and retry.
+            return
+
+        where = f" · {location_name}" if location_name else ""
+        vending_note = " · VENDING" if is_vending else ""
+        account_note = f" · {person.get('account_name')}" if person.get("account_name") else ""
         if result.get("mode") == "server":
-            self.set_status(f"Saved to server · {self.pending_card['name']} · {finish.title()} · {owner} · +{quantity} (total {result.get('quantity','?')})")
+            self.set_status(f"Saved to server · {self.pending_card['name']} · {finish.title()} · {owner}{account_note}{where}{vending_note} · +{quantity} (total {result.get('quantity','?')})")
         elif result.get("mode") == "queued":
-            self.set_status(f"Server unavailable — queued locally. {self.pending_card['name']} · {owner} · +{quantity}")
+            self.set_status(f"Server unavailable — queued locally. {self.pending_card['name']} · {owner}{where}{vending_note} · +{quantity}")
         else:
-            self.set_status(f"Saved locally · {self.pending_card['name']} · {finish.title()} · {owner} · +{quantity}")
+            self.set_status(f"Saved locally · {self.pending_card['name']} · {finish.title()} · {owner}{account_note}{where}{vending_note} · +{quantity}")
         self.clear_pending()
 
     def cancel_pending(self):

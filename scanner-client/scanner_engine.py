@@ -8,6 +8,7 @@ import easyocr
 import re
 import numpy as np
 import requests
+import uuid
 
 try:
     import torch
@@ -22,7 +23,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_NAME = os.path.join(SCRIPT_DIR, "mtg_art_hashes.db")
 INV_DB_NAME = os.path.join(SCRIPT_DIR, "mtg_inventory.db")
 PRICE_FILE = os.path.join(SCRIPT_DIR, "tcg_prices.json")
-VIDEO_SOURCE_RAW = os.environ.get("MTG_VIDEO_SOURCE", os.environ.get("VIDEO_SOURCE", "/dev/video9"))
+VIDEO_SOURCE_RAW = os.environ.get("MTG_VIDEO_SOURCE", os.environ.get("VIDEO_SOURCE", "0"))
 VIDEO_SOURCE = VIDEO_SOURCE_RAW.strip()
 if VIDEO_SOURCE.isdigit():
     VIDEO_SOURCE = int(VIDEO_SOURCE)
@@ -32,6 +33,7 @@ CF_ACCESS_CLIENT_ID = os.environ.get("MTG_CF_ACCESS_CLIENT_ID", "")
 CF_ACCESS_CLIENT_SECRET = os.environ.get("MTG_CF_ACCESS_CLIENT_SECRET", "")
 SCANNER_DEVICE = os.environ.get("MTG_SCANNER_DEVICE", "main-computer")
 QUEUE_FILE = os.path.join(SCRIPT_DIR, os.environ.get("MTG_SCAN_QUEUE", "scan_queue.jsonl"))
+REJECTED_QUEUE_FILE = os.path.join(SCRIPT_DIR, os.environ.get("MTG_SCAN_REJECTED_QUEUE", "scan_queue_rejected.jsonl"))
 REQUEST_TIMEOUT = float(os.environ.get("MTG_SCAN_TIMEOUT", "8"))
 OCR_GPU_SETTING = os.environ.get("MTG_OCR_GPU", "auto").strip().lower()
 if OCR_GPU_SETTING in {"0", "false", "no", "off", "cpu"}:
@@ -203,7 +205,11 @@ def init_inventory_db():
             scan_time DATETIME DEFAULT CURRENT_TIMESTAMP,
             finish TEXT DEFAULT 'normal',
             collector_number TEXT,
-            tcgplayer_id TEXT)"""
+            tcgplayer_id TEXT,
+            person_id TEXT,
+            account_id TEXT,
+            location TEXT,
+            is_vending INTEGER DEFAULT 0)"""
     )
     for ddl in (
         "ALTER TABLE inventory ADD COLUMN quantity INTEGER DEFAULT 1",
@@ -211,6 +217,10 @@ def init_inventory_db():
         "ALTER TABLE inventory ADD COLUMN finish TEXT DEFAULT 'normal'",
         "ALTER TABLE inventory ADD COLUMN collector_number TEXT",
         "ALTER TABLE inventory ADD COLUMN tcgplayer_id TEXT",
+        "ALTER TABLE inventory ADD COLUMN person_id TEXT",
+        "ALTER TABLE inventory ADD COLUMN account_id TEXT",
+        "ALTER TABLE inventory ADD COLUMN location TEXT",
+        "ALTER TABLE inventory ADD COLUMN is_vending INTEGER DEFAULT 0",
     ):
         try:
             c.execute(ddl)
@@ -221,15 +231,21 @@ def init_inventory_db():
     conn.close()
 
 
-def save_to_local_inventory(match, price, owner, finish, quantity=1):
+def save_to_local_inventory(
+    match, price, owner, finish, quantity=1, *, person_id=None, account_id=None,
+    location=None, is_vending=False,
+):
     init_inventory_db()
     conn = sqlite3.connect(INV_DB_NAME)
     c = conn.cursor()
     c.execute(
         """SELECT id, quantity FROM inventory
-           WHERE scryfall_id = ? AND owner = ? AND IFNULL(NULLIF(finish,''),'normal') = ?
+           WHERE scryfall_id = ? AND owner = ?
+             AND IFNULL(NULLIF(finish,''),'normal') = ?
+             AND IFNULL(person_id,'') = ? AND IFNULL(account_id,'') = ?
+             AND IFNULL(location,'') = ? AND IFNULL(is_vending,0) = ?
            ORDER BY id LIMIT 1""",
-        (match["id"], owner, finish),
+        (match["id"], owner, finish, str(person_id or ""), str(account_id or ""), str(location or ""), int(bool(is_vending))),
     )
     existing = c.fetchone()
     if existing:
@@ -243,15 +259,16 @@ def save_to_local_inventory(match, price, owner, finish, quantity=1):
     else:
         c.execute(
             """INSERT INTO inventory
-               (scryfall_id, name, set_code, rarity, price, owner, quantity, finish, collector_number, tcgplayer_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (scryfall_id, name, set_code, rarity, price, owner, quantity, finish,
+                collector_number, tcgplayer_id, person_id, account_id, location, is_vending)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 match["id"], match["name"], match["set"], match["rarity"], str(price), owner, max(1, int(quantity)), finish,
-                match.get("collector_number"), match.get("tcg_id"),
+                match.get("collector_number"), match.get("tcg_id"), person_id, account_id, location, int(bool(is_vending)),
             ),
         )
-        new_qty = 1
-        print(f"[SAVED LOCAL] {match['name']} [{match['set']}] {finish} for {owner}.")
+        new_qty = max(1, int(quantity))
+        print(f"[SAVED LOCAL] {match['name']} [{match['set']}] {finish} qty {new_qty} for {owner}.")
     conn.commit()
     conn.close()
     return {"success": True, "quantity": new_qty, "mode": "local"}
@@ -403,6 +420,166 @@ def get_remote_card_pricing(match):
     return None
 
 
+def _option_name(item, *keys):
+    if isinstance(item, dict):
+        for key in keys:
+            value = item.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return ""
+    return str(item or "").strip()
+
+
+def _normalize_person_options(raw_people, raw_accounts=None):
+    """Normalize legacy string lists and account-mapped person records.
+
+    Supported examples include ["Me", "Friend"],
+    [{"id": 7, "name": "Andrew", "account_id": 2, "account_name": "andrew"}],
+    and accounts containing nested people/members arrays.
+    """
+    result = []
+    seen = set()
+
+    def add(person, inherited_account=None):
+        if isinstance(person, str):
+            person = {"name": person}
+        if not isinstance(person, dict):
+            return
+        name = _option_name(person, "name", "display_name", "person_name", "username", "label")
+        if not name:
+            return
+        account = inherited_account or {}
+        if isinstance(account, str):
+            account = {"name": account}
+        if not isinstance(account, dict):
+            account = {}
+        account_name = _option_name(person, "account_name", "account_username") or _option_name(account, "name", "username", "display_name")
+        account_id = person.get("account_id", account.get("id", account.get("account_id")))
+        person_id = person.get("person_id", person.get("id"))
+        key = (str(person_id or ""), str(account_id or ""), name.casefold())
+        if key in seen:
+            return
+        seen.add(key)
+        result.append({
+            "id": person_id,
+            "name": name,
+            "account_id": account_id,
+            "account_name": account_name,
+        })
+
+    for item in raw_people or []:
+        if isinstance(item, dict) and any(isinstance(item.get(k), list) for k in ("people", "members", "persons")):
+            for nested in item.get("people", item.get("members", item.get("persons", []))) or []:
+                add(nested, item)
+        else:
+            add(item)
+    for account in raw_accounts or []:
+        if not isinstance(account, dict):
+            continue
+        for nested in account.get("people", account.get("members", account.get("persons", []))) or []:
+            add(nested, account)
+    return result
+
+
+def _normalize_location_options(raw_locations):
+    result = []
+    seen = set()
+    for item in raw_locations or []:
+        if isinstance(item, str):
+            item = {"name": item}
+        if not isinstance(item, dict):
+            continue
+        name = _option_name(item, "name", "location", "label", "storage_location", "value")
+        if not name:
+            continue
+        key = (str(item.get("id") or ""), name.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({"id": item.get("id"), "name": name})
+    return result
+
+
+def fetch_scanner_options():
+    """Load account/person and storage-location choices from the server.
+
+    New servers may implement GET /api/scanner/options. Older servers fall back
+    to /api/people and a best-effort GET /api/locations. Missing optional routes
+    do not prevent the desktop scanner from starting.
+    """
+    raw_people = []
+    raw_accounts = []
+    raw_locations = []
+    options_endpoint_ok = False
+    if SERVER_URL and SCANNER_API_KEY:
+        try:
+            response = requests.get(
+                f"{SERVER_URL}/api/scanner/options",
+                headers=api_headers(), timeout=REQUEST_TIMEOUT,
+            )
+            if response.ok:
+                data = response.json()
+                if isinstance(data, dict) and data.get("success", True):
+                    raw_people = data.get("people", data.get("persons", [])) or []
+                    raw_accounts = data.get("accounts", []) or []
+                    raw_locations = data.get("locations", data.get("storage_locations", [])) or []
+                    options_endpoint_ok = True
+        except Exception as exc:
+            print(f"[OPTIONS] Combined scanner options endpoint unavailable; trying legacy endpoints: {exc}")
+
+        if not raw_people:
+            try:
+                response = requests.get(
+                    f"{SERVER_URL}/api/people",
+                    headers=api_headers(), timeout=REQUEST_TIMEOUT,
+                )
+                response.raise_for_status()
+                data = response.json()
+                raw_people = data.get("people", data.get("persons", [])) if isinstance(data, dict) else []
+                if not raw_people and isinstance(data, list):
+                    raw_people = data
+            except Exception as exc:
+                print(f"[PEOPLE] Could not refresh from server: {exc}")
+
+        if not raw_locations:
+            for path in ("/api/locations", "/api/storage-locations"):
+                try:
+                    response = requests.get(f"{SERVER_URL}{path}", headers=api_headers(), timeout=REQUEST_TIMEOUT)
+                    if response.status_code == 404:
+                        continue
+                    response.raise_for_status()
+                    data = response.json()
+                    if isinstance(data, dict):
+                        raw_locations = data.get("locations", data.get("storage_locations", data.get("data", []))) or []
+                    elif isinstance(data, list):
+                        raw_locations = data
+                    if raw_locations:
+                        break
+                except Exception as exc:
+                    print(f"[LOCATIONS] Optional endpoint {path} unavailable: {exc}")
+
+    people = _normalize_person_options(raw_people, raw_accounts)
+    if not people:
+        names = [x.strip() for x in os.environ.get("MTG_SCANNER_OWNERS", "Me,Trade Binder,Friend").split(",") if x.strip()]
+        people = _normalize_person_options(names or ["Me"])
+
+    locations = _normalize_location_options(raw_locations)
+    if not locations:
+        names = [x.strip() for x in os.environ.get("MTG_SCANNER_LOCATIONS", "").split(",") if x.strip()]
+        locations = _normalize_location_options(names)
+
+    return {
+        "people": people,
+        "locations": locations,
+        "options_endpoint_ok": options_endpoint_ok,
+        "supports_account_mapping": any(p.get("id") is not None or p.get("account_id") is not None for p in people),
+    }
+
+
+class ScannerAPIRejected(RuntimeError):
+    """A well-formed API response explicitly rejected the scan."""
+
+
 def post_remote_scan(payload):
     if not SERVER_URL or not SCANNER_API_KEY:
         raise RuntimeError("Remote server URL/API key not configured")
@@ -415,8 +592,20 @@ def post_remote_scan(payload):
     response.raise_for_status()
     data = response.json()
     if not data.get("success"):
-        raise RuntimeError(data.get("error", "Server rejected scan"))
+        raise ScannerAPIRejected(data.get("error") or data.get("message") or "Server rejected scan")
     return data
+
+
+def _record_rejected_queued_scan(payload, error, status_code=None):
+    """Preserve a queued payload rejected by server validation without retrying forever."""
+    record = {
+        "rejected_at": datetime.now(timezone.utc).isoformat(),
+        "error": str(error),
+        "status_code": status_code,
+        "payload": payload,
+    }
+    with open(REJECTED_QUEUE_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 
 def flush_pending_queue():
@@ -432,11 +621,44 @@ def flush_pending_queue():
 
     remaining = []
     sent = 0
+    rejected = 0
     for idx, line in enumerate(lines):
+        payload = {}
         try:
             payload = json.loads(line)
             post_remote_scan(payload)
             sent += 1
+        except ScannerAPIRejected as exc:
+            try:
+                _record_rejected_queued_scan(payload, str(exc))
+                rejected += 1
+                print(f"[QUEUE] Server rejected a pending scan; preserved in {REJECTED_QUEUE_FILE}: {exc}")
+                continue
+            except OSError as queue_exc:
+                print(f"[QUEUE] Cannot preserve rejected scan: {queue_exc}")
+                remaining.extend(lines[idx:])
+                break
+        except requests.HTTPError as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status is not None and 400 <= status < 500:
+                detail = str(exc)
+                try:
+                    body = exc.response.json()
+                    detail = body.get("error") or body.get("message") or detail
+                except Exception:
+                    pass
+                try:
+                    _record_rejected_queued_scan(payload, detail, status)
+                    rejected += 1
+                    print(f"[QUEUE] Server rejected pending scan (HTTP {status}); preserved in {REJECTED_QUEUE_FILE}: {detail}")
+                    continue
+                except OSError as queue_exc:
+                    print(f"[QUEUE] Cannot preserve rejected scan: {queue_exc}")
+                    remaining.extend(lines[idx:])
+                    break
+            print(f"[QUEUE] Could not upload pending scan yet: {exc}")
+            remaining.extend(lines[idx:])
+            break
         except Exception as exc:
             print(f"[QUEUE] Could not upload pending scan yet: {exc}")
             remaining.extend(lines[idx:])
@@ -451,10 +673,21 @@ def flush_pending_queue():
         pass
     if sent:
         print(f"[QUEUE] Uploaded {sent} pending scan(s) to the server.")
+    if rejected:
+        print(f"[QUEUE] {rejected} rejected scan(s) were preserved for review in {REJECTED_QUEUE_FILE}.")
     return sent
 
 
-def save_scan(match, price, owner, finish, quantity=1):
+def save_scan(
+    match, price, owner, finish, quantity=1, *, person_id=None, account_id=None,
+    location=None, location_id=None, is_vending=False,
+):
+    """Save one reviewed scan to the server or local inventory.
+
+    The extra identity/location/vending fields are backward-compatible JSON
+    additions. The server must validate and persist them; clients never enforce
+    deck/vending invariants on their own.
+    """
     payload = {
         "scryfall_id": match["id"],
         "name": match["name"],
@@ -464,8 +697,17 @@ def save_scan(match, price, owner, finish, quantity=1):
         "tcgplayer_id": match.get("tcg_id"),
         "price": str(price),
         "owner": owner,
+        "person_id": person_id,
+        "account_id": account_id,
         "quantity": max(1, int(quantity)),
         "finish": finish,
+        "location": location,
+        "location_id": location_id,
+        "storage_location": location,
+        "is_vending": bool(is_vending),
+        "vending": bool(is_vending),
+        # Stable across network retries because the same payload is queued verbatim.
+        "scan_id": str(uuid.uuid4()),
         "device": SCANNER_DEVICE,
         "scan_time": datetime.now(timezone.utc).isoformat(),
     }
@@ -476,15 +718,41 @@ def save_scan(match, price, owner, finish, quantity=1):
             flush_pending_queue()
             result["mode"] = "server"
             return result
+        except ScannerAPIRejected as exc:
+            print(f"[REMOTE] Scan rejected by server: {exc}")
+            return {"success": False, "mode": "rejected", "error": str(exc)}
+        except requests.HTTPError as exc:
+            # Do NOT silently queue validation/auth failures (e.g. trying to put
+            # a deck-assigned card in vending). Retrying those would hide errors.
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status is not None and 400 <= status < 500:
+                detail = "Server rejected the scan"
+                try:
+                    body = exc.response.json()
+                    detail = body.get("error") or body.get("message") or detail
+                except Exception:
+                    if status == 401 or status == 403:
+                        detail = "Server authorization failed. Check the scanner credential and Cloudflare Access policy."
+                print(f"[REMOTE] Scan rejected with HTTP {status}: {detail}")
+                return {"success": False, "mode": "rejected", "error": detail, "status_code": status}
+            print(f"[REMOTE] Server returned an HTTP error; queueing scan: {exc}")
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            print(f"[REMOTE] Server unavailable; queueing scan: {exc}")
         except Exception as exc:
-            print(f"[REMOTE] Server unavailable: {exc}")
-            try:
-                queue_scan(payload)
-            except OSError as queue_exc:
-                print(f"[!] Could not queue scan locally: {queue_exc}")
-            return {"success": True, "mode": "queued", "error": str(exc), "quantity": max(1, int(quantity))}
+            print(f"[REMOTE] Scan failed; queueing scan: {exc}")
+        try:
+            queue_scan(payload)
+        except OSError as queue_exc:
+            print(f"[!] Could not queue scan locally: {queue_exc}")
+            return {"success": False, "mode": "error", "error": str(queue_exc)}
+        return {"success": True, "mode": "queued", "error": "Server unavailable; scan saved to the local retry queue.", "quantity": max(1, int(quantity))}
 
-    return save_to_local_inventory(match, price, owner, finish, quantity=quantity)
+    # Local fallback stores the new fields in the expanded local inventory DB,
+    # but they are not synchronized until a remote server is configured.
+    return save_to_local_inventory(
+        match, price, owner, finish, quantity=quantity, person_id=person_id,
+        account_id=account_id, location=location, is_vending=is_vending,
+    )
 
 
 # ----------------- Data Loading -----------------

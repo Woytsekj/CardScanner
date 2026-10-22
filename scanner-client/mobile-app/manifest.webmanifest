@@ -1,0 +1,16 @@
+{
+  "name": "CardScanner Mobile",
+  "short_name": "CardScanner",
+  "description": "Secure mobile card scanning for CardScanner",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b1020",
+  "theme_color": "#111827",
+  "icons": [
+    { "src": "cardscanner-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "cardscanner-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+    { "src": "cardscanner.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
