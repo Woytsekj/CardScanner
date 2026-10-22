@@ -1,5 +1,5 @@
 /* Authenticated CardScanner PWA: cache static assets only, never CSRF-bearing HTML or account/API data. */
-const CACHE = 'cardscanner-mobile-v2';
+const CACHE = 'cardscanner-mobile-v3';
 const STATIC = ['./manifest.webmanifest', './cardscanner.svg', './cardscanner-192.png', './cardscanner-512.png'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(STATIC)).then(() => self.skipWaiting()));

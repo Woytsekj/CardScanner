@@ -1,6 +1,6 @@
 {
-  "version": "39.0",
+  "version": "39.1",
   "name": "MTG Scanner Inventory",
-  "purpose": "Scanner client inventory API integration and Android PWA",
-  "release": "scanner-mobile-inventory-api"
+  "purpose": "Scanner client inventory API integration, mobile zoom, continuous scanning, and set-aware search",
+  "release": "scanner-mobile-zoom-continuous-search"
 }
