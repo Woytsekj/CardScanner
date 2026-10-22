@@ -23,3 +23,10 @@ backups/
 .vscode/
 .idea/
 .DS_Store
+
+# Scanner client local config, transient scan queues, and caches
+scanner-client/scanner.env.fish
+scanner-client/scan_queue.jsonl
+scanner-client/scan_queue_rejected.jsonl
+scanner-client/scryfall_print_cache.json
+scanner-client/scrcpy_camera.log

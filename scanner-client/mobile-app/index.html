@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="csrf-token" content="__CARD_SCANNER_CSRF_TOKEN__">
+  <meta name="theme-color" content="#111827">
+  <meta name="description" content="Mobile Magic: The Gathering card scanner for CardScanner.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="cardscanner.svg" type="image/svg+xml">
+  <title>CardScanner Mobile</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1020; --panel:#141c2e; --panel2:#1b263b; --line:#344158; --text:#f5f7fb; --muted:#aab5c8; --accent:#43c18a; --danger:#ff8f8f; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:16px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; padding:env(safe-area-inset-top) 14px env(safe-area-inset-bottom); }
+    main { max-width:680px; margin:0 auto; padding:16px 0 32px; }
+    header { display:flex; align-items:center; gap:12px; margin-bottom:16px; }
+    header img { width:46px; height:46px; }
+    h1 { margin:0; font-size:1.35rem; line-height:1.2; }
+    .subtitle { color:var(--muted); font-size:.9rem; margin-top:4px; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:14px; margin:12px 0; }
+    h2 { font-size:1rem; margin:0 0 12px; }
+    label { display:block; font-weight:650; font-size:.9rem; margin:10px 0 6px; }
+    input,select,button { width:100%; min-height:48px; font:inherit; border-radius:10px; border:1px solid #43516a; padding:10px 12px; background:var(--panel2); color:var(--text); }
+    button { cursor:pointer; font-weight:700; }
+    button.primary { background:var(--accent); color:#07180f; border-color:transparent; }
+    button:disabled { opacity:.48; cursor:not-allowed; }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .actions { display:flex; gap:10px; margin-top:10px; }
+    .actions>* { flex:1; }
+    video, #photo-preview { display:block; width:100%; max-height:52vh; background:#05070c; border-radius:12px; object-fit:contain; }
+    canvas { display:none; }
+    .hint,.muted { color:var(--muted); font-size:.86rem; }
+    #status { border-left:4px solid var(--accent); padding:10px 12px; background:#13261f; border-radius:8px; white-space:pre-wrap; overflow-wrap:anywhere; }
+    #status.error { border-color:var(--danger); background:#301a23; }
+    #candidate-list { display:grid; gap:8px; margin-top:10px; }
+    .candidate { display:flex; gap:10px; align-items:center; text-align:left; }
+    .candidate img { width:52px; max-height:76px; object-fit:contain; border-radius:4px; background:#0a0d14; }
+    .candidate .details { flex:1; min-width:0; }
+    .candidate small { display:block; color:var(--muted); font-weight:400; }
+    .candidate.selected { outline:2px solid var(--accent); }
+    .checkrow { display:flex; align-items:center; gap:10px; margin-top:12px; }
+    .checkrow input { width:24px; min-height:24px; height:24px; margin:0; accent-color:var(--accent); }
+    .checkrow label { margin:0; font-size:1rem; }
+    .pill { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:3px 8px; color:var(--muted); font-size:.75rem; }
+    .hidden { display:none!important; }
+    @media(min-width:580px) { body { padding-left:24px; padding-right:24px; } .panel { padding:18px; } }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@6/dist/tesseract.min.js" defer></script>
+</head>
+<body>
+<main>
+  <header>
+    <img src="cardscanner.svg" alt="">
+    <div><h1>CardScanner Mobile</h1><div class="subtitle">Scan on your phone · sync to your CardScanner account</div></div>
+  </header>
+  <div id="status" role="status" aria-live="polite">Checking your secure CardScanner session…</div>
+
+  <section class="panel">
+    <h2>1 · Capture a card</h2>
+    <video id="camera" autoplay muted playsinline></video>
+    <img id="photo-preview" class="hidden" alt="Captured card preview">
+    <canvas id="capture"></canvas>
+    <div class="actions">
+      <button id="start-camera">Start camera</button>
+      <button id="take-photo" class="primary" disabled>Capture card</button>
+    </div>
+    <div class="actions">
+      <button id="upload-photo">Choose photo</button>
+      <input id="photo-file" class="hidden" type="file" accept="image/*" capture="environment">
+      <button id="read-photo" disabled>Read card name</button>
+    </div>
+    <p class="hint">Fill most of the frame with one card and avoid glare. OCR is a suggestion only; verify the exact printing before saving. If camera OCR struggles, type the card name below.</p>
+    <label for="card-name">Card name</label>
+    <input id="card-name" autocomplete="off" placeholder="Type or correct the card name">
+    <button id="find-printings" class="primary" style="margin-top:10px">Find printings</button>
+    <div id="candidate-list" aria-label="Printing choices"></div>
+  </section>
+
+  <section class="panel">
+    <h2>2 · Confirm inventory details</h2>
+    <div id="selected-printing" class="muted">Choose the exact printing above before saving.</div>
+    <div class="grid">
+      <div><label for="person">Person / collection</label><select id="person"><option value="">Loading people…</option></select></div>
+      <div><label for="location">Storage location</label><select id="location"><option value="">Server default / none</option></select><input id="new-location" type="text" maxlength="120" placeholder="Or enter a new location (optional)" autocomplete="off" style="margin-top:8px"></div>
+      <div><label for="finish">Finish</label><select id="finish"><option value="normal">Normal</option><option value="foil">Foil</option></select></div>
+      <div><label for="quantity">Quantity</label><input id="quantity" type="number" min="1" max="999" value="1" inputmode="numeric"></div>
+    </div>
+    <div class="checkrow"><input id="vending" type="checkbox"><label for="vending">Mark for vending</label></div>
+    <p class="hint">Vending is separate from physical storage. A row already assigned to a deck cannot also be marked for vending; extra copies can be stored separately.</p>
+    <button id="save-card" class="primary" style="margin-top:14px" disabled>Save card to my inventory</button>
+  </section>
+  <section class="muted"><span class="pill">Secure mode</span> This page contains no shared scanner API key or Cloudflare service-token secret. Cloudflare Access should protect the site as an outer gate; CardScanner also checks your application login and authorizes the selected person on the server.</section>
+</main>
+<script>
+(() => {
+  'use strict';
+  const API = {
+    options: '/api/scanner/mobile/options',
+    save: '/api/scanner/mobile/scan'
+  };
+  const $ = (id) => document.getElementById(id);
+  const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+  const state = { stream:null, image:null, selected:null, serverPrice:null, people:[], locations:[], busy:false };
+  const status = (message, error=false) => { $('status').textContent = message; $('status').classList.toggle('error', !!error); };
+  async function apiFetch(path, options={}) {
+    const response = await fetch(path, { credentials:'same-origin', ...options, headers:{ 'Accept':'application/json', ...(options.method && options.method.toUpperCase() !== 'GET' ? {'X-CSRFToken':csrfToken} : {}), ...(options.headers||{}) } });
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      if (response.redirected || response.status === 401 || response.status === 403) throw new Error('Your session may have expired. Open this page in the browser, sign in through Cloudflare Access, then reload it.');
+      throw new Error(`The server returned a non-JSON response (${response.status}). Check that the mobile API routes are installed.`);
+    }
+    const data = await response.json();
+    if (!response.ok || data.success === false) throw new Error(data.error || data.message || `Request failed (${response.status})`);
+    return data;
+  }
+  function nameOf(x) { return String(x?.name || x?.display_name || x?.person_name || x?.label || x || '').trim(); }
+  function setOptions(select, items, placeholder, labelFn) {
+    select.replaceChildren(new Option(placeholder, ''));
+    for (const item of items) {
+      const option = new Option(labelFn(item), String(item.id ?? item.name));
+      option._record = item;
+      select.add(option);
+    }
+  }
+  async function loadOptions() {
+    try {
+      const data = await apiFetch(API.options);
+      state.people = Array.isArray(data.people) ? data.people : [];
+      state.locations = Array.isArray(data.locations) ? data.locations : (Array.isArray(data.storage_locations) ? data.storage_locations : []);
+      setOptions($('person'), state.people, 'Select a person', p => {
+        const n = nameOf(p), a = String(p.account_name || p.account_username || '').trim();
+        return a ? `${n} · ${a}` : n;
+      });
+      setOptions($('location'), state.locations, 'Server default / none', l => nameOf(l));
+      status(`Connected. ${state.people.length} person/collection option(s), ${state.locations.length} location(s). Verify each scan before saving.`);
+      $('save-card').disabled = !state.selected || !state.people.length;
+    } catch (e) {
+      status(`Could not load your account options: ${e.message}\nThe mobile API must be enabled on the main CardScanner server.`, true);
+      $('person').replaceChildren(new Option('Account options unavailable', ''));
+      $('save-card').disabled = true;
+    }
+  }
+  async function startCamera() {
+    try {
+      stopCamera();
+      state.image = null;
+      $('read-photo').disabled = true;
+      const previous = $('photo-preview').dataset.objectUrl;
+      if (previous) URL.revokeObjectURL(previous);
+      $('photo-preview').dataset.objectUrl = '';
+      $('photo-preview').removeAttribute('src');
+      state.stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' }, width:{ ideal:1920 }, height:{ ideal:1080 } }, audio:false });
+      $('photo-preview').classList.add('hidden');
+      $('camera').classList.remove('hidden');
+      $('camera').srcObject = state.stream;
+      await $('camera').play();
+      $('take-photo').disabled = false;
+      status('Camera ready. Center one card in the frame, then capture it.');
+    } catch (e) {
+      status(`Camera unavailable: ${e.message}. Use Choose photo instead, and make sure the site is HTTPS.`, true);
+    }
+  }
+  function stopCamera() {
+    if (state.stream) state.stream.getTracks().forEach(t => t.stop());
+    state.stream = null;
+    $('camera').srcObject = null;
+    $('take-photo').disabled = true;
+  }
+  function setImage(image) {
+    state.image = image;
+    $('read-photo').disabled = !image;
+    if (image) {
+      const url = URL.createObjectURL(image);
+      const previous = $('photo-preview').dataset.objectUrl;
+      if (previous) URL.revokeObjectURL(previous);
+      $('photo-preview').dataset.objectUrl = url;
+      $('photo-preview').src = url;
+      $('photo-preview').classList.remove('hidden');
+      $('camera').classList.add('hidden');
+      stopCamera();
+      status('Photo captured. Read the card name or type it in, then select the exact printing.');
+    }
+  }
+  function captureFrame() {
+    const v=$('camera'), c=$('capture');
+    if (!v.videoWidth) return status('Camera has not produced a frame yet.', true);
+    c.width=v.videoWidth; c.height=v.videoHeight;
+    c.getContext('2d').drawImage(v,0,0,c.width,c.height);
+    c.toBlob(blob => { if (blob) { setImage(blob); } else status('Could not capture a photo. Try again.', true); }, 'image/jpeg', .92);
+  }
+  async function readName() {
+    if (!state.image) return;
+    if (!window.Tesseract) return status('OCR library did not load. Type the card name manually; scanning/saving can still continue.', true);
+    $('read-photo').disabled = true;
+    status('Reading card title… This can take a little while on a phone.');
+    try {
+      const bitmap = await createImageBitmap(state.image);
+      const c=$('capture'), ctx=c.getContext('2d');
+      c.width=bitmap.width; c.height=bitmap.height;
+      ctx.drawImage(bitmap,0,0);
+      // The title usually occupies the upper strip of a portrait card. The
+      // user can correct OCR manually; exact printing is always confirmed.
+      const crop=document.createElement('canvas');
+      crop.width=Math.max(1,Math.floor(c.width*.82)); crop.height=Math.max(1,Math.floor(c.height*.30));
+      crop.getContext('2d').drawImage(c,Math.floor(c.width*.09),Math.floor(c.height*.02),crop.width,crop.height,0,0,crop.width,crop.height);
+      const result=await Tesseract.recognize(crop, 'eng');
+      const lines=String(result.data.text||'').split(/\r?\n/).map(x=>x.replace(/[^\p{L}\p{N}'’ ,:-]/gu,' ').trim()).filter(x=>x.length>=3);
+      const guess=lines.sort((a,b)=>b.length-a.length)[0] || '';
+      $('card-name').value=guess;
+      status(guess ? `OCR suggestion: “${guess}”. Correct it if needed, then find printings.` : 'Could not read a clear title. Type the card name and search manually.', !guess);
+    } catch (e) { status(`OCR failed: ${e.message}. Type the name manually.`, true); }
+    finally { $('read-photo').disabled = !state.image; }
+  }
+  async function findPrintings() {
+    const query=$('card-name').value.trim();
+    if (query.length < 2) return status('Enter at least two characters of the card name.', true);
+    $('find-printings').disabled=true;
+    $('candidate-list').replaceChildren(); state.selected=null; $('save-card').disabled=true;
+    status('Searching Scryfall for matching printings…');
+    try {
+      const scryfallUrl='https://api.scryfall.com/cards/search?q='+encodeURIComponent(`name:"${query.replaceAll('"','')}"`)+'&unique=prints&order=released&dir=desc';
+      const response=await fetch(scryfallUrl, {headers:{'Accept':'application/json'}});
+      const data=await response.json();
+      if (!response.ok || !Array.isArray(data.data)) throw new Error(data.details || 'No matching printings found. Check the card name.');
+      const matches=data.data.slice(0,20);
+      for (const card of matches) {
+        const b=document.createElement('button'); b.type='button'; b.className='candidate';
+        const imageUrl=card.image_uris?.small || card.card_faces?.[0]?.image_uris?.small || '';
+        if (imageUrl) { const img=document.createElement('img'); img.src=imageUrl; img.alt=''; img.loading='lazy'; b.append(img); }
+        const d=document.createElement('span'); d.className='details';
+        const title=document.createElement('strong'); title.textContent=card.name;
+        const sub=document.createElement('small'); sub.textContent=`${String(card.set_name||card.set||'').trim()} · ${String(card.set||'').toUpperCase()} #${card.collector_number||'?'} · ${card.rarity||'unknown rarity'}`;
+        const price=document.createElement('small'); price.textContent=`Normal ${card.prices?.usd ? '$'+card.prices.usd : 'N/A'} · Foil ${card.prices?.usd_foil ? '$'+card.prices.usd_foil : 'N/A'}`;
+        d.append(title,sub,price); b.append(d);
+        b.addEventListener('click',()=>selectPrinting(card,b)); $('candidate-list').append(b);
+      }
+      status(`${matches.length} printing(s) shown. Select the exact set/collector number before saving.`);
+    } catch(e) { status(`Printing search failed: ${e.message}`, true); }
+    finally { $('find-printings').disabled=false; }
+  }
+  function updateSelectedPrintingSummary() {
+    const card=state.selected;
+    if (!card) return;
+    const finish=$('finish').value;
+    const server=state.serverPrice && state.serverPrice.id===card.id ? state.serverPrice : null;
+    const price=server ? (finish==='foil' ? server.foil : server.normal) : (finish==='foil' ? card.prices?.usd_foil : card.prices?.usd);
+    const source=server ? 'CardScanner price' : 'Scryfall reference';
+    $('selected-printing').textContent=`${card.name} · ${card.set_name} (${String(card.set||'').toUpperCase()}) #${card.collector_number||'?'} · ${finish} · ${price ? '$'+price : 'price unavailable'} (${source})`;
+    $('selected-printing').dataset.image=card.image_uris?.normal || card.card_faces?.[0]?.image_uris?.normal || '';
+  }
+  async function loadServerPrice(card) {
+    try {
+      const data=await apiFetch(`/api/scanner/mobile/price/${encodeURIComponent(card.id)}`);
+      if (!state.selected || state.selected.id!==card.id) return;
+      state.serverPrice={id:card.id,normal:data.normal??null,foil:data.foil??null,source_updated:data.source_updated||null};
+      updateSelectedPrintingSummary();
+    } catch (_) {
+      // If the server cannot resolve an internal price, the UI labels the fallback
+      // as a Scryfall reference rather than misrepresenting it.
+    }
+  }
+  function selectPrinting(card, button) {
+    state.selected=card;
+    state.serverPrice=null;
+    document.querySelectorAll('.candidate').forEach(x=>x.classList.remove('selected'));
+    if (button && button.classList) button.classList.add('selected');
+    updateSelectedPrintingSummary();
+    $('save-card').disabled=!state.people.length;
+    loadServerPrice(card);
+  }
+  $('finish').addEventListener('change',()=>{ if(state.selected) updateSelectedPrintingSummary(); });
+  $('start-camera').addEventListener('click',startCamera);
+  $('take-photo').addEventListener('click',captureFrame);
+  $('upload-photo').addEventListener('click',()=>$('photo-file').click());
+  $('photo-file').addEventListener('change', e=>{ const f=e.target.files?.[0]; if(f){setImage(f);} });
+  $('read-photo').addEventListener('click',readName);
+  $('find-printings').addEventListener('click',findPrintings);
+  $('card-name').addEventListener('keydown',e=>{if(e.key==='Enter')findPrintings();});
+  $('save-card').addEventListener('click',async()=>{
+    const card=state.selected, person=$('person').selectedOptions[0]?._record;
+    const chosenLocation=$('location').selectedOptions[0]?._record;
+    const customLocation=$('new-location').value.trim().slice(0,120);
+    const location=customLocation ? {id:customLocation,name:customLocation} : chosenLocation;
+    if(!card||!person) return status('Select a printing and a person/collection first.',true);
+    const quantity=Math.max(1,Math.min(999,Number.parseInt($('quantity').value,10)||1));
+    const finish=$('finish').value;
+    const finishes=(card.finishes||[]).map(x=>String(x).toLowerCase());
+    if(finish==='foil' && finishes.length && !finishes.includes('foil') && !finishes.includes('etched')) return status('This printing is not listed as foil. Select a supported finish.',true);
+    if(finish==='normal' && finishes.length && !finishes.includes('nonfoil')) return status('This printing has no normal finish in Scryfall. Choose a printing that supports normal, or add the correct finish support on the server.',true);
+    const authoritativePrice=state.serverPrice && state.serverPrice.id===card.id;
+    const price=authoritativePrice ? (finish==='foil' ? state.serverPrice.foil : state.serverPrice.normal) : (finish==='foil' ? card.prices?.usd_foil : card.prices?.usd);
+    const payload={
+      scryfall_id:card.id, name:card.name, set_code:card.set, rarity:card.rarity,
+      collector_number:card.collector_number, tcgplayer_id:card.tcgplayer_id||null,
+      price:price||'N/A', price_source:authoritativePrice?'cardscanner':'scryfall_reference', owner:nameOf(person), person_id:person.id??person.person_id??null,
+      account_id:person.account_id??null, quantity, finish,
+      location:location?nameOf(location):null, location_id:location?.id??null,
+      storage_location:location?nameOf(location):null,
+      is_vending:$('vending').checked, vending:$('vending').checked,
+      scan_id:(window.crypto?.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`),
+      scan_time:new Date().toISOString(), device:'android-pwa'
+    };
+    $('save-card').disabled=true; status('Saving to your CardScanner inventory…');
+    try {
+      const result=await apiFetch(API.save,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      status(`Saved ${card.name} · ${String(card.set).toUpperCase()} #${card.collector_number} · ${finish} · +${quantity}${payload.is_vending?' · marked for vending':''}.`);
+      state.selected=null; state.serverPrice=null; $('selected-printing').textContent='Saved. Capture the next card when ready.'; $('candidate-list').replaceChildren(); $('card-name').value=''; $('quantity').value='1'; $('vending').checked=false; $('new-location').value='';
+    } catch(e) { status(`Not saved: ${e.message}\nThe pending choice is retained. Fix account, location, vending, or sign-in and retry.`,true); $('save-card').disabled=false; }
+  });
+  window.addEventListener('pagehide',stopCamera);
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.js').catch(()=>{});
+  loadOptions();
+})();
+</script>
+</body>
+</html>

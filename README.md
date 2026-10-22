@@ -15,7 +15,7 @@ Repository: <https://github.com/Woytsekj/CardScanner>
 - `price_updater.py` — TCGCSV price updates and optional Discord price alerts.
 - `backup_database.py` — scheduled SQLite backups.
 - `update_scryfall_metadata.py` — refreshes cached card metadata from Scryfall bulk data.
-- `scanner-client/` — standalone desktop scanning application and camera helpers.
+- `scanner-client/` — standalone desktop scanning application, camera helpers, and installable Android-friendly PWA.
 - `docker-compose.yml` — web app, price updater, and backup services.
 - `.env.example` — configuration template; copy it to `.env` and set your own values.
 
@@ -31,9 +31,11 @@ Repository: <https://github.com/Woytsekj/CardScanner>
 - Vending view for browsing and selling cards, including CSV export and printable labels.
 - User roles for administration and vending.
 - Scheduled database backups with configurable retention.
-- A companion scanner client that sends scans to the server through dedicated scanner API endpoints.
+- A companion desktop scanner that sends scans through the dedicated scanner API.
+- An installable Android-friendly scanner PWA at `/scanner/mobile/`, using the phone camera directly and the logged-in user session.
+- Scanner-side account/person mapping, separate physical-location and vending fields, and idempotent scan retries.
 
-Features and behavior may change. See `CHANGES_v36.md` and the code for the current implementation.
+Features and behavior may change. See `CHANGES_inventory_overhaul.md`, [`CHANGES_scanner_integration_v39.md`](CHANGES_scanner_integration_v39.md), and the code for the current implementation.
 
 ## Requirements
 
@@ -117,7 +119,7 @@ The scanner is a separate desktop application in [`scanner-client/`](scanner-cli
 
 Start with [`scanner-client/README.md`](scanner-client/README.md) for client dependencies, camera setup, configuration, and troubleshooting.
 
-The scanner requires a server URL and a scanner API key. Configure these in the client-local `scanner.env.fish` file, based on `scanner.env.fish.example`. Do not commit the real configuration file or share the API key publicly.
+The desktop scanner requires a server URL and scanner API key. Configure these in the client-local `scanner.env.fish` file, based on `scanner.env.fish.example`; never commit or share that secret. The Android-friendly PWA is served by the main Flask app at `https://YOUR-CARDS-HOST/scanner/mobile/` and uses a logged-in CardScanner session instead of embedding the scanner key. It is an installable web app, not a Play Store APK; on Android, open it in Chrome and choose Install app / Add to Home screen. It uses OCR plus manual exact-printing confirmation, while the desktop client retains the existing image-matching engine. Follow [`scanner-client/SERVER_INTEGRATION.md`](scanner-client/SERVER_INTEGRATION.md) for deployment and Cloudflare Access guidance. The current user model links one login to at most one default person, and non-admin mobile access is restricted server-side to that linked person.
 
 ## Security notes — read before exposing this app
 
