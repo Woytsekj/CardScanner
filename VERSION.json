@@ -1,6 +1,6 @@
 {
-  "version": "39.1",
+  "version": "39.11",
   "name": "MTG Scanner Inventory",
-  "purpose": "Scanner client inventory API integration, mobile zoom, continuous scanning, and set-aware search",
-  "release": "scanner-mobile-zoom-continuous-search"
+  "purpose": "Title-corroborated footer recognition to reject wrong set and collector matches",
+  "release": "scanner-mobile-title-corroboration-v3911"
 }

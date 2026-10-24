@@ -1,6 +1,6 @@
 opencv-python>=4.10,<5
 ImageHash>=4.3,<5
-Pillow>=10,<12
+Pillow>=13.0.0,<14
 easyocr>=1.7,<2
 numpy>=1.26,<3
 thefuzz>=0.22,<1

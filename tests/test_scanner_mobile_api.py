@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import os
+import io
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,7 +37,19 @@ class ScannerMobileApiTests(unittest.TestCase):
         app_module.PRICE_META_FILE = root / "price_sync.json"
         app_module._PRICE_CACHE = {"key": None, "prices": {}}
         app_module._AUTH_READY = False
+        app_module._SCANNER_MOBILE_NAMES_CACHE_KEY = None
+        app_module._SCANNER_MOBILE_NAMES_CACHE = []
         app_module.migrate_db()
+        # The auth bootstrap only creates an initial account when ADMIN_PASSWORD is
+        # configured. Seed the known test account explicitly so authenticated mobile
+        # endpoints are tested regardless of the developer's shell environment.
+        conn = app_module.connect_inventory()
+        conn.execute(
+            "INSERT OR IGNORE INTO users(username,password_hash,is_admin,role,is_superadmin,active) VALUES(?,?,?,?,?,1)",
+            ("ci-admin", generate_password_hash("mobile-api-test-admin-password-0123456789"), 1, "superadmin", 1),
+        )
+        conn.commit()
+        conn.close()
         self.client = app_module.app.test_client()
         self.csrf = "mobile-api-test-csrf-token-01234567890"
         with self.client.session_transaction() as session:
@@ -141,15 +155,469 @@ class ScannerMobileApiTests(unittest.TestCase):
         conn.close()
         self.assertEqual(tuple(row), ("Member Collection", "Binder A", 1, 1))
 
+    def test_mobile_recognize_requires_title_corroboration_for_unique_footer(self):
+        import cv2
+        import numpy as np
+
+        art_path = Path(self.temp.name) / "mtg_art_hashes.db"
+        app_module.DB_ART = art_path
+        art = sqlite3.connect(art_path)
+        art.execute("""CREATE TABLE card_art (
+            scryfall_id TEXT PRIMARY KEY, name TEXT, set_code TEXT, set_name TEXT,
+            rarity TEXT, tcgplayer_id TEXT, collector_number TEXT, phash TEXT
+        )""")
+        art.execute(
+            "INSERT INTO card_art(scryfall_id,name,set_code,set_name,rarity,tcgplayer_id,collector_number,phash) VALUES(?,?,?,?,?,?,?,?)",
+            ("sid-dedicated-eoe-175", "Dedicated Commons", "eoe", "Edge of Eternities", "common", "555", "175", "e"),
+        )
+        art.commit(); art.close()
+
+        image = np.full((1120, 800, 3), 245, dtype=np.uint8)
+        encoded_ok, encoded = cv2.imencode(".jpg", image)
+        self.assertTrue(encoded_ok)
+
+        class FooterReader:
+            def __init__(self): self.calls = 0
+            def readtext(self, image, detail=0, paragraph=False):
+                self.calls += 1
+                return ["E0E 0175 EN"] if self.calls == 1 else ["Dedicated Commons"]
+
+        reader = FooterReader()
+        with patch.object(app_module, "_scanner_mobile_get_easyocr_reader", return_value=reader):
+            response = self.client.post(
+                "/api/scanner/mobile/recognize",
+                data={"card_image": (io.BytesIO(encoded.tobytes()), "card.jpg")},
+                content_type="multipart/form-data",
+                headers=self.csrf_headers(),
+                base_url="http://localhost",
+            )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        data = response.get_json()
+        self.assertEqual(data["recognition_mode"], "metadata_title_verified")
+        self.assertEqual(data["matched_name"], "Dedicated Commons")
+        self.assertTrue(data["metadata_verified"])
+        self.assertFalse(data["metadata_conflict"])
+        self.assertEqual(data["ocr_passes"], 2)
+        self.assertEqual(reader.calls, 2)
+
+    def test_mobile_recognize_rejects_footer_match_that_conflicts_with_title(self):
+        import cv2
+        import numpy as np
+
+        art_path = Path(self.temp.name) / "mtg_art_hashes.db"
+        app_module.DB_ART = art_path
+        art = sqlite3.connect(art_path)
+        art.execute("""CREATE TABLE card_art (
+            scryfall_id TEXT PRIMARY KEY, name TEXT, set_code TEXT, set_name TEXT,
+            rarity TEXT, tcgplayer_id TEXT, collector_number TEXT, phash TEXT
+        )""")
+        art.executemany(
+            "INSERT INTO card_art(scryfall_id,name,set_code,set_name,rarity,tcgplayer_id,collector_number,phash) VALUES(?,?,?,?,?,?,?,?)",
+            [
+                ("sid-wrong-footer", "Return to the Light Realms", "fra", "Reality Fracture", "rare", "555", "367", "a"),
+                ("sid-visible-title", "Ajani's Anguish", "fra", "Reality Fracture", "rare", "556", "65", "b"),
+            ],
+        )
+        art.commit(); art.close()
+        app_module._SCANNER_MOBILE_SET_CODES_CACHE_KEY = None
+        app_module._SCANNER_MOBILE_SET_CODES_CACHE = set()
+        app_module._SCANNER_MOBILE_NAMES_CACHE_KEY = None
+        app_module._SCANNER_MOBILE_NAMES_CACHE = []
+
+        image = np.full((1120, 800, 3), 245, dtype=np.uint8)
+        encoded_ok, encoded = cv2.imencode(".jpg", image)
+        self.assertTrue(encoded_ok)
+
+        class ConflictingReader:
+            def __init__(self): self.calls = 0
+            def readtext(self, _image, detail=0, paragraph=False):
+                self.calls += 1
+                return ["C 0367\nFRA EN"] if self.calls == 1 else ["Ajani's Anguish"]
+
+        reader = ConflictingReader()
+        with patch.object(app_module, "_scanner_mobile_get_easyocr_reader", return_value=reader):
+            response = self.client.post(
+                "/api/scanner/mobile/recognize",
+                data={"card_image": (io.BytesIO(encoded.tobytes()), "card.jpg")},
+                content_type="multipart/form-data",
+                headers=self.csrf_headers(),
+                base_url="http://localhost",
+            )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        data = response.get_json()
+        self.assertTrue(data["metadata_conflict"])
+        self.assertFalse(data["metadata_verified"])
+        self.assertEqual(data["matched_name"], "Ajani's Anguish")
+        self.assertIsNone(data["detected_set_code"])
+        self.assertIsNone(data["detected_collector_number"])
+        self.assertEqual(reader.calls, 2)
+
+    def test_footer_parser_requires_set_language_and_collector_row(self):
+        art_path = Path(self.temp.name) / "mtg_art_hashes.db"
+        app_module.DB_ART = art_path
+        art = sqlite3.connect(art_path)
+        art.execute("""CREATE TABLE card_art (
+            scryfall_id TEXT PRIMARY KEY, name TEXT, set_code TEXT, set_name TEXT,
+            rarity TEXT, tcgplayer_id TEXT, collector_number TEXT, phash TEXT
+        )""")
+        art.executemany(
+            "INSERT INTO card_art(scryfall_id,name,set_code,set_name,rarity,tcgplayer_id,collector_number,phash) VALUES(?,?,?,?,?,?,?,?)",
+            [
+                ("sid-fra-65", "Screeching Soulbreaker", "fra", "Reality Fracture", "common", "716964", "65", "a"),
+                ("sid-ren-1", "Example Card", "ren", "Renaissance", "rare", "1", "1", "b"),
+            ],
+        )
+        art.commit(); art.close()
+        app_module._SCANNER_MOBILE_SET_CODES_CACHE_KEY = None
+        app_module._SCANNER_MOBILE_SET_CODES_CACHE = set()
+
+        false_positive = app_module._scanner_mobile_parse_footer_metadata("REN 1")
+        self.assertIsNone(false_positive["set_code"])
+        self.assertIsNone(false_positive["collector_number"])
+
+        parsed = app_module._scanner_mobile_parse_footer_metadata("C 0065\nFRA EN")
+        self.assertEqual(parsed["set_code"], "fra")
+        self.assertEqual(parsed["collector_number"], "65")
+
+    def test_mobile_recognize_does_not_trust_unanchored_ren_one(self):
+        import cv2
+        import numpy as np
+
+        art_path = Path(self.temp.name) / "mtg_art_hashes.db"
+        app_module.DB_ART = art_path
+        art = sqlite3.connect(art_path)
+        art.execute("""CREATE TABLE card_art (
+            scryfall_id TEXT PRIMARY KEY, name TEXT, set_code TEXT, set_name TEXT,
+            rarity TEXT, tcgplayer_id TEXT, collector_number TEXT, phash TEXT
+        )""")
+        art.executemany(
+            "INSERT INTO card_art(scryfall_id,name,set_code,set_name,rarity,tcgplayer_id,collector_number,phash) VALUES(?,?,?,?,?,?,?,?)",
+            [
+                ("sid-fra-65", "Screeching Soulbreaker", "fra", "Reality Fracture", "common", "716964", "65", "a"),
+                ("sid-ren-1", "Example Card", "ren", "Renaissance", "rare", "1", "1", "b"),
+            ],
+        )
+        art.commit(); art.close()
+        app_module._SCANNER_MOBILE_SET_CODES_CACHE_KEY = None
+        app_module._SCANNER_MOBILE_SET_CODES_CACHE = set()
+        app_module._SCANNER_MOBILE_NAMES_CACHE_KEY = None
+        app_module._SCANNER_MOBILE_NAMES_CACHE = []
+
+        image = np.full((1120, 800, 3), 245, dtype=np.uint8)
+        encoded_ok, encoded = cv2.imencode(".jpg", image)
+        self.assertTrue(encoded_ok)
+
+        class NoisyReader:
+            def __init__(self): self.calls = 0
+            def readtext(self, _image, detail=0, paragraph=False):
+                self.calls += 1
+                return ["REN 1"] if self.calls == 1 else ["Screeching Soulbreaker"]
+
+        reader = NoisyReader()
+        with patch.object(app_module, "_scanner_mobile_get_easyocr_reader", return_value=reader):
+            response = self.client.post(
+                "/api/scanner/mobile/recognize",
+                data={"card_image": (io.BytesIO(encoded.tobytes()), "card.jpg")},
+                content_type="multipart/form-data",
+                headers=self.csrf_headers(),
+                base_url="http://localhost",
+            )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        data = response.get_json()
+        self.assertEqual(data["recognition_mode"], "metadata_then_title")
+        self.assertEqual(data["matched_name"], "Screeching Soulbreaker")
+        self.assertNotEqual(data.get("detected_set_code"), "ren")
+        self.assertEqual(reader.calls, 2)
+
+    def test_mobile_search_uses_local_catalog_and_set_collector_without_scryfall(self):
+        # The same SQLite catalog used by the desktop scanner provides printing choices.
+        art_path = Path(self.temp.name) / "mtg_art_hashes.db"
+        app_module.DB_ART = art_path
+        art = sqlite3.connect(art_path)
+        art.execute("""CREATE TABLE card_art (
+            scryfall_id TEXT PRIMARY KEY, name TEXT, set_code TEXT, set_name TEXT,
+            rarity TEXT, tcgplayer_id TEXT, collector_number TEXT, phash TEXT
+        )""")
+        art.executemany(
+            "INSERT INTO card_art(scryfall_id,name,set_code,set_name,rarity,tcgplayer_id,collector_number,phash) VALUES(?,?,?,?,?,?,?,?)",
+            [
+                ("sid-sol-c21-123", "Sol Ring", "c21", "Commander 2021", "uncommon", "111", "123", "a"),
+                ("sid-sol-2xm-254", "Sol Ring", "2xm", "Double Masters", "rare", "222", "254", "b"),
+                ("sid-sol-c21-124", "Sol Ring", "c21", "Commander 2021", "uncommon", "333", "124", "c"),
+                ("sid-unrelated", "Cardassia Prime", "trk", "Star Trek", "common", "444", "280", "d"),
+                ("sid-dedicated-eoe-175", "Dedicated Commons", "eoe", "Edge of Eternities", "common", "555", "175", "e"),
+            ],
+        )
+        art.commit()
+        art.close()
+        with patch.object(app_module.requests, "get") as outbound:
+            response = self.client.get(
+                "/api/scanner/mobile/search?name=Sol%20Ring&set_code=C21&collector_number=123",
+                base_url="http://localhost",
+            )
+            outbound.assert_not_called()
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        data = response.get_json()
+        self.assertFalse(data["network_lookup"])
+        self.assertEqual(data["source"], "local_catalog")
+        self.assertEqual(len(data["results"]), 1)
+        self.assertEqual(data["results"][0]["scryfall_id"], "sid-sol-c21-123")
+        self.assertEqual(data["results"][0]["set_name"], "Commander 2021")
+
+        # Footer-only search may supply manual choices, but the mobile recognition
+        # flow will only quick-confirm after the title corroborates a candidate.
+        metadata_only = self.client.get(
+            "/api/scanner/mobile/search?name=&metadata_text=E0E%200175%20EN",
+            base_url="http://localhost",
+        )
+        self.assertEqual(metadata_only.status_code, 200, metadata_only.get_data(as_text=True))
+        metadata_data = metadata_only.get_json()
+        self.assertEqual(metadata_data["recognition_mode"], "metadata_first")
+        self.assertEqual(metadata_data["matched_name"], "Dedicated Commons")
+        self.assertEqual([row["scryfall_id"] for row in metadata_data["results"]], ["sid-dedicated-eoe-175"])
+
+        # Mobile footer OCR should recover the set code and collector number locally,
+        # normalize a leading-zero number, and correct a stray leading title glyph.
+        with patch.object(app_module.requests, "get") as outbound:
+            footer_response = self.client.get(
+                "/api/scanner/mobile/search?name=8%20Dedicated%20Commons&metadata_text=L%200175%20E0E%20EN%20%26%20C%202026",
+                base_url="http://localhost",
+            )
+            outbound.assert_not_called()
+        self.assertEqual(footer_response.status_code, 200, footer_response.get_data(as_text=True))
+        footer_data = footer_response.get_json()
+        self.assertEqual(footer_data["detected_set_code"], "eoe")
+        self.assertEqual(footer_data["detected_collector_number"], "175")
+        self.assertEqual(footer_data["matched_name"], "Dedicated Commons")
+        self.assertTrue(footer_data["ocr_name_corrected"])
+        self.assertEqual([row["scryfall_id"] for row in footer_data["results"]], ["sid-dedicated-eoe-175"])
+        self.assertFalse(footer_data["network_lookup"])
+
+        # Even the optional mobile price endpoint must not fall back to a live API request.
+        with patch.object(app_module.requests, "get") as outbound:
+            price = self.client.get("/api/scanner/mobile/price/sid-sol-c21-123", base_url="http://localhost")
+            outbound.assert_not_called()
+        self.assertEqual(price.status_code, 200, price.get_data(as_text=True))
+        self.assertEqual(price.get_json()["tcgplayer_id"], "111")
+
+        no_match = self.client.get("/api/scanner/mobile/search?name=a%20p", base_url="http://localhost")
+        self.assertEqual(no_match.status_code, 200)
+        self.assertEqual(no_match.get_json()["results"], [])
+
+    def test_mobile_search_corrects_common_ocr_typo_with_local_name_catalog(self):
+        art_path = Path(self.temp.name) / "mtg_art_hashes.db"
+        app_module.DB_ART = art_path
+        art = sqlite3.connect(art_path)
+        art.execute("""CREATE TABLE card_art (
+            scryfall_id TEXT PRIMARY KEY, name TEXT, set_code TEXT, set_name TEXT,
+            rarity TEXT, tcgplayer_id TEXT, collector_number TEXT, phash TEXT
+        )""")
+        art.executemany(
+            "INSERT INTO card_art(scryfall_id,name,set_code,set_name,rarity,tcgplayer_id,collector_number,phash) VALUES(?,?,?,?,?,?,?,?)",
+            [
+                ("sid-soulbreaker", "Screeching Soulbreaker", "eoe", "Edge of Eternities", "rare", "777", "175", "a"),
+                ("sid-soulbreaker-other", "Screeching Soulbreaker", "eoc", "Edge of Eternities Commander", "rare", "778", "21", "b"),
+                ("sid-other", "Dedicated Commons", "eoe", "Edge of Eternities", "common", "779", "201", "c"),
+            ],
+        )
+        art.commit(); art.close()
+        app_module._SCANNER_MOBILE_NAMES_CACHE_KEY = None
+        app_module._SCANNER_MOBILE_NAMES_CACHE = []
+        with patch.object(app_module.requests, "get") as outbound:
+            response = self.client.get(
+                "/api/scanner/mobile/search?name=Screeching%20Souldbreaker&set_code=EOE&collector_number=175",
+                base_url="http://localhost",
+            )
+            outbound.assert_not_called()
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        data = response.get_json()
+        self.assertEqual(data["matched_name"], "Screeching Soulbreaker")
+        self.assertEqual([row["scryfall_id"] for row in data["results"]], ["sid-soulbreaker"])
+        self.assertFalse(data["network_lookup"])
+
+    def test_mobile_search_can_recover_from_bad_title_using_exact_set_collector(self):
+        art_path = Path(self.temp.name) / "mtg_art_hashes.db"
+        app_module.DB_ART = art_path
+        art = sqlite3.connect(art_path)
+        art.execute("""CREATE TABLE card_art (
+            scryfall_id TEXT PRIMARY KEY, name TEXT, set_code TEXT, set_name TEXT,
+            rarity TEXT, tcgplayer_id TEXT, collector_number TEXT, phash TEXT
+        )""")
+        art.execute(
+            "INSERT INTO card_art(scryfall_id,name,set_code,set_name,rarity,tcgplayer_id,collector_number,phash) VALUES(?,?,?,?,?,?,?,?)",
+            ("sid-soulbreaker", "Screeching Soulbreaker", "eoe", "Edge of Eternities", "rare", "777", "175", "a"),
+        )
+        art.commit(); art.close()
+        with patch.object(app_module.requests, "get") as outbound:
+            response = self.client.get(
+                "/api/scanner/mobile/search?name=&metadata_text=EOE%200175%20EN",
+                base_url="http://localhost",
+            )
+            outbound.assert_not_called()
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        data = response.get_json()
+        self.assertEqual(data["matched_name"], "Screeching Soulbreaker")
+        self.assertEqual(data["detected_set_code"], "eoe")
+        self.assertEqual(data["detected_collector_number"], "175")
+        self.assertEqual([row["scryfall_id"] for row in data["results"]], ["sid-soulbreaker"])
+
+    def test_mobile_local_easyocr_endpoint_uses_local_catalog_and_metadata(self):
+        from PIL import Image
+        art_path = Path(self.temp.name) / "mtg_art_hashes.db"
+        app_module.DB_ART = art_path
+        art = sqlite3.connect(art_path)
+        art.execute("""CREATE TABLE card_art (
+            scryfall_id TEXT PRIMARY KEY, name TEXT, set_code TEXT, set_name TEXT,
+            rarity TEXT, tcgplayer_id TEXT, collector_number TEXT, phash TEXT
+        )""")
+        art.execute(
+            "INSERT INTO card_art(scryfall_id,name,set_code,set_name,rarity,tcgplayer_id,collector_number,phash) VALUES(?,?,?,?,?,?,?,?)",
+            ("sid-soulbreaker", "Screeching Soulbreaker", "eoe", "Edge of Eternities", "rare", "777", "175", "a"),
+        )
+        art.commit(); art.close()
+        app_module._SCANNER_MOBILE_NAMES_CACHE_KEY = None
+        app_module._SCANNER_MOBILE_NAMES_CACHE = []
+
+        class FakeReader:
+            def __init__(self): self.calls = 0
+            def readtext(self, _image, detail=0, paragraph=False):
+                self.calls += 1
+                # Current recognition always corroborates footer metadata with the title.
+                # Pass 1 is the lower-left footer; pass 2 is the card title.
+                if self.calls == 1:
+                    return ["EOE 0175 EN"]
+                return ["Screeching Soulbreaker"]
+
+        image_bytes = io.BytesIO()
+        Image.new("RGB", (400, 560), "white").save(image_bytes, format="PNG")
+        image_bytes.seek(0)
+        fake_reader = FakeReader()
+        with patch.object(app_module, "_scanner_mobile_get_easyocr_reader", return_value=fake_reader), \
+             patch.object(app_module.requests, "get") as outbound:
+            response = self.client.post(
+                "/api/scanner/mobile/recognize",
+                data={"card_image": (image_bytes, "card.png")},
+                headers=self.csrf_headers(),
+                content_type="multipart/form-data",
+                base_url="http://localhost",
+            )
+            outbound.assert_not_called()
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        data = response.get_json()
+        self.assertEqual(data["engine"], "local_easyocr")
+        self.assertEqual(data["matched_name"], "Screeching Soulbreaker")
+        self.assertFalse(data["network_lookup"])
+        self.assertEqual(data["detected_set_code"], "eoe")
+        self.assertEqual(data["detected_collector_number"], "175")
+        self.assertEqual(data["recognition_mode"], "metadata_title_verified")
+        self.assertEqual(data["ocr_passes"], 2)
+        self.assertEqual(fake_reader.calls, 2)
+
     def test_mobile_page_injects_csrf_token_and_camera_csp(self):
         response = self.client.get("/scanner/mobile/", base_url="http://localhost")
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True)[:1000])
         html = response.get_data(as_text=True)
         self.assertIn(f'<meta name="csrf-token" content="{self.csrf}">', html)
+        self.assertIn("<title>CardScanner Scanner v39.11</title>", html)
         self.assertNotIn("__CARD_SCANNER_CSRF_TOKEN__", html)
         self.assertIn("camera=(self)", response.headers.get("Permissions-Policy", ""))
-        self.assertIn("https://api.scryfall.com", response.headers.get("Content-Security-Policy", ""))
+        self.assertIn("https://cdn.jsdelivr.net", response.headers.get("Content-Security-Policy", ""))
+        self.assertNotIn("https://api.scryfall.com", response.headers.get("Content-Security-Policy", ""))
+        self.assertIn("function detectCardBounds(bitmap)", html)
+        self.assertIn("CardScanner reads the footer first:", html)
+        self.assertIn("function recognizeCardMetadata(bitmap, rect)", html)
+        self.assertIn("function getOcrWorker()", html)
+        self.assertIn("function recognizeCardOnServer(bitmap, rect)", html)
+        self.assertIn("/api/scanner/mobile/recognize", html)
+        self.assertIn("const nativeZoomActive = state.hardwareZoom && state.zoom > 1.05", html)
+        self.assertIn("metadata_text", html)
+        self.assertNotIn('<h1>CardScanner Mobile</h1>', html)
+        self.assertIn('id="status-title"', html)
+        self.assertIn('id="status-detail"', html)
+        self.assertIn('id="quick-confirm-bar"', html)
+        self.assertIn('id="quick-confirm-yes"', html)
+        self.assertIn('function showQuickConfirm(match)', html)
+        self.assertIn('renderedMatches.length === 1 && options.allowQuickConfirm !== false', html)
+        self.assertIn('selectPrinting(card, match.button)', html)
+        self.assertIn('Use Save & next to add it to inventory.', html)
+
+        self.assertIn('Scanner thinks: ${state.predictionName}', html)
+        self.assertIn('renderedMatches.length === 1 && options.allowQuickConfirm !== false', html)
+        self.assertIn('id="mobile-save-dock"', html)
+        self.assertIn('id="save-card-sticky"', html)
+        self.assertIn('id="vending-sticky"', html)
+        self.assertIn("function syncVendingControls(source)", html)
+        self.assertIn("every saved card is marked for vending", html)
+        self.assertNotIn("$('vending').checked=false", html)
+        self.assertIn("function syncSaveControls()", html)
+        self.assertIn("const canSave = !!selected && state.people.length > 0 && personChosen && !state.saving", html)
+        self.assertIn("$('person').addEventListener('change',syncSaveControls)", html)
+        self.assertIn("scrollIntoView({behavior:'smooth', block:'start'})", html)
         self.assertEqual(response.headers.get("Cache-Control"), "private, no-store")
+
+    def test_inventory_home_includes_mobile_and_desktop_scanner_links(self):
+        response = self.client.get("/", base_url="http://localhost")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True)[:1000])
+        html = response.get_data(as_text=True)
+        self.assertRegex(html, r'href="/scanner/mobile/?"')
+        self.assertIn('href="/scanner/desktop/download"', html)
+
+    def test_inventory_database_has_collapsible_mobile_navigation_and_options(self):
+        response = self.client.get("/", base_url="http://localhost")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True)[:1000])
+        html = response.get_data(as_text=True)
+        self.assertIn('id="siteNavMenu"', html)
+        self.assertIn('aria-label="Site navigation"', html)
+        self.assertIn('id="collectionSummary"', html)
+        self.assertIn('id="inventoryOptions"', html)
+        self.assertIn('Filters, sort &amp; display', html)
+        options_start = html.index('id="inventoryOptions"')
+        options_tag_start = html.rfind("<details", 0, options_start)
+        options_tag_end = html.index(">", options_start) + 1
+        options_tag = html[options_tag_start:options_tag_end]
+        self.assertNotIn(" open", options_tag, "Inventory options should start collapsed on the database page")
+        options_end = html.index("</details>", options_start)
+        options_html = html[options_start:options_end]
+        self.assertIn('class="toolbar-controls"', options_html)
+        self.assertIn('class="filter-bar"', options_html)
+        self.assertIn('name="vending"', options_html)
+        self.assertNotIn("mobile_options", html, "Filter links should not force the mobile options panel open")
+
+        # Old bookmarks/links may still carry this obsolete flag; it must not reopen the menu.
+        legacy_response = self.client.get("/?mobile_options=1", base_url="http://localhost")
+        self.assertEqual(legacy_response.status_code, 200, legacy_response.get_data(as_text=True)[:1000])
+        legacy_html = legacy_response.get_data(as_text=True)
+        legacy_options_start = legacy_html.index('id="inventoryOptions"')
+        legacy_tag_start = legacy_html.rfind("<details", 0, legacy_options_start)
+        legacy_tag_end = legacy_html.index(">", legacy_options_start) + 1
+        self.assertNotIn(" open", legacy_html[legacy_tag_start:legacy_tag_end])
+
+    def test_inventory_card_has_direct_tcgplayer_product_link(self):
+        conn = self.connect()
+        conn.execute(
+            """INSERT INTO inventory(scryfall_id,name,set_code,rarity,price,owner,quantity,finish,
+                       tcgplayer_id,location,for_vending)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            ("sid-tcg-link", "Sol Ring", "C21", "Rare", "1.25", "Me", 1, "normal", "123456", "Free", 0),
+        )
+        conn.commit()
+        conn.close()
+        response = self.client.get("/?view=list", base_url="http://localhost")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True)[:1000])
+        self.assertIn('href="https://www.tcgplayer.com/product/123456"', response.get_data(as_text=True))
+
+    def test_desktop_download_contains_only_client_bundle_files(self):
+        from zipfile import ZipFile
+        response = self.client.get("/scanner/desktop/download", base_url="http://localhost")
+        self.assertEqual(response.status_code, 200, f'Unexpected download response: status={response.status_code}, content_type={response.content_type}')
+        self.assertIn("attachment", response.headers.get("Content-Disposition", "").lower())
+        with ZipFile(io.BytesIO(response.data)) as archive:
+            names = set(archive.namelist())
+            self.assertIn("cardscanner-desktop/Scanner.py", names)
+            self.assertIn("cardscanner-desktop/scanner_engine.py", names)
+            self.assertIn("cardscanner-desktop/scanner.env.fish.example", names)
+            self.assertNotIn("cardscanner-desktop/scanner.env.fish", names)
+            self.assertFalse(any(name.endswith(".db") or name.endswith(".jsonl") for name in names))
 
 
 if __name__ == "__main__":

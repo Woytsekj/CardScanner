@@ -60,6 +60,7 @@
     <div class="vending-price"><div class="vending-unit-price">${{ '%.2f'|format(item.calculated_unit_price) }}</div></div>
     <div class="vending-price-meta"><span>Qty {{ item.quantity }}</span><span>${{ '%.2f'|format(item.calculated_total_value) }} total</span></div>
     <div class="vending-owner">Owner: <strong>{{ item.owner }}</strong></div>
+    {% if item.tcgplayer_id %}<p><a class="button secondary tcgplayer-button" href="https://www.tcgplayer.com/product/{{ item.tcgplayer_id|urlencode }}" target="_blank" rel="noopener noreferrer">Open on TCGplayer ↗</a></p>{% endif %}
   </div>
 </article>
 {% else %}<div class="empty">No vending cards match the current filters.</div>{% endfor %}

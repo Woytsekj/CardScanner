@@ -8,16 +8,12 @@
   <meta name="description" content="Mobile Magic: The Gathering card scanner for CardScanner.">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="cardscanner.svg" type="image/svg+xml">
-  <title>CardScanner Mobile</title>
+  <title>CardScanner Scanner v__CARD_SCANNER_VERSION__</title>
   <style>
     :root { color-scheme: dark; --bg:#0b1020; --panel:#141c2e; --panel2:#1b263b; --line:#344158; --text:#f5f7fb; --muted:#aab5c8; --accent:#43c18a; --danger:#ff8f8f; }
     * { box-sizing:border-box; }
     body { margin:0; background:var(--bg); color:var(--text); font:16px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; padding:env(safe-area-inset-top) 14px env(safe-area-inset-bottom); }
-    main { max-width:680px; margin:0 auto; padding:16px 0 32px; }
-    header { display:flex; align-items:center; gap:12px; margin-bottom:16px; }
-    header img { width:46px; height:46px; }
-    h1 { margin:0; font-size:1.35rem; line-height:1.2; }
-    .subtitle { color:var(--muted); font-size:.9rem; margin-top:4px; }
+    main { max-width:680px; margin:0 auto; padding:5px 0 32px; }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:14px; margin:12px 0; }
     h2 { font-size:1rem; margin:0 0 12px; }
     label { display:block; font-weight:650; font-size:.9rem; margin:10px 0 6px; }
@@ -28,7 +24,12 @@
     .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
     .actions { display:flex; gap:10px; margin-top:10px; }
     .actions>* { flex:1; }
-    .camera-frame { position:relative; width:100%; height:52vh; max-height:620px; min-height:260px; overflow:hidden; border-radius:12px; background:#05070c; }
+    .camera-frame { position:relative; width:100%; height:46svh; max-height:520px; min-height:230px; overflow:hidden; border-radius:12px; background:#05070c; }
+    .camera-frame::after { content:""; position:absolute; left:50%; top:50%; height:72%; aspect-ratio:.714; max-width:72%; transform:translate(-50%,-50%); border:2px dashed rgba(67,193,138,.9); border-radius:9px; box-shadow:0 0 0 9999px rgba(2,6,23,.13); pointer-events:none; }
+    @media (orientation:portrait) and (max-width:600px) {
+      .camera-frame { height:40svh; max-height:390px; min-height:220px; }
+      .camera-frame::after { height:68%; max-width:68%; }
+    }
     #camera { display:block; width:100%; height:100%; background:#05070c; border-radius:0; object-fit:contain; transform:scale(1); transform-origin:center center; }
     #photo-preview { display:block; width:100%; max-height:52vh; background:#05070c; border-radius:12px; object-fit:contain; }
     #photo-preview.capture-thumbnail { max-height:112px; width:100%; margin-top:8px; border:1px solid var(--line); }
@@ -38,8 +39,19 @@
     #zoom-value { min-width:48px; color:var(--muted); font-variant-numeric:tabular-nums; text-align:right; }
     canvas { display:none; }
     .hint,.muted { color:var(--muted); font-size:.86rem; }
-    #status { border-left:4px solid var(--accent); padding:10px 12px; background:#13261f; border-radius:8px; white-space:pre-wrap; overflow-wrap:anywhere; }
+    /* Compact prediction banner replaces the old brand masthead and generic green notice. */
+    #status { display:grid; gap:2px; margin:0 0 8px; border-left:4px solid var(--accent); padding:7px 10px; background:#13261f; border-radius:8px; white-space:pre-wrap; overflow-wrap:anywhere; }
+    #status-title { display:block; font-size:.99rem; font-weight:800; line-height:1.2; }
+    #status-detail { display:block; color:#c5d7d0; font-size:.78rem; line-height:1.25; }
     #status.error { border-color:var(--danger); background:#301a23; }
+    #status.error #status-detail { color:#f7caca; }
+    .quick-confirm-bar { position:sticky; top:calc(env(safe-area-inset-top) + 5px); z-index:90; display:none; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:8px; margin:0 0 8px; padding:8px; border:1px solid var(--accent); border-radius:11px; background:rgba(19,38,31,.98); box-shadow:0 5px 18px rgba(0,0,0,.22); }
+    .quick-confirm-bar.visible { display:grid; }
+    .quick-confirm-copy { min-width:0; }
+    .quick-confirm-copy strong { display:block; font-size:.9rem; line-height:1.15; }
+    .quick-confirm-copy small { display:block; color:#c5d7d0; font-size:.76rem; line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    #quick-confirm-yes { width:auto; max-width:48%; min-height:44px; padding:7px 10px; white-space:nowrap; font-size:.88rem; }
+    @media(max-width:360px) { .quick-confirm-bar { gap:6px; padding:6px; } .quick-confirm-copy strong { font-size:.82rem; } .quick-confirm-copy small { font-size:.7rem; } #quick-confirm-yes { max-width:49%; padding:6px 7px; font-size:.78rem; } }
     #candidate-list { display:grid; gap:8px; margin-top:10px; }
     .candidate { display:flex; gap:10px; align-items:center; text-align:left; }
     .candidate img { width:52px; max-height:76px; object-fit:contain; border-radius:4px; background:#0a0d14; }
@@ -51,17 +63,40 @@
     .checkrow label { margin:0; font-size:1rem; }
     .pill { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:3px 8px; color:var(--muted); font-size:.75rem; }
     .hidden { display:none!important; }
+    /* A fixed save action avoids a long scroll to the inventory form on every card. */
+    .mobile-save-dock { display:none; position:fixed; inset:auto 0 0; z-index:100; padding:10px max(12px,env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left)); border-top:1px solid var(--line); background:rgba(11,16,32,.95); backdrop-filter:blur(14px); box-shadow:0 -8px 24px rgba(0,0,0,.28); }
+    .mobile-save-dock.visible { display:block; }
+    .mobile-save-inner { max-width:680px; margin:0 auto; display:grid; grid-template-columns:minmax(0,1fr) minmax(136px,.95fr); align-items:center; gap:8px 10px; }
+    .dock-vending { grid-column:1 / -1; display:flex; align-items:center; gap:9px; border-top:1px solid var(--line); padding-top:7px; margin:0; font-size:.85rem; color:var(--text); }
+    .dock-vending input { width:22px; height:22px; flex:0 0 auto; margin:0; accent-color:var(--accent); }
+    .dock-vending span { display:flex; flex-direction:column; gap:2px; min-width:0; }
+    .dock-vending strong { font-size:.84rem; line-height:1.15; }
+    .dock-vending small { color:var(--muted); font-size:.72rem; line-height:1.2; }
+    .dock-details { min-width:0; }
+    .dock-details strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.95rem; }
+    .dock-details small { display:block; color:var(--muted); font-size:.78rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    #save-card-sticky { min-height:52px; margin:0; padding:8px; white-space:nowrap; }
+    body.has-save-dock main { padding-bottom:calc(176px + env(safe-area-inset-bottom)); }
+    @media(max-width:360px) { .mobile-save-inner { grid-template-columns:minmax(0,1fr) minmax(118px,.85fr); gap:6px; } .dock-details strong { font-size:.83rem; } .dock-details small { font-size:.73rem; } #save-card-sticky { font-size:.9rem; } .dock-vending strong { font-size:.8rem; } }
     @media(min-width:580px) { body { padding-left:24px; padding-right:24px; } .panel { padding:18px; } }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@6/dist/tesseract.min.js" defer></script>
 </head>
 <body>
 <main>
-  <header>
-    <img src="cardscanner.svg" alt="">
-    <div><h1>CardScanner Mobile</h1><div class="subtitle">Scan on your phone · sync to your CardScanner account</div></div>
-  </header>
-  <div id="status" role="status" aria-live="polite">Checking your secure CardScanner session…</div>
+  <div id="status" role="status" aria-live="polite">
+    <strong id="status-title">Scanner ready</strong>
+    <span id="status-detail">Capture a card to see the scanner's best identification here.</span>
+  </div>
+
+
+  <div id="quick-confirm-bar" class="quick-confirm-bar" aria-label="Single matching printing">
+    <div class="quick-confirm-copy">
+      <strong>One local match</strong>
+      <small id="quick-confirm-detail">Confirm the only printing found before saving.</small>
+    </div>
+    <button id="quick-confirm-yes" class="primary" type="button">Yes — use this card</button>
+  </div>
 
   <section class="panel">
     <h2>1 · Capture a card</h2>
@@ -84,7 +119,7 @@
       <input id="photo-file" class="hidden" type="file" accept="image/*" capture="environment">
       <button id="read-photo" disabled>Read card name</button>
     </div>
-    <p class="hint">Zoom to fill the frame. In continuous mode, capture each card once; CardScanner reads the title and searches printings while leaving the camera running. Verify the set and collector number before saving. Search supports desktop-style queries such as <b>Forest 304 C21</b>.</p>
+    <p class="hint">Zoom to fill the frame. In continuous mode, CardScanner reads the footer first: set code + collector number can identify a local printing without title OCR. The name is a fallback and guidance when footer text is unclear. One reusable OCR worker keeps later scans faster. Search is local and never sends scan queries to Scryfall.</p>
     <label for="card-name">Card name or name + collector number + set code</label>
     <input id="card-name" autocomplete="off" placeholder="e.g. Forest 304 C21 or Sol Ring 123">
     <label for="set-code">Set code filter (optional)</label>
@@ -102,23 +137,77 @@
       <div><label for="finish">Finish</label><select id="finish"><option value="normal">Normal</option><option value="foil">Foil</option></select></div>
       <div><label for="quantity">Quantity</label><input id="quantity" type="number" min="1" max="999" value="1" inputmode="numeric"></div>
     </div>
-    <div class="checkrow"><input id="vending" type="checkbox"><label for="vending">Mark for vending</label></div>
-    <p class="hint">Vending is separate from physical storage. A row already assigned to a deck cannot also be marked for vending; extra copies can be stored separately.</p>
+    <div class="checkrow"><input id="vending" type="checkbox"><label for="vending">Mark for vending (applies to each card until changed)</label></div>
+    <p class="hint">This is a batch setting: it stays the same after every successful save. Turn it off for cards going into decks, or on for a batch you intend to vend. Vending is separate from physical storage. A row already assigned to a deck cannot also be marked for vending; extra copies can be stored separately.</p>
     <button id="save-card" class="primary" style="margin-top:14px" disabled>Save card to my inventory</button>
   </section>
   <section class="muted"><span class="pill">Secure mode</span> This page contains no shared scanner API key or Cloudflare service-token secret. Cloudflare Access should protect the site as an outer gate; CardScanner also checks your application login and authorizes the selected person on the server.</section>
 </main>
+<aside id="mobile-save-dock" class="mobile-save-dock" aria-label="Quick inventory save" aria-live="polite">
+  <div class="mobile-save-inner">
+    <div class="dock-details"><strong id="dock-card-title">Ready to add card</strong><small id="dock-card-meta">Select a printing to enable quick save.</small></div>
+    <button id="save-card-sticky" class="primary" type="button" disabled>Save &amp; next</button>
+    <label class="dock-vending" for="vending-sticky"><input id="vending-sticky" type="checkbox"><span><strong>Mark all cards in this batch for vending</strong><small id="vending-batch-state">Off — cards will not be marked for vending</small></span></label>
+  </div>
+</aside>
 <script>
 (() => {
   'use strict';
   const API = {
     options: '/api/scanner/mobile/options',
+    search: '/api/scanner/mobile/search',
+    recognize: '/api/scanner/mobile/recognize',
     save: '/api/scanner/mobile/scan'
   };
   const $ = (id) => document.getElementById(id);
   const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
-  const state = { stream:null, videoTrack:null, hardwareZoom:false, zoom:1, image:null, selected:null, serverPrice:null, people:[], locations:[], busy:false };
-  const status = (message, error=false) => { $('status').textContent = message; $('status').classList.toggle('error', !!error); };
+  const state = { stream:null, videoTrack:null, hardwareZoom:false, zoom:1, image:null, selected:null, serverPrice:null, people:[], locations:[], busy:false, saving:false, captureQuality:null, metadataText:'', ocrWorkerPromise:null, predictionName:null, quickMatch:null };
+  function status(message, error=false) {
+    const box=$('status'), title=$('status-title'), detail=$('status-detail');
+    const text=String(message ?? '');
+    box.classList.toggle('error', !!error);
+    if (error) title.textContent='Scanner needs attention';
+    else if (state.predictionName) title.textContent=`Scanner thinks: ${state.predictionName}`;
+    else if (/focusing|reading|searching|saving|captur|checking|loading|recogniz|matching/i.test(text)) title.textContent='Analyzing card…';
+    else if (/camera ready|connected|saved .*ready for the next|continuous scan enabled/i.test(text)) title.textContent='Ready for the next card';
+    else title.textContent='Scanner ready';
+    detail.textContent=text;
+  }
+  function hideQuickConfirm() {
+    $('quick-confirm-bar')?.classList.remove('visible');
+    state.quickMatch = null;
+  }
+  function showQuickConfirm(match) {
+    if (!match?.card || !match?.button) { hideQuickConfirm(); return; }
+    state.quickMatch = match;
+    const card = match.card;
+    const set = String(card.set || card.set_code || '').toUpperCase();
+    const collector = String(card.collector_number || '').trim();
+    $('quick-confirm-detail').textContent = `${card.name} · ${set || 'set unknown'}${collector ? ` #${collector}` : ''} · only one local result`;
+    $('quick-confirm-bar').classList.add('visible');
+  }
+  function syncSaveControls() {
+    const selected = state.selected;
+    const personChosen = !!$('person')?.value;
+    const canSave = !!selected && state.people.length > 0 && personChosen && !state.saving;
+    $('save-card').disabled = !canSave;
+    const dock = $('mobile-save-dock');
+    const dockButton = $('save-card-sticky');
+    if (!dock || !dockButton) return;
+    const dockVisible = !!selected || !!state.stream?.active;
+    dock.classList.toggle('visible', dockVisible);
+    document.body.classList.toggle('has-save-dock', dockVisible);
+    $('vending-sticky').checked = $('vending').checked;
+    $('vending-batch-state').textContent = $('vending').checked ? 'On — every saved card is marked for vending' : 'Off — cards will not be marked for vending';
+    dockButton.disabled = !canSave;
+    dockButton.textContent = $('continuous-mode').checked ? 'Save & next' : 'Save card';
+    if (selected) {
+      $('dock-card-title').textContent = selected.name || 'Selected printing';
+      const set = String(selected.set || selected.set_code || '').toUpperCase();
+      const printing = `${set}${selected.collector_number ? ` #${selected.collector_number}` : ''}`;
+      $('dock-card-meta').textContent = personChosen ? `${printing} · ${$('finish').value === 'foil' ? 'Foil' : 'Normal'}` : `${printing} · choose person below`;
+    }
+  }
   async function apiFetch(path, options={}) {
     const response = await fetch(path, { credentials:'same-origin', ...options, headers:{ 'Accept':'application/json', ...(options.method && options.method.toUpperCase() !== 'GET' ? {'X-CSRFToken':csrfToken} : {}), ...(options.headers||{}) } });
     const contentType = response.headers.get('content-type') || '';
@@ -150,11 +239,11 @@
       });
       setOptions($('location'), state.locations, 'Server default / none', l => nameOf(l));
       status(`Connected. ${state.people.length} person/collection option(s), ${state.locations.length} location(s). Verify each scan before saving.`);
-      $('save-card').disabled = !state.selected || !state.people.length;
+      syncSaveControls();
     } catch (e) {
       status(`Could not load your account options: ${e.message}\nThe mobile API must be enabled on the main CardScanner server.`, true);
       $('person').replaceChildren(new Option('Account options unavailable', ''));
-      $('save-card').disabled = true;
+      syncSaveControls();
     }
   }
   function clearPhotoPreview() {
@@ -210,23 +299,117 @@
     // Digital fallback for browsers/devices without a controllable camera zoom.
     $('camera').style.transform = `scale(${state.zoom})`;
   }
+  async function applyContinuousFocus() {
+    const track = state.videoTrack;
+    if (!track?.getCapabilities || !track?.applyConstraints) return;
+    const caps = track.getCapabilities();
+    const advanced = [];
+    if (Array.isArray(caps.focusMode) && caps.focusMode.includes('continuous')) advanced.push({focusMode:'continuous'});
+    if (Array.isArray(caps.exposureMode) && caps.exposureMode.includes('continuous')) advanced.push({exposureMode:'continuous'});
+    if (Array.isArray(caps.whiteBalanceMode) && caps.whiteBalanceMode.includes('continuous')) advanced.push({whiteBalanceMode:'continuous'});
+    if (advanced.length) {
+      try { await track.applyConstraints({advanced}); } catch (_) { /* Some Android cameras ignore optional focus modes. */ }
+    }
+    // Allow autofocus/exposure to settle after switching to the rear camera.
+    await new Promise(resolve => setTimeout(resolve, 350));
+  }
+  async function canvasBlob(canvas, quality=0.94) {
+    return new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Could not encode the captured photo.')), 'image/jpeg', quality));
+  }
+  async function cropBlobForDigitalZoom(blob, zoom) {
+    if (state.hardwareZoom || !(Number(zoom) > 1.01)) return blob;
+    const bitmap = await createImageBitmap(blob);
+    try {
+      const scale = Math.max(1, Number(zoom) || 1);
+      const sw = Math.max(1, Math.round(bitmap.width / scale));
+      const sh = Math.max(1, Math.round(bitmap.height / scale));
+      const sx = Math.round((bitmap.width - sw) / 2), sy = Math.round((bitmap.height - sh) / 2);
+      const canvas = document.createElement('canvas');
+      // Keep the cropped source resolution. Do not upscale a digital crop: fake pixels
+      // make the card title look bigger but actually hurt OCR.
+      canvas.width = sw; canvas.height = sh;
+      canvas.getContext('2d', {willReadFrequently:true}).drawImage(bitmap, sx, sy, sw, sh, 0, 0, sw, sh);
+      return await canvasBlob(canvas, 0.96);
+    } finally { bitmap.close?.(); }
+  }
+  async function blobSharpness(blob) {
+    const bitmap = await createImageBitmap(blob);
+    try {
+      const canvas = document.createElement('canvas');
+      // Match the dimensions used by the video-burst sharpness sampler so scores
+      // are comparable even when ImageCapture returns a much larger still photo.
+      canvas.width = 150; canvas.height = 220;
+      const ctx = canvas.getContext('2d', {willReadFrequently:true});
+      ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      const {data,width,height}=ctx.getImageData(0,0,canvas.width,canvas.height);
+      const gray = new Float32Array(width*height);
+      for (let i=0,p=0;i<data.length;i+=4,p++) gray[p]=.299*data[i]+.587*data[i+1]+.114*data[i+2];
+      let sum=0,sum2=0,count=0;
+      for (let y=1;y<height-1;y++) for (let x=1;x<width-1;x++) {
+        const p=y*width+x;
+        const lap=4*gray[p]-gray[p-1]-gray[p+1]-gray[p-width]-gray[p+width];
+        sum+=lap; sum2+=lap*lap; count++;
+      }
+      return count ? Math.max(0,sum2/count-(sum/count)**2) : 0;
+    } finally { bitmap.close?.(); }
+  }
+  async function captureSharpestVideoBurst(samples=4) {
+    const v=$('camera');
+    if (!v.videoWidth || !v.videoHeight) return null;
+    const full = document.createElement('canvas');
+    const score = document.createElement('canvas');
+    score.width=150; score.height=220;
+    const sctx=score.getContext('2d',{willReadFrequently:true});
+    let bestScore=-1, bestBlob=null;
+    const cropZoom=state.hardwareZoom ? 1 : Math.max(1,Number(state.zoom)||1);
+    const sw=Math.max(1,Math.round(v.videoWidth/cropZoom)), sh=Math.max(1,Math.round(v.videoHeight/cropZoom));
+    const sx=Math.round((v.videoWidth-sw)/2), sy=Math.round((v.videoHeight-sh)/2);
+    full.width=sw; full.height=sh;
+    const fctx=full.getContext('2d',{willReadFrequently:true});
+    for (let i=0;i<samples;i++) {
+      if (i) await new Promise(resolve=>setTimeout(resolve,125));
+      if (!state.stream?.active || !v.videoWidth) break;
+      sctx.drawImage(v,sx,sy,sw,sh,0,0,score.width,score.height);
+      const pixels=sctx.getImageData(0,0,score.width,score.height).data;
+      const gray=new Float32Array(score.width*score.height);
+      for(let j=0,p=0;j<pixels.length;j+=4,p++) gray[p]=.299*pixels[j]+.587*pixels[j+1]+.114*pixels[j+2];
+      let sum=0,sum2=0,count=0;
+      for(let y=1;y<score.height-1;y++) for(let x=1;x<score.width-1;x++) {
+        const p=y*score.width+x, lap=4*gray[p]-gray[p-1]-gray[p+1]-gray[p-score.width]-gray[p+score.width];
+        sum+=lap; sum2+=lap*lap; count++;
+      }
+      const sharpness=count?Math.max(0,sum2/count-(sum/count)**2):0;
+      if(sharpness>bestScore) {
+        bestScore=sharpness;
+        fctx.drawImage(v,sx,sy,sw,sh,0,0,sw,sh);
+        bestBlob=await canvasBlob(full,0.96);
+      }
+    }
+    return bestBlob ? {blob:bestBlob,score:bestScore} : null;
+  }
   async function startCamera() {
     try {
       stopCamera();
       state.image = null;
+      state.predictionName = null;
       $('read-photo').disabled = true;
       clearPhotoPreview();
-      state.stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' }, width:{ ideal:1920 }, height:{ ideal:1080 } }, audio:false });
+      // Warm the persistent OCR worker while the user frames the card. This avoids
+      // downloading/initializing Tesseract at the moment of the first capture.
+      void getOcrWorker().catch(error => console.debug('OCR worker will retry on demand:', error));
+      state.stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' }, width:{ ideal:2560 }, height:{ ideal:1440 }, frameRate:{ ideal:30, max:30 } }, audio:false });
       state.videoTrack = state.stream.getVideoTracks()[0] || null;
       $('camera-frame').classList.remove('hidden');
       $('camera').classList.remove('hidden');
       $('camera').srcObject = state.stream;
       await $('camera').play();
+      await applyContinuousFocus();
       configureZoomControls();
       $('take-photo').disabled = false;
       status($('continuous-mode').checked
         ? 'Camera ready. Continuous scan is on: capture a card, confirm its set/collector number, save it, then capture the next card without restarting the camera.'
         : 'Camera ready. Center one card in the frame, then capture it.');
+      syncSaveControls(); // Keep the batch vending switch available while the camera is running.
     } catch (e) {
       status(`Camera unavailable: ${e.message}. Use Choose photo instead, and make sure the site is HTTPS.`, true);
     }
@@ -245,6 +428,7 @@
   }
   function setImage(image, keepCamera = $('continuous-mode').checked) {
     state.image = image;
+    state.predictionName = null;
     $('read-photo').disabled = !image;
     if (image) {
       const url = URL.createObjectURL(image);
@@ -267,42 +451,465 @@
       }
     }
   }
-  function captureFrame() {
-    const v=$('camera'), c=$('capture');
+  async function captureFrame() {
+    const v=$('camera');
     if (!v.videoWidth) return status('Camera has not produced a frame yet.', true);
-    c.width=v.videoWidth; c.height=v.videoHeight;
-    const ctx=c.getContext('2d');
-    const cropZoom = state.hardwareZoom ? 1 : Math.max(1, Number(state.zoom) || 1);
-    const sw=v.videoWidth/cropZoom, sh=v.videoHeight/cropZoom;
-    ctx.drawImage(v, (v.videoWidth-sw)/2, (v.videoHeight-sh)/2, sw, sh, 0, 0, c.width, c.height);
-    c.toBlob(blob => {
-      if (!blob) { status('Could not capture a photo. Try again.', true); return; }
-      const continuous = $('continuous-mode').checked;
-      setImage(blob, continuous);
-      if (continuous) void readName(true);
-    }, 'image/jpeg', .92);
+    $('take-photo').disabled=true;
+    status('Focusing… hold the phone steady while CardScanner chooses the sharpest frame.');
+    let bestBlob=null, bestScore=-1;
+    try {
+      await new Promise(resolve=>setTimeout(resolve,180));
+      // ImageCapture.takePhoto() may return the sensor's unzoomed still image even
+      // when applyConstraints({zoom}) has zoomed the live video preview. When native
+      // zoom is active, capture from the video track so the saved photo matches what
+      // the user framed on screen. At 1x, prefer the higher-resolution still photo.
+      const nativeZoomActive = state.hardwareZoom && state.zoom > 1.05;
+      if (window.ImageCapture && state.videoTrack && !nativeZoomActive) {
+        try {
+          const still=await new ImageCapture(state.videoTrack).takePhoto();
+          const cropped=await cropBlobForDigitalZoom(still,state.zoom);
+          const stillScore=await blobSharpness(cropped);
+          bestBlob=cropped; bestScore=stillScore;
+        } catch (_) { /* Camera/device does not support high-resolution still capture. */ }
+      }
+      const burst=await captureSharpestVideoBurst(4);
+      if (burst && burst.score>bestScore) { bestBlob=burst.blob; bestScore=burst.score; }
+      if (!bestBlob) throw new Error('The camera could not produce an image. Try again or use Choose photo.');
+      state.captureQuality=bestScore;
+      const continuous=$('continuous-mode').checked;
+      setImage(bestBlob,continuous);
+      if (continuous) await readName(true);
+    } catch(e) {
+      status(`Capture failed: ${e.message}. Hold still and try again.`,true);
+    } finally {
+      $('take-photo').disabled=!state.stream?.active;
+    }
   }
+  // Estimate the card's in-plane rotation from dominant text/border edge directions.
+  // This is a lightweight downscaled gradient histogram, not a full OCR pass.
+  // Angles are folded modulo 90 degrees so both long and short card edges vote together.
+  function estimateCardSkewAngle(bitmap) {
+    const scale=Math.min(240/bitmap.width,450/bitmap.height,1);
+    const w=Math.max(1,Math.round(bitmap.width*scale));
+    const h=Math.max(1,Math.round(bitmap.height*scale));
+    if(w<90 || h<140) return {angle:0,confidence:0};
+    const sample=document.createElement('canvas'); sample.width=w; sample.height=h;
+    const ctx=sample.getContext('2d',{willReadFrequently:true});
+    ctx.drawImage(bitmap,0,0,w,h);
+    const rgba=ctx.getImageData(0,0,w,h).data;
+    const gray=new Uint8Array(w*h);
+    for(let i=0,p=0;i<rgba.length;i+=4,p++) gray[p]=Math.round(.299*rgba[i]+.587*rgba[i+1]+.114*rgba[i+2]);
+    const bins=new Float64Array(91);
+    let total=0;
+    const x0=Math.max(2,Math.round(w*.08)), x1=Math.min(w-2,Math.round(w*.92));
+    const y0=Math.max(2,Math.round(h*.05)), y1=Math.min(h-2,Math.round(h*.95));
+    for(let y=y0;y<y1;y+=2) for(let x=x0;x<x1;x+=2) {
+      const i=y*w+x;
+      const gx=gray[i+1]-gray[i-1], gy=gray[i+w]-gray[i-w];
+      const magnitude=Math.hypot(gx,gy);
+      if(magnitude<24) continue;
+      const raw=Math.atan2(gy,gx)*180/Math.PI;
+      const folded=((raw+45)%90+90)%90-45;
+      if(Math.abs(folded)>38) continue;
+      const weight=Math.min(magnitude,180);
+      const index=Math.max(0,Math.min(90,Math.round(folded+45)));
+      bins[index]+=weight; total+=weight;
+    }
+    if(!total) return {angle:0,confidence:0};
+    const low=7, high=83, rangeBins=high-low+1;
+    let bestIndex=45, bestSupport=0;
+    for(let i=low+2;i<=high-2;i++) {
+      let support=0;
+      for(let j=i-2;j<=i+2;j++) support+=bins[j];
+      if(support>bestSupport) { bestSupport=support; bestIndex=i; }
+    }
+    const angle=bestIndex-45;
+    const average=total/rangeBins;
+    const confidence=bestSupport/Math.max(1,5*average);
+    const share=bestSupport/total;
+    // Low-confidence edge textures are common in the card art; don't rotate unless
+    // the direction histogram has a clear peak. The box detector must also agree.
+    if(Math.abs(angle)<5 || confidence<1.45 || share<.075) return {angle:0,confidence,share};
+    return {angle,confidence,share};
+  }
+
+  // Rotate the full image without clipping corners. Positive canvas rotation is
+  // clockwise in image coordinates, so -angle deskews a card leaning by +angle.
+  function rotateBitmapExpanded(bitmap, degrees) {
+    const radians=degrees*Math.PI/180;
+    const cos=Math.abs(Math.cos(radians)), sin=Math.abs(Math.sin(radians));
+    const canvas=document.createElement('canvas');
+    canvas.width=Math.ceil(bitmap.width*cos+bitmap.height*sin);
+    canvas.height=Math.ceil(bitmap.width*sin+bitmap.height*cos);
+    const ctx=canvas.getContext('2d',{willReadFrequently:true});
+    ctx.imageSmoothingEnabled=true; ctx.imageSmoothingQuality='high';
+    ctx.translate(canvas.width/2,canvas.height/2);
+    ctx.rotate(radians);
+    ctx.drawImage(bitmap,-bitmap.width/2,-bitmap.height/2);
+    return canvas;
+  }
+
+  // If border detection fails, use the on-screen portrait guide as a predictable
+  // fallback instead of OCRing the top of the entire camera frame/background.
+  function approximateCenteredCardBounds(bitmap) {
+    const aspect=.714;
+    let height=bitmap.height*.90;
+    let width=height*aspect;
+    if(width>bitmap.width*.90) { width=bitmap.width*.90; height=width/aspect; }
+    return {x:(bitmap.width-width)/2,y:(bitmap.height-height)/2,width,height,score:0,approximate:true};
+  }
+
+  // Locate the physical card before OCR. Border search runs on a small preview;
+  // when it fails, the card guide supplies the centered fallback crop above.
+  function detectCardBounds(bitmap) {
+    const scale = Math.min(320 / bitmap.width, 640 / bitmap.height, 1);
+    const w = Math.max(1, Math.round(bitmap.width * scale));
+    const h = Math.max(1, Math.round(bitmap.height * scale));
+    if (w < 100 || h < 150) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d', {willReadFrequently:true});
+    ctx.drawImage(bitmap, 0, 0, w, h);
+    const pixels = ctx.getImageData(0, 0, w, h).data;
+    const gray = new Uint8Array(w * h);
+    for (let i=0,p=0; i<pixels.length; i+=4,p++) {
+      gray[p] = Math.round(.299*pixels[i] + .587*pixels[i+1] + .114*pixels[i+2]);
+    }
+
+    // Positive contrast at the card's outer edge: the outside is usually lighter
+    // than the dark border inside. Search for portrait rectangles near MTG card ratio.
+    const count = w*h;
+    const leftEdge = new Float32Array(count), rightEdge = new Float32Array(count);
+    const topEdge = new Float32Array(count), bottomEdge = new Float32Array(count);
+    const stride = w + 1;
+    const topPrefix = new Float32Array(h*stride), bottomPrefix = new Float32Array(h*stride);
+    for (let y=3; y<h-3; y++) {
+      let tsum=0, bsum=0;
+      for (let x=0; x<w; x++) {
+        const i=y*w+x;
+        if (x>=3 && x<w-3) {
+          const dx=gray[i-3]-gray[i+3];
+          leftEdge[i]=Math.max(0,dx);
+          rightEdge[i]=Math.max(0,-dx);
+        }
+        const dy=gray[i-3*w]-gray[i+3*w];
+        topEdge[i]=Math.max(0,dy);
+        bottomEdge[i]=Math.max(0,-dy);
+        tsum+=topEdge[i]; bsum+=bottomEdge[i];
+        topPrefix[y*stride+x+1]=tsum;
+        bottomPrefix[y*stride+x+1]=bsum;
+      }
+    }
+    const aspects=[.66,.69,.72,.75,.78,.81];
+    // Coarse scan grid avoids hundreds of thousands of tiny rectangle candidates on phones.
+    // A 4-6 px search increment at this downsampled resolution is enough for card bounds.
+    const sizeStep=Math.max(5,Math.round(w*.02));
+    const posStep=Math.max(4,Math.round(w*.015));
+    const sidePrefix=new Float32Array(h+1);
+    let best=null;
+    for (let cw=Math.round(w*.28); cw<=Math.round(w*.985); cw+=sizeStep) {
+      for (const aspect of aspects) {
+        const ch=Math.round(cw/aspect);
+        if (ch>h*.96 || ch<h*.28) continue;
+        for (let x=4; x+cw<w-4; x+=posStep) {
+          sidePrefix[0]=0;
+          for (let y=0; y<h; y++) {
+            const i=y*w;
+            sidePrefix[y+1]=sidePrefix[y]+Math.min(leftEdge[i+x],rightEdge[i+x+cw]);
+          }
+          const x1=x+Math.round(cw*.06), x2=x+Math.round(cw*.94);
+          const edgeWidth=Math.max(1,x2-x1);
+          for (let y=4; y+ch<h-4; y+=posStep) {
+            const side=(sidePrefix[y+ch]-sidePrefix[y])/ch;
+            let top=0,bottom=0;
+            for (let oy=-1; oy<=1; oy++) {
+              const ty=y+oy, by=y+ch+oy;
+              top += (topPrefix[ty*stride+x2]-topPrefix[ty*stride+x1])/edgeWidth;
+              bottom += (bottomPrefix[by*stride+x2]-bottomPrefix[by*stride+x1])/edgeWidth;
+            }
+            top/=3; bottom/=3;
+            const centerBias=.007*(1-Math.abs((x+cw/2-w/2)/(w/2)));
+            const score=(.48*side+.26*top+.26*bottom)/255+centerBias;
+            if (!best || score>best.score) best={x,y,width:cw,height:ch,score,side};
+          }
+        }
+      }
+    }
+    if (!best || best.score < .145 || best.side < 12) return null;
+    const sx=w/bitmap.width, sy=h/bitmap.height;
+    return {x:best.x/sx,y:best.y/sy,width:best.width/sx,height:best.height/sy,score:best.score};
+  }
+
+  async function getOcrWorker() {
+    if (!window.Tesseract?.createWorker) throw new Error('Browser OCR library did not load.');
+    if (!state.ocrWorkerPromise) {
+      // Reuse one worker for all scans. Tesseract.recognize() creates and tears
+      // down a worker for each call, which made multi-pass scans painfully slow.
+      state.ocrWorkerPromise = window.Tesseract.createWorker('eng', 1).catch(error => {
+        state.ocrWorkerPromise = null;
+        throw error;
+      });
+    }
+    return await state.ocrWorkerPromise;
+  }
+
+  async function runOcr(image, pageMode=7, preserveLines=false) {
+    const worker = await getOcrWorker();
+    await worker.setParameters({
+      tessedit_pageseg_mode: String(pageMode),
+      preserve_interword_spaces: '1',
+      user_defined_dpi: '300'
+    });
+    const result = await worker.recognize(image);
+    const cleanLine = line => String(line || '').replace(/[^\p{L}\p{N}'’ ,:\/-]/gu, ' ').replace(/[ \t]+/g, ' ').trim();
+    const raw = String(result.data.text || '');
+    const text = preserveLines
+      ? raw.split(/\r?\n/).map(cleanLine).filter(Boolean).join('\n')
+      : cleanLine(raw).replace(/\s+/g, ' ');
+    return { text, confidence: Number(result.data.confidence) || 0 };
+  }
+
+  async function recognizeTitleCrop(bitmap, rect, options={}) {
+    const left=options.left ?? .025;
+    const top=options.top ?? .025;
+    const width=options.width ?? .95;
+    const height=options.height ?? .15;
+    const scale=options.scale ?? 3.2;
+    const source=document.createElement('canvas');
+    source.width=Math.max(1,Math.round(rect.width*width));
+    source.height=Math.max(1,Math.round(rect.height*height));
+    const sx=Math.max(0,Math.min(bitmap.width-source.width,Math.round(rect.x+rect.width*left)));
+    const sy=Math.max(0,Math.min(bitmap.height-source.height,Math.round(rect.y+rect.height*top)));
+    source.getContext('2d',{willReadFrequently:true}).drawImage(bitmap,sx,sy,source.width,source.height,0,0,source.width,source.height);
+    const enlarged=document.createElement('canvas');
+    enlarged.width=Math.max(1,Math.round(source.width*scale)); enlarged.height=Math.max(1,Math.round(source.height*scale));
+    const ctx=enlarged.getContext('2d',{willReadFrequently:true});
+    ctx.imageSmoothingEnabled=true; ctx.imageSmoothingQuality='high';
+    ctx.drawImage(source,0,0,enlarged.width,enlarged.height);
+    // One mild contrast pass, not three complete OCR passes.
+    const image=ctx.getImageData(0,0,enlarged.width,enlarged.height);
+    for(let i=0;i<image.data.length;i+=4) {
+      const g=.299*image.data[i]+.587*image.data[i+1]+.114*image.data[i+2];
+      const v=Math.max(0,Math.min(255,Math.round((g-120)*1.65+128)));
+      image.data[i]=image.data[i+1]=image.data[i+2]=v;
+    }
+    ctx.putImageData(image,0,0);
+    return await runOcr(enlarged, options.pageMode ?? 7);
+  }
+
+  // Always inspect the footer FIRST: collector number + printed set code usually
+  // identify a unique printing without needing title OCR at all.
+  async function recognizeCardMetadata(bitmap, rect) {
+    if (!rect || !window.Tesseract) return '';
+    const left=.015, top=.895, width=.70, height=.102;
+    const source=document.createElement('canvas');
+    source.width=Math.max(1,Math.round(rect.width*width));
+    source.height=Math.max(1,Math.round(rect.height*height));
+    const sx=Math.max(0,Math.min(bitmap.width-source.width,Math.round(rect.x+rect.width*left)));
+    const sy=Math.max(0,Math.min(bitmap.height-source.height,Math.round(rect.y+rect.height*top)));
+    source.getContext('2d',{willReadFrequently:true}).drawImage(bitmap,sx,sy,source.width,source.height,0,0,source.width,source.height);
+    const scale=Math.min(4,Math.max(2,1400/Math.max(1,source.width)));
+    const enlarged=document.createElement('canvas');
+    enlarged.width=Math.max(1,Math.round(source.width*scale)); enlarged.height=Math.max(1,Math.round(source.height*scale));
+    const ctx=enlarged.getContext('2d',{willReadFrequently:true});
+    ctx.imageSmoothingEnabled=true; ctx.imageSmoothingQuality='high'; ctx.drawImage(source,0,0,enlarged.width,enlarged.height);
+    const image=ctx.getImageData(0,0,enlarged.width,enlarged.height);
+    for(let i=0;i<image.data.length;i+=4) {
+      const g=.299*image.data[i]+.587*image.data[i+1]+.114*image.data[i+2];
+      const v=Math.max(0,Math.min(255,Math.round((g-115)*1.8+128)));
+      image.data[i]=image.data[i+1]=image.data[i+2]=v;
+    }
+    ctx.putImageData(image,0,0);
+    const result=await runOcr(enlarged, 11, true);
+    return result.text.slice(0,500);
+  }
+
+  async function recognizeCardOnServer(bitmap, rect) {
+    if (!rect || !bitmap) return null;
+    const crop = document.createElement('canvas');
+    crop.width = Math.max(1, Math.round(rect.width));
+    crop.height = Math.max(1, Math.round(rect.height));
+    crop.getContext('2d', {willReadFrequently:true}).drawImage(
+      bitmap, rect.x, rect.y, rect.width, rect.height, 0, 0, crop.width, crop.height
+    );
+    const blob = await new Promise((resolve, reject) => {
+      crop.toBlob(value => value ? resolve(value) : reject(new Error('Could not encode the card crop')), 'image/jpeg', .9);
+    });
+    const body = new FormData();
+    body.append('card_image', blob, 'card-crop.jpg');
+    return await apiFetch(API.recognize, {method:'POST', body});
+  }
+
+  function ocrQuality(candidate) {
+    const text=String(candidate?.text||'').trim();
+    if(!text) return -1;
+    const chars=(text.match(/[\p{L}\p{N}]/gu)||[]).length;
+    const words=text.split(/\s+/).filter(Boolean);
+    const alphaRatio=chars/Math.max(1,text.length);
+    return (Number(candidate.confidence)||0) + Math.min(words.length,4)*2 + (alphaRatio>.72?8:-12) - (words.length>6?8:0);
+  }
+
+  function normalizeCardNameEvidence(value) {
+    return String(value||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase()
+      .replace(/^[0-9il|]\s+/, '').replace(/[^a-z0-9]+/g,' ').trim();
+  }
+  function cardNameAgreementScore(left,right) {
+    const a=normalizeCardNameEvidence(left), b=normalizeCardNameEvidence(right);
+    if(a.replace(/\s/g,'').length<5 || b.replace(/\s/g,'').length<5) return 0;
+    if(a===b) return 1;
+    const rows=Array.from({length:b.length+1},(_,i)=>i);
+    for(let i=1;i<=a.length;i++) {
+      let previous=rows[0]; rows[0]=i;
+      for(let j=1;j<=b.length;j++) {
+        const old=rows[j];
+        rows[j]=Math.min(rows[j]+1,rows[j-1]+1,previous+(a[i-1]===b[j-1]?0:1));
+        previous=old;
+      }
+    }
+    const edit=1-rows[b.length]/Math.max(a.length,b.length);
+    const at=new Set(a.split(/\s+/)), bt=new Set(b.split(/\s+/));
+    const overlap=[...at].filter(token=>bt.has(token)).length/Math.max(1,new Set([...at,...bt]).size);
+    return Math.max(edit, overlap*.82);
+  }
+  function titleEvidenceIsStrong(text, quality, localScore=0) {
+    const normalized=normalizeCardNameEvidence(text);
+    const compact=normalized.replace(/\s/g,'');
+    const words=normalized.split(/\s+/).filter(Boolean);
+    return compact.length>=6 && (Number(localScore)>=78 || Number(quality)>=46 || (Number(quality)>=34 && words.some(word=>word.length>=5)));
+  }
+
   async function readName(autoSearch = false) {
     if (!state.image) return;
-    if (!window.Tesseract) return status('OCR library did not load. Type the card name manually; scanning/saving can still continue.', true);
+    if (!window.Tesseract) return status('OCR library did not load. Type the card name manually; printing search is still local.', true);
     $('read-photo').disabled = true;
-    status('Reading card title… This can take a little while on a phone.');
+    const started=performance.now();
+    status('Reading footer and checking it against the card title…');
     try {
-      const bitmap = await createImageBitmap(state.image);
-      const c=$('capture'), ctx=c.getContext('2d');
-      c.width=bitmap.width; c.height=bitmap.height;
-      ctx.drawImage(bitmap,0,0);
-      // The title usually occupies the upper strip of a portrait card. The
-      // user can correct OCR manually; exact printing is always confirmed.
-      const crop=document.createElement('canvas');
-      crop.width=Math.max(1,Math.floor(c.width*.82)); crop.height=Math.max(1,Math.floor(c.height*.30));
-      crop.getContext('2d').drawImage(c,Math.floor(c.width*.09),Math.floor(c.height*.02),crop.width,crop.height,0,0,crop.width,crop.height);
-      const result=await Tesseract.recognize(crop, 'eng');
-      const lines=String(result.data.text||'').split(/\r?\n/).map(x=>x.replace(/[^\p{L}\p{N}'’ ,:-]/gu,' ').trim()).filter(x=>x.length>=3);
-      const guess=lines.sort((a,b)=>b.length-a.length)[0] || '';
-      $('card-name').value=guess;
-      status(guess ? `OCR suggestion: “${guess}”. Review the set/collector results before saving.` : 'Could not read a clear title. Type the card name and search manually.', !guess);
-      if (guess && autoSearch) await findPrintings();
+      const sourceBitmap = await createImageBitmap(state.image);
+      let bitmap = sourceBitmap;
+      let detectedCard = detectCardBounds(sourceBitmap);
+      let deskewDegrees = 0;
+      try {
+        const skew=estimateCardSkewAngle(sourceBitmap);
+        if (Math.abs(skew.angle)>=5 && skew.confidence>=1.45) {
+          const corrected=rotateBitmapExpanded(sourceBitmap,-skew.angle);
+          const correctedBounds=detectCardBounds(corrected);
+          const originalScore=Number(detectedCard?.score)||0;
+          const correctedScore=Number(correctedBounds?.score)||0;
+          const correctionWins=correctedBounds && (
+            !detectedCard || correctedScore>originalScore+0.012 ||
+            (Math.abs(skew.angle)>=8 && correctedScore>=originalScore*.94)
+          );
+          if(correctionWins) { bitmap=corrected; detectedCard=correctedBounds; deskewDegrees=skew.angle; }
+        }
+        const card=detectedCard || approximateCenteredCardBounds(bitmap);
+        state.metadataText='';
+        let footerMatches=[];
+        let footerLookupFailed=false;
+        // Read footer metadata early, but never let one noisy number/set OCR result
+        // bypass independent title evidence or display a one-tap confirmation by itself.
+        if(card) {
+          try {
+            state.metadataText=await recognizeCardMetadata(bitmap,card);
+            if(state.metadataText) {
+              const params=new URLSearchParams({name:'',metadata_text:state.metadataText});
+              const footerData=await apiFetch(`${API.search}?${params.toString()}`);
+              footerMatches=Array.isArray(footerData.results)?footerData.results:[];
+            }
+          } catch(metadataError) {
+            footerLookupFailed=true;
+            console.debug('Footer OCR/local lookup failed:',metadataError);
+          }
+        }
+
+        // Always do one title pass before accepting footer-only recognition. This
+        // catches valid-but-wrong pairs such as a readable title with a misread CN.
+        let title=await recognizeTitleCrop(bitmap,card,{left:.025,top:.02,width:.95,height:.15,scale:3.2,pageMode:7});
+        if(title.confidence<28 || ocrQuality(title)<36) {
+          const retry=await recognizeTitleCrop(bitmap,card,{left:.02,top:.005,width:.96,height:.18,scale:3.2,pageMode:6});
+          if(ocrQuality(retry)>ocrQuality(title)) title=retry;
+        }
+        let guess=String(title.text||'').trim();
+        let localOCR=null;
+        let localScore=0;
+        if(card && (!guess || title.confidence<24 || ocrQuality(title)<30)) {
+          try { localOCR=await recognizeCardOnServer(bitmap,card); }
+          catch(serverOcrError) { console.debug('Local EasyOCR fallback unavailable:',serverOcrError); }
+          if(localOCR?.metadata_conflict) {
+            // Server-side title disagreed with its unique footer candidate too.
+            state.metadataText='';
+            footerMatches=[];
+          } else if(localOCR?.metadata_verified && localOCR?.metadata_text) {
+            state.metadataText=String(localOCR.metadata_text);
+            if(Array.isArray(localOCR.metadata_results) && localOCR.metadata_results.length) footerMatches=localOCR.metadata_results;
+          }
+          if(localOCR?.matched_name && Number(localOCR.match_score)>=78) {
+            guess=String(localOCR.matched_name).trim();
+            localScore=Number(localOCR.match_score)||0;
+          } else if(!guess && localOCR?.raw_title) guess=String(localOCR.raw_title).trim();
+        }
+
+        const usableTitle=titleEvidenceIsStrong(guess,ocrQuality(title),localScore);
+        const corroboratingMatches=footerMatches.filter(card=>card?.name && cardNameAgreementScore(guess,card.name)>=.62);
+        const metadataSupported=corroboratingMatches.length>0;
+        const footerConflict=footerMatches.length>0 && usableTitle && !metadataSupported;
+        let useUnconfirmedFooter=false;
+        if(footerConflict) {
+          // A readable title that disagrees with the footer wins. Do not send bad
+          // set/CN evidence back to search where it could resurrect the wrong card.
+          state.metadataText='';
+          status(`Title reads “${guess}”, but the footer pointed to ${footerMatches[0].name}. Ignoring the conflicting footer and searching by title.`);
+        } else if(footerMatches.length>0 && !metadataSupported) {
+          // Title is too weak to confirm or reject the footer: show candidates, but
+          // disable quick-confirm until the user explicitly picks a printing.
+          useUnconfirmedFooter=true;
+        } else if(!footerMatches.length && state.metadataText && usableTitle) {
+          // Uncorroborated footer text must not constrain an otherwise readable title.
+          state.metadataText='';
+        }
+
+        if(metadataSupported) {
+          const corroborated=corroboratingMatches[0];
+          // Use canonical catalog spelling when the title independently supports it.
+          guess=String(corroborated.name);
+        }
+        $('card-name').value=guess;
+        state.predictionName=String(guess||'').trim() || null;
+        const totalMs=Math.round(performance.now()-started);
+        const sourceHint=localOCR?.matched_name && guess===localOCR.matched_name
+          ? `local EasyOCR match ${Number(localOCR.match_score)||0}%`
+          : `${Math.round(title.confidence)}% title OCR`;
+        let message;
+        if(footerConflict) {
+          message=`${sourceHint} · ${totalMs} ms. Footer metadata disagreed with the readable title, so it was ignored. Search is title-first for this card.`;
+        } else if(metadataSupported) {
+          const hit=corroboratingMatches[0];
+          message=`Title and footer agree on ${hit.name} · ${String(hit.set||hit.set_code||'').toUpperCase()} #${hit.collector_number||'?'}. ${totalMs} ms.`;
+        } else if(useUnconfirmedFooter) {
+          message=`Footer found ${footerMatches.length} possible local printing(s), but title OCR could not verify them. Review the list; quick-confirm is disabled. ${totalMs} ms.`;
+        } else {
+          message=guess
+            ? `${sourceHint} · ${totalMs} ms. Title is the primary clue; set/collector metadata is used only when it agrees. No live Scryfall search.`
+            : 'Title unclear. Enter a name or review the unconfirmed footer candidates below.';
+        }
+        if(detectedCard) message+=` Card bounds ${(Number(detectedCard.score||0)*100).toFixed(0)}%.`;
+        if(deskewDegrees) message+=` Straightened diagonal card by ${Math.abs(deskewDegrees)}°.`;
+        else message+=' Using detected/centered card crop; keep the whole card inside the green guide.';
+        if(state.captureQuality!==null && state.captureQuality<18) message+=' Image looks soft; steady the phone and recapture if needed.';
+        if(footerLookupFailed) message+=' Footer lookup was unavailable.';
+        status(message,!guess && !useUnconfirmedFooter);
+
+        if(autoSearch) {
+          if(useUnconfirmedFooter) {
+            await findPrintings(state.metadataText,{name:'',allowMetadataOnly:true,allowQuickConfirm:false});
+          } else if(guess.length>=2) {
+            await findPrintings(state.metadataText,{name:guess,allowQuickConfirm:usableTitle || metadataSupported});
+          } else if(state.metadataText) {
+            await findPrintings(state.metadataText,{name:'',allowMetadataOnly:true,allowQuickConfirm:false});
+          }
+          if(footerConflict) status(`${guess} · Footer mismatch ignored. Check the printing name/set/collector below before saving.`);
+        }
+      } finally { sourceBitmap.close?.(); }
     } catch (e) { status(`OCR failed: ${e.message}. Type the name manually.`, true); }
     finally { $('read-photo').disabled = !state.image; }
   }
@@ -324,33 +931,60 @@
     if (setCode) parts.push(`set:${setCode}`);
     return { name, collector:collector.replace(/^#/,'').split('/')[0], setCode, query:parts.join(' ') };
   }
-  async function findPrintings() {
-    const parsed=parsePrintingSearch($('card-name').value, $('set-code').value);
-    if (parsed.name.length < 2) return status('Enter at least two characters of the card name. You can add a collector number and set code, e.g. Forest 304 C21.', true);
+  async function findPrintings(metadataText = state.metadataText, options = {}) {
+    // Event listeners may pass an Event as the first argument; never serialize it as OCR metadata.
+    if (typeof Event !== 'undefined' && metadataText instanceof Event) metadataText=state.metadataText;
+    if (!metadataText || typeof metadataText !== 'string') metadataText=state.metadataText || '';
+    if (!options || typeof options !== 'object') options={};
+    const requestedName=options.name !== undefined ? String(options.name) : $('card-name').value;
+    const parsed=parsePrintingSearch(requestedName, $('set-code').value);
+    hideQuickConfirm();
+    if (parsed.name.length < 2 && !options.allowMetadataOnly) return status('Enter at least two characters of the card name, or scan a footer with both set code and collector number.', true);
     $('find-printings').disabled=true;
-    $('candidate-list').replaceChildren(); state.selected=null; $('save-card').disabled=true;
-    status(`Searching printings${parsed.setCode ? ` in ${parsed.setCode.toUpperCase()}` : ''}${parsed.collector ? ` at collector #${parsed.collector}` : ''}…`);
+    $('candidate-list').replaceChildren(); state.selected=null; syncSaveControls();
+    if (!options.silentNoMatch) status(`Searching the local card catalog${parsed.setCode ? ` in ${parsed.setCode.toUpperCase()}` : ''}${parsed.collector ? ` at collector #${parsed.collector}` : ''}…`);
     try {
-      const scryfallUrl='https://api.scryfall.com/cards/search?q='+encodeURIComponent(parsed.query)+'&unique=prints&order=released&dir=desc';
-      const response=await fetch(scryfallUrl, {headers:{'Accept':'application/json'}});
-      const data=await response.json();
-      if (!response.ok || !Array.isArray(data.data)) throw new Error(data.details || 'No matching printings found. Check the card name, set code, and collector number.');
-      const matches=data.data.slice(0,40);
+      const params=new URLSearchParams({name:parsed.name});
+      if(parsed.setCode) params.set('set_code',parsed.setCode);
+      if(parsed.collector) params.set('collector_number',parsed.collector);
+      if(metadataText) params.set('metadata_text',String(metadataText).slice(0,500));
+      const data=await apiFetch(`${API.search}?${params.toString()}`);
+      if (!parsed.setCode && data.detected_set_code) $('set-code').value=String(data.detected_set_code).toUpperCase();
+      if (data.matched_name && data.matched_name !== parsed.name) $('card-name').value=data.matched_name;
+      const matches=Array.isArray(data.results)?data.results:[];
+      if (!matches.length) {
+        if (!options.silentNoMatch) status('No matching printings in the local catalog. Check the title, set code, or collector number. No live Scryfall search was made.',true);
+        return null;
+      }
+      const renderedMatches = [];
       for (const card of matches) {
+        const normalized={...card,id:card.scryfall_id||card.id,set:card.set||card.set_code||'',set_name:card.set_name||null,
+          image_uris:card.image_url?{small:card.image_url,normal:card.image_url}:undefined,
+          prices:card.prices||{usd:null,usd_foil:null},finishes:Array.isArray(card.finishes)?card.finishes:[]};
         const b=document.createElement('button'); b.type='button'; b.className='candidate';
-        const imageUrl=card.image_uris?.small || card.card_faces?.[0]?.image_uris?.small || '';
+        const imageUrl=normalized.image_uris?.small||'';
         if (imageUrl) { const img=document.createElement('img'); img.src=imageUrl; img.alt=''; img.loading='lazy'; b.append(img); }
         const d=document.createElement('span'); d.className='details';
-        const title=document.createElement('strong'); title.textContent=card.name;
-        const sub=document.createElement('small'); sub.textContent=`${String(card.set_name||card.set||'').trim()} · ${String(card.set||'').toUpperCase()} #${card.collector_number||'?'} · ${card.rarity||'unknown rarity'}`;
-        const price=document.createElement('small'); price.textContent=`Normal ${card.prices?.usd ? '$'+card.prices.usd : 'N/A'} · Foil ${card.prices?.usd_foil ? '$'+card.prices.usd_foil : 'N/A'}`;
+        const title=document.createElement('strong'); title.textContent=normalized.name;
+        const setName=String(normalized.set_name||'').trim();
+        const setLabel=setName && setName.toLowerCase()!==String(normalized.set).toLowerCase()?`${setName} · `:'';
+        const sub=document.createElement('small'); sub.textContent=`${setLabel}${String(normalized.set||'').toUpperCase()} #${normalized.collector_number||'?'} · ${normalized.rarity||'unknown rarity'}`;
+        const price=document.createElement('small'); price.textContent=`Local price snapshot — Normal ${normalized.prices.usd!=null?'$'+normalized.prices.usd:'N/A'} · Foil ${normalized.prices.usd_foil!=null?'$'+normalized.prices.usd_foil:'N/A'}`;
         d.append(title,sub,price); b.append(d);
-        b.addEventListener('click',()=>selectPrinting(card,b)); $('candidate-list').append(b);
+        b.addEventListener('click',()=>selectPrinting(normalized,b)); $('candidate-list').append(b);
+        renderedMatches.push({card:normalized, button:b});
       }
-      const filterSummary=[parsed.setCode ? `set ${parsed.setCode.toUpperCase()}` : '', parsed.collector ? `collector #${parsed.collector}` : ''].filter(Boolean).join(', ');
-      status(`${matches.length} printing(s) shown${filterSummary ? ` (${filterSummary})` : ''}. Verify the set name, set code, and collector number before saving.`);
-    } catch(e) { status(`Printing search failed: ${e.message}`, true); }
-    finally { $('find-printings').disabled=false; }
+      if (renderedMatches.length === 1 && options.allowQuickConfirm !== false) showQuickConfirm(renderedMatches[0]);
+      else hideQuickConfirm();
+      const effectiveSet=parsed.setCode || data.detected_set_code || '';
+      const effectiveCollector=parsed.collector || data.detected_collector_number || '';
+      const filterSummary=[effectiveSet ? `set ${String(effectiveSet).toUpperCase()}` : '', effectiveCollector ? `collector #${effectiveCollector}` : ''].filter(Boolean).join(', ');
+      if (!options.silentNoMatch) status(`${matches.length} local printing(s) found${filterSummary ? ` (${filterSummary})` : ''}${data.ocr_name_corrected ? ' · corrected OCR title noise' : ''}. ${data.recognition_mode==='metadata_first'?'Set/collector identified the card before title OCR.':'Confirm the title, set, and collector number before saving.'} No Scryfall API search was made.`);
+      return {data,matches,parsed};
+    } catch(e) {
+      if (!options.silentNoMatch) status(`Local printing search failed: ${e.message}`, true);
+      return null;
+    } finally { $('find-printings').disabled=false; }
   }
   function updateSelectedPrintingSummary() {
     const card=state.selected;
@@ -358,41 +992,55 @@
     const finish=$('finish').value;
     const server=state.serverPrice && state.serverPrice.id===card.id ? state.serverPrice : null;
     const price=server ? (finish==='foil' ? server.foil : server.normal) : (finish==='foil' ? card.prices?.usd_foil : card.prices?.usd);
-    const source=server ? 'CardScanner price' : 'Scryfall reference';
-    $('selected-printing').textContent=`${card.name} · ${card.set_name} (${String(card.set||'').toUpperCase()}) #${card.collector_number||'?'} · ${finish} · ${price ? '$'+price : 'price unavailable'} (${source})`;
+    const source=server ? 'CardScanner local price' : (card.price_source==='local_tcgcsv' ? 'local TCGCSV snapshot' : 'local catalog; price unavailable');
+    const setName=String(card.set_name||'').trim();
+    const setLabel=setName && setName.toLowerCase()!==String(card.set||'').toLowerCase()?`${setName} · `:'';
+    const priceText=price!==null && price!==undefined && price!=='' ? '$'+price : 'price unavailable';
+    $('selected-printing').textContent=`${card.name} · ${setLabel}${String(card.set||'').toUpperCase()} #${card.collector_number||'?'} · ${finish} · ${priceText} (${source})`;
     $('selected-printing').dataset.image=card.image_uris?.normal || card.card_faces?.[0]?.image_uris?.normal || '';
   }
-  async function loadServerPrice(card) {
-    try {
-      const data=await apiFetch(`/api/scanner/mobile/price/${encodeURIComponent(card.id)}`);
-      if (!state.selected || state.selected.id!==card.id) return;
-      state.serverPrice={id:card.id,normal:data.normal??null,foil:data.foil??null,source_updated:data.source_updated||null};
-      updateSelectedPrintingSummary();
-    } catch (_) {
-      // If the server cannot resolve an internal price, the UI labels the fallback
-      // as a Scryfall reference rather than misrepresenting it.
-    }
-  }
   function selectPrinting(card, button) {
+    hideQuickConfirm();
     state.selected=card;
     state.serverPrice=null;
     document.querySelectorAll('.candidate').forEach(x=>x.classList.remove('selected'));
     if (button && button.classList) button.classList.add('selected');
     updateSelectedPrintingSummary();
-    $('save-card').disabled=!state.people.length;
-    loadServerPrice(card);
+    syncSaveControls();
+    // Search results already include prices from the local TCGCSV snapshot; do not make a per-card network lookup.
   }
-  $('finish').addEventListener('change',()=>{ if(state.selected) updateSelectedPrintingSummary(); });
+  $('quick-confirm-yes').addEventListener('click', () => {
+    const match = state.quickMatch;
+    if (!match) return;
+    const card = match.card;
+    selectPrinting(card, match.button);
+    const set = String(card.set || card.set_code || '').toUpperCase();
+    const collector = String(card.collector_number || '').trim();
+    status(`Confirmed ${card.name} · ${set || 'set unknown'}${collector ? ` #${collector}` : ''}. Use Save & next to add it to inventory.`);
+  });
+  $('finish').addEventListener('change',()=>{ if(state.selected) updateSelectedPrintingSummary(); syncSaveControls(); });
+  $('person').addEventListener('change',syncSaveControls);
+  function syncVendingControls(source) {
+    const main = $('vending');
+    const sticky = $('vending-sticky');
+    if (source === 'sticky') main.checked = sticky.checked;
+    else sticky.checked = main.checked;
+    $('vending-batch-state').textContent = main.checked ? 'On — every saved card is marked for vending' : 'Off — cards will not be marked for vending';
+  }
+  $('vending').addEventListener('change', () => syncVendingControls('main'));
+  $('vending-sticky').addEventListener('change', () => { syncVendingControls('sticky'); syncSaveControls(); });
+  syncVendingControls('main');
+  $('save-card-sticky').addEventListener('click',()=>{ if (!$('save-card-sticky').disabled) $('save-card').click(); });
   $('start-camera').addEventListener('click',startCamera);
   $('camera-zoom').addEventListener('input', e => { void setZoom(e.target.value); });
   $('zoom-out').addEventListener('click', () => { const step=Number($('camera-zoom').step)||0.1; void setZoom(Number($('camera-zoom').value)-step); });
   $('zoom-in').addEventListener('click', () => { const step=Number($('camera-zoom').step)||0.1; void setZoom(Number($('camera-zoom').value)+step); });
-  $('continuous-mode').addEventListener('change', () => status($('continuous-mode').checked ? 'Continuous scan enabled. Camera stays running while you identify and save each captured card.' : 'Continuous scan disabled. Capturing a card pauses the camera until you start it again.'));
+  $('continuous-mode').addEventListener('change', () => { syncSaveControls(); status($('continuous-mode').checked ? 'Continuous scan enabled. Camera stays running while you identify and save each captured card.' : 'Continuous scan disabled. Capturing a card pauses the camera until you start it again.'); });
   $('take-photo').addEventListener('click',captureFrame);
   $('upload-photo').addEventListener('click',()=>$('photo-file').click());
-  $('photo-file').addEventListener('change', e=>{ const f=e.target.files?.[0]; if(f){setImage(f);} });
+  $('photo-file').addEventListener('change', e=>{ const f=e.target.files?.[0]; if(f){state.captureQuality=null;setImage(f);} });
   $('read-photo').addEventListener('click',readName);
-  $('find-printings').addEventListener('click',findPrintings);
+  $('find-printings').addEventListener('click',()=>findPrintings(state.metadataText));
   $('card-name').addEventListener('keydown',e=>{if(e.key==='Enter')findPrintings();});
   $('set-code').addEventListener('keydown',e=>{if(e.key==='Enter')findPrintings();});
   $('save-card').addEventListener('click',async()=>{
@@ -411,7 +1059,7 @@
     const payload={
       scryfall_id:card.id, name:card.name, set_code:card.set, rarity:card.rarity,
       collector_number:card.collector_number, tcgplayer_id:card.tcgplayer_id||null,
-      price:price||'N/A', price_source:authoritativePrice?'cardscanner':'scryfall_reference', owner:nameOf(person), person_id:person.id??person.person_id??null,
+      price:price??'N/A', price_source:authoritativePrice?'cardscanner_local':'local_catalog', owner:nameOf(person), person_id:person.id??person.person_id??null,
       account_id:person.account_id??null, quantity, finish,
       location:location?nameOf(location):null, location_id:location?.id??null,
       storage_location:location?nameOf(location):null,
@@ -419,22 +1067,24 @@
       scan_id:(window.crypto?.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`),
       scan_time:new Date().toISOString(), device:'android-pwa'
     };
-    $('save-card').disabled=true; status('Saving to your CardScanner inventory…');
+    state.saving=true; syncSaveControls(); status('Saving to your CardScanner inventory…');
     try {
       const result=await apiFetch(API.save,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       const savedMessage=`Saved ${card.name} · ${String(card.set).toUpperCase()} #${card.collector_number} · ${finish} · +${quantity}${payload.is_vending?' · marked for vending':''}.`;
-      state.selected=null; state.serverPrice=null; state.image=null;
+      state.selected=null; state.serverPrice=null; state.image=null; state.metadataText=''; state.predictionName=null; state.saving=false; syncSaveControls();
       $('selected-printing').textContent='Choose the exact printing above before saving.';
-      $('candidate-list').replaceChildren(); $('card-name').value=''; $('set-code').value=''; $('quantity').value='1'; $('vending').checked=false; $('new-location').value='';
+      $('candidate-list').replaceChildren(); $('card-name').value=''; $('set-code').value=''; $('quantity').value='1'; $('new-location').value='';
       clearPhotoPreview();
       if ($('continuous-mode').checked && state.stream?.active) {
         $('camera-frame').classList.remove('hidden'); $('camera').classList.remove('hidden'); $('take-photo').disabled=false;
-        status(`${savedMessage} Camera remains on — capture the next card when ready.`);
+        status(`${savedMessage} Ready for the next card — camera stays on.`);
+        // Bring the capture controls back into view after saving, avoiding a long manual scroll on batch scans.
+        requestAnimationFrame(() => $('camera-frame').scrollIntoView({behavior:'smooth', block:'start'}));
       } else {
         $('camera-frame').classList.add('hidden'); $('camera').classList.add('hidden');
         status(`${savedMessage} Start the camera for the next card.`);
       }
-    } catch(e) { status(`Not saved: ${e.message}\nThe pending choice is retained. Fix account, location, vending, or sign-in and retry.`,true); $('save-card').disabled=false; }
+    } catch(e) { state.saving=false; syncSaveControls(); status(`Not saved: ${e.message}\nThe pending choice is retained. Fix account, location, vending, or sign-in and retry.`,true); }
   });
   window.addEventListener('pagehide',stopCamera);
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('service-worker.js').catch(()=>{});

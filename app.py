@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sqlite3
+from difflib import SequenceMatcher
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,11 @@ import hashlib
 import requests
 import threading
 import time
+import zipfile
+try:
+    from thefuzz import fuzz, process
+except ImportError:  # Optional fallback for minimal test/dev environments.
+    fuzz = process = None
 
 from flask import Flask, g, jsonify, render_template, request, send_file, send_from_directory, redirect, url_for, session, flash
 from functools import wraps
@@ -64,6 +70,16 @@ PRICE_ALERT_MIN_DOLLARS = max(0.0, float(os.environ.get("PRICE_ALERT_MIN_DOLLARS
 PRICE_ALERT_MIN_PERCENT = max(0.0, float(os.environ.get("PRICE_ALERT_MIN_PERCENT", "25")))
 PRICE_ALERT_MIN_OWNED_VALUE_GAIN = max(0.0, float(os.environ.get("PRICE_ALERT_MIN_OWNED_VALUE_GAIN", "10.00")))
 PRICE_HISTORY_DAYS = max(30, int(os.environ.get("PRICE_HISTORY_DAYS", "365")))
+
+# Mobile OCR is loaded lazily so the web service can start normally. The reader
+# and card-name list are local-only and cached per worker; no image/OCR text is
+# sent to Scryfall.
+_SCANNER_MOBILE_EASYOCR_READER = None
+_SCANNER_MOBILE_EASYOCR_LOCK = threading.Lock()
+_SCANNER_MOBILE_NAMES_CACHE_KEY = None
+_SCANNER_MOBILE_NAMES_CACHE: list[str] = []
+_SCANNER_MOBILE_SET_CODES_CACHE_KEY = None
+_SCANNER_MOBILE_SET_CODES_CACHE: set[str] = set()
 
 # Whitelisted inventory sort expressions. These are mapped server-side so request
 # parameters can never become raw SQL.
@@ -615,9 +631,9 @@ def security_headers(response):
         else "camera=(), microphone=(), geolocation=()"
     )
     response.headers.setdefault("X-Permitted-Cross-Domain-Policies", "none")
-    # The mobile page uses Tesseract.js from jsDelivr and the Scryfall search API.
-    # Keep the broader allowances scoped to the scanner page; every other page retains
-    # the stricter self-only script/connect policy.
+    # The mobile page uses Tesseract.js from jsDelivr. Printing search and prices are
+    # served from the local catalog; the page does not call the Scryfall API.
+    # Keep these allowances scoped to the scanner page.
     if is_scanner_mobile:
         csp = (
             "default-src 'self'; "
@@ -625,7 +641,7 @@ def security_headers(response):
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob: https://cards.scryfall.io https://*.scryfall.com; "
             "font-src 'self' data:; "
-            "connect-src 'self' https://api.scryfall.com https://cdn.jsdelivr.net; "
+            "connect-src 'self' https://cdn.jsdelivr.net; "
             "worker-src 'self' blob:; "
             "media-src 'self' blob:; "
             "frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
@@ -2679,7 +2695,11 @@ def api_people():
     return jsonify({"success": True, "people": people})
 
 
-APP_VERSION = "39.1"
+try:
+    _version_info = json.loads((BASE_DIR / "VERSION.json").read_text(encoding="utf-8"))
+    APP_VERSION = str(_version_info.get("version") or "unknown")
+except (OSError, json.JSONDecodeError, AttributeError):
+    APP_VERSION = "unknown"
 
 
 def _scanner_person_options(conn: sqlite3.Connection, people_rows=None) -> list[dict[str, Any]]:
@@ -2772,6 +2792,59 @@ def _scanner_mobile_authorized_people(conn: sqlite3.Connection, user) -> list[di
     return _scanner_person_options(conn, rows)
 
 
+_DESKTOP_SCANNER_DOWNLOAD_FILES = (
+    "README.md",
+    "SERVER_INTEGRATION.md",
+    "Scanner.py",
+    "scanner_engine.py",
+    "scanner_requirements.txt",
+    "start_scanner.fish",
+    "setup_phone_camera.fish",
+    "check_ocr_gpu.fish",
+    "scanner.env.fish.example",
+    "README_GPU.md",
+    "camera_probe.py",
+    "CHANGES_scanner-client_v39.md",
+)
+
+
+@app.get("/scanner/desktop/download")
+@login_required
+def scanner_desktop_download():
+    """Download the desktop client source bundle, excluding local secrets and generated data."""
+    user = current_user()
+    if user and str(user["role"] or "").lower() == "vendor" and not _scanner_user_is_admin(user):
+        return render_template("login.html", next_url="", error="This account does not have access to the scanner."), 403
+
+    scanner_dir = BASE_DIR / "scanner-client"
+    archive_buffer = io.BytesIO()
+    added_files = 0
+    with zipfile.ZipFile(archive_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for relative_name in _DESKTOP_SCANNER_DOWNLOAD_FILES:
+            source_path = scanner_dir / relative_name
+            if not source_path.is_file():
+                continue
+            # Keep paths fixed and predictable; do not include env files, databases,
+            # queue files, caches, credentials, test artifacts, or other local files.
+            archive.write(source_path, arcname=f"cardscanner-desktop/{relative_name}")
+            added_files += 1
+
+    if added_files == 0 or not (scanner_dir / "Scanner.py").is_file():
+        app.logger.error("Desktop scanner download bundle is missing required client files")
+        return "Desktop scanner bundle is unavailable.", 503
+
+    archive_buffer.seek(0)
+    response = send_file(
+        archive_buffer,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name="cardscanner-desktop.zip",
+        max_age=0,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
 @app.get("/scanner/mobile")
 @app.get("/scanner/mobile/")
 @login_required
@@ -2783,6 +2856,7 @@ def scanner_mobile_index():
     index_path = BASE_DIR / "scanner-client" / "mobile-app" / "index.html"
     html = index_path.read_text(encoding="utf-8")
     html = html.replace("__CARD_SCANNER_CSRF_TOKEN__", ensure_csrf_token())
+    html = html.replace("__CARD_SCANNER_VERSION__", APP_VERSION)
     response = app.response_class(html, mimetype="text/html")
     response.headers["Cache-Control"] = "private, no-store"
     return response
@@ -2824,21 +2898,585 @@ def api_scanner_mobile_options():
         conn.close()
 
 
+def _scanner_mobile_normalize_collector_number(value: str) -> str:
+    """Normalize footer OCR collector numbers like 0175, 175/281, or EOE-175."""
+    value = str(value or "").strip().lower().replace(" ", "")
+    if "/" in value:
+        value = value.split("/", 1)[0]
+    value = re.sub(r"^[a-z]{3}-", "", value)
+    match = re.fullmatch(r"0*(\d{1,4}[a-z]?)", value)
+    if match:
+        digits = re.match(r"0*", match.group(1)).end()
+        return match.group(1)[digits:] or "0"
+    return value
+
+
+def _scanner_mobile_parse_footer_metadata(metadata_text: str) -> dict[str, str | None]:
+    """Parse the *printed metadata rows* on an MTG card footer.
+
+    Do not treat any three-letter token and any nearby digit as a set/collector
+    pair. That previously let noisy OCR such as ``REN 1`` override the card title.
+    A set code must be in the local catalog and share a footer row with a known
+    language marker; the collector number must come from the preceding rarity/
+    number row or the same tightly scoped footer line. Unanchored one-digit
+    guesses are intentionally rejected.
+    """
+    result: dict[str, str | None] = {"set_code": None, "collector_number": None}
+    raw = str(metadata_text or "")[:500]
+    if not raw or not DB_ART.is_file():
+        return result
+
+    global _SCANNER_MOBILE_SET_CODES_CACHE_KEY, _SCANNER_MOBILE_SET_CODES_CACHE
+    try:
+        stat = DB_ART.stat()
+        cache_key = (str(DB_ART.resolve()), stat.st_mtime_ns, stat.st_size)
+        if cache_key == _SCANNER_MOBILE_SET_CODES_CACHE_KEY and _SCANNER_MOBILE_SET_CODES_CACHE:
+            codes = _SCANNER_MOBILE_SET_CODES_CACHE
+        else:
+            con = sqlite3.connect(DB_ART)
+            try:
+                codes = {str(row[0] or "").strip().lower() for row in con.execute(
+                    "SELECT DISTINCT LOWER(TRIM(set_code)) FROM card_art WHERE COALESCE(set_code,'') <> ''"
+                ).fetchall()}
+            finally:
+                con.close()
+            _SCANNER_MOBILE_SET_CODES_CACHE_KEY = cache_key
+            _SCANNER_MOBILE_SET_CODES_CACHE = codes
+    except (sqlite3.Error, OSError):
+        return result
+
+    # Current cards print e.g. ``C 0065`` on one row and ``FRA • EN`` below it.
+    # Older/bundled OCR engines sometimes flatten the two rows into one string;
+    # the same-line path is supported, but still requires a language marker.
+    lines = [re.findall(r"[A-Za-z0-9]+(?:[-/][A-Za-z0-9]+)*", line.lower())
+             for line in raw.splitlines() if line.strip()]
+    if not lines:
+        return result
+    language_codes = {
+        "en", "fr", "de", "es", "it", "pt", "ja", "jp", "ko", "ru",
+        "zhs", "zht", "zh", "pl", "cs", "hu", "ar", "he", "la", "grc",
+        "sa", "ph", "phy", "qya", "sphy",
+    }
+
+    # Find a catalog-known set code on a line that also contains a language
+    # marker. Prefer codes immediately to the left of that marker (FRA • EN).
+    set_match = None
+    for line_index, tokens in enumerate(lines):
+        lang_positions = [i for i, token in enumerate(tokens) if token in language_codes]
+        if not lang_positions:
+            continue
+        candidates = []
+        for i, token in enumerate(tokens):
+            candidate = re.sub(r"[^a-z0-9-]", "", token)
+            corrected = candidate.replace("0", "o")
+            canonical = candidate if candidate in codes else corrected if corrected in codes else None
+            if not canonical or canonical in language_codes or len(canonical) < 3:
+                continue
+            distance = min(abs(i - j) for j in lang_positions)
+            # Set and language are a compact pair in the footer. Avoid codes
+            # elsewhere on the line such as an artist or copyright fragment.
+            if distance <= 2:
+                before_lang = any(i < j for j in lang_positions)
+                candidates.append((distance, 0 if before_lang else 1, i, canonical))
+        if candidates:
+            _, _, token_index, canonical = min(candidates)
+            set_match = (line_index, token_index, canonical)
+            break
+    if not set_match:
+        return result
+
+    set_line_index, set_token_index, set_code = set_match
+
+    def number_candidates(tokens: list[str]) -> list[tuple[int, int, str]]:
+        found: list[tuple[int, int, str]] = []
+        for index, token in enumerate(tokens):
+            # Fractions (e.g. 65/290) are strong evidence even if the numerator
+            # is one digit. A bare "1" is not strong enough to override the title.
+            fraction = re.fullmatch(r"(\d{1,5})/(\d{1,5})", token)
+            if fraction:
+                found.append((2, index, _scanner_mobile_normalize_collector_number(fraction.group(1))))
+                continue
+            number = re.fullmatch(r"0*(\d{2,5}[a-z]?)", token)
+            if not number:
+                continue
+            value = number.group(1)
+            digits = re.match(r"\d+", value)
+            if digits and len(digits.group(0)) == 4 and 1900 <= int(digits.group(0)) <= 2099:
+                continue
+            found.append((len(re.sub(r"\D", "", token)), index,
+                          _scanner_mobile_normalize_collector_number(token)))
+        return found
+
+    number_match = None
+    # The collector/rarity line is normally immediately above the set/language
+    # line. Prefer it over numbers on the set line or unrelated text.
+    for index in range(set_line_index - 1, -1, -1):
+        candidates = number_candidates(lines[index])
+        if candidates:
+            number_match = max(candidates, key=lambda item: (item[0], -item[1]))[2]
+            break
+    if not number_match:
+        candidates = number_candidates(lines[set_line_index])
+        # On a flattened row, only accept a number near the selected set code.
+        candidates = [item for item in candidates if abs(item[1] - set_token_index) <= 2]
+        if candidates:
+            number_match = max(candidates, key=lambda item: (item[0], -item[1]))[2]
+    if not number_match:
+        return result
+    result["set_code"] = set_code
+    result["collector_number"] = number_match
+    return result
+
+
+def _scanner_mobile_easyocr_footer_text(ocr_rows: Any, image_width: int, image_height: int) -> str:
+    """Group EasyOCR word boxes into footer rows, retaining row order and locality."""
+    positioned: list[tuple[float, float, str]] = []
+    plain: list[str] = []
+    for row in ocr_rows or []:
+        if isinstance(row, (list, tuple)) and len(row) >= 2 and isinstance(row[1], str):
+            bbox = row[0]
+            try:
+                points = [(float(point[0]), float(point[1])) for point in bbox]
+                if len(points) >= 4:
+                    center_x = sum(point[0] for point in points) / len(points)
+                    center_y = sum(point[1] for point in points) / len(points)
+                    # Footer collector data is lower-left. Drop artist/copyright
+                    # fragments from the far right of the cropped band.
+                    if center_x <= image_width * 0.82:
+                        positioned.append((center_y, center_x, str(row[1]).strip()))
+                    continue
+            except (TypeError, ValueError, IndexError):
+                pass
+        if isinstance(row, str) and row.strip():
+            plain.append(row.strip())
+    if not positioned:
+        return "\n".join(plain)[:500]
+
+    positioned.sort(key=lambda item: item[0])
+    row_tolerance = max(6.0, image_height * 0.08)
+    grouped: list[list[tuple[float, float, str]]] = []
+    for item in positioned:
+        if not grouped or abs(item[0] - sum(x[0] for x in grouped[-1]) / len(grouped[-1])) > row_tolerance:
+            grouped.append([item])
+        else:
+            grouped[-1].append(item)
+    text_lines = []
+    for group in grouped:
+        group.sort(key=lambda item: item[1])
+        line = " ".join(item[2] for item in group if item[2])
+        if line:
+            text_lines.append(re.sub(r"\s+", " ", line).strip())
+    return "\n".join(text_lines)[:500]
+
+
+def _scanner_mobile_cached_card_names() -> list[str]:
+    """Distinct local card names for fuzzy OCR correction, cached until DB changes."""
+    global _SCANNER_MOBILE_NAMES_CACHE_KEY, _SCANNER_MOBILE_NAMES_CACHE
+    if not DB_ART.is_file():
+        return []
+    try:
+        stat = DB_ART.stat()
+        cache_key = (str(DB_ART.resolve()), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return []
+    if cache_key == _SCANNER_MOBILE_NAMES_CACHE_KEY and _SCANNER_MOBILE_NAMES_CACHE:
+        return _SCANNER_MOBILE_NAMES_CACHE
+    con = sqlite3.connect(DB_ART, timeout=10)
+    try:
+        rows = con.execute(
+            "SELECT DISTINCT TRIM(name) FROM card_art WHERE COALESCE(TRIM(name),'') <> '' ORDER BY name COLLATE NOCASE"
+        ).fetchall()
+        names = [str(row[0]).strip() for row in rows if str(row[0] or '').strip()]
+    finally:
+        con.close()
+    _SCANNER_MOBILE_NAMES_CACHE_KEY = cache_key
+    _SCANNER_MOBILE_NAMES_CACHE = names
+    return names
+
+
+def _scanner_mobile_name_agreement_score(left: str, right: str) -> float:
+    """Return conservative whole-name agreement in [0, 1], not partial-word similarity."""
+    def normalize(value: str) -> str:
+        value = str(value or "").lower().replace("’", "'")
+        value = re.sub(r"^[0-9il|]\s+", "", value)
+        return re.sub(r"[^a-z0-9]+", " ", value).strip()
+
+    a, b = normalize(left), normalize(right)
+    if len(a.replace(" ", "")) < 5 or len(b.replace(" ", "")) < 5:
+        return 0.0
+    if a == b:
+        return 1.0
+    sequence = SequenceMatcher(None, a, b, autojunk=False).ratio()
+    a_tokens = set(a.split())
+    b_tokens = set(b.split())
+    token_overlap = len(a_tokens & b_tokens) / max(1, len(a_tokens | b_tokens))
+    # Token overlap is deliberately discounted: sharing one generic word cannot
+    # validate an otherwise different card title.
+    return max(sequence, token_overlap * 0.82)
+
+
+def _scanner_mobile_fuzzy_card_names(ocr_text: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Rank OCR text against the same local card-name catalog used by desktop OCR."""
+    raw = re.sub(r"\s+", " ", str(ocr_text or "")).strip()
+    if len(raw) < 3:
+        return []
+    # WRatio can give very short, low-information OCR strings surprisingly high
+    # partial-match scores (e.g. "a p" can match "Cardassia Prime"). Only use
+    # fuzzy recovery when there is enough signal to distinguish a real card name.
+    tokens = re.sub(r"[^A-Za-z0-9]+", " ", raw).split()
+    compact = re.sub(r"[^A-Za-z0-9]", "", raw)
+    if len(compact) < 5 or not any(len(token) >= 3 for token in tokens):
+        return []
+    names = _scanner_mobile_cached_card_names()
+    if not names:
+        return []
+    limit = max(1, min(int(limit), 8))
+    if process is not None and fuzz is not None:
+        choices = process.extract(raw, names, scorer=fuzz.WRatio, limit=limit)
+        return [{"name": str(name), "score": int(score)} for name, score, *_ in choices]
+    # Conservative standard-library fallback for minimal dev images where thefuzz
+    # has not been installed yet. Normal app installs use the desktop WRatio scorer.
+    from difflib import SequenceMatcher
+    norm = lambda value: re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+    needle = norm(raw)
+    ranked = sorted(
+        ((name, int(100 * SequenceMatcher(None, needle, norm(name)).ratio())) for name in names),
+        key=lambda pair: pair[1], reverse=True,
+    )[:limit]
+    return [{"name": str(name), "score": score} for name, score in ranked]
+
+
+def _scanner_mobile_get_easyocr_reader():
+    """Create EasyOCR only on first scanner request; default to CPU to protect gaming GPU."""
+    global _SCANNER_MOBILE_EASYOCR_READER
+    if _SCANNER_MOBILE_EASYOCR_READER is not None:
+        return _SCANNER_MOBILE_EASYOCR_READER
+    with _SCANNER_MOBILE_EASYOCR_LOCK:
+        if _SCANNER_MOBILE_EASYOCR_READER is not None:
+            return _SCANNER_MOBILE_EASYOCR_READER
+        import easyocr
+        use_gpu = os.environ.get("MOBILE_OCR_GPU", "0").strip().lower() in {"1", "true", "yes", "on"}
+        _SCANNER_MOBILE_EASYOCR_READER = easyocr.Reader(["en"], gpu=use_gpu)
+        return _SCANNER_MOBILE_EASYOCR_READER
+
+
+def _scanner_mobile_catalog_search(name: str, set_code: str = "", collector_number: str = "", limit: int = 40) -> list[dict[str, Any]]:
+    """Search the local art/catalog SQLite DB; intentionally never calls Scryfall.
+
+    An empty name is allowed only when both set and collector number are known,
+    enabling the footer OCR to recover a printing even when title OCR is poor.
+    """
+    if not DB_ART.is_file():
+        raise FileNotFoundError(f"Local card catalog is unavailable at {DB_ART}.")
+    name = str(name or "").strip()[:120]
+    set_code = re.sub(r"[^a-z0-9-]", "", str(set_code or "").strip().lower())[:12]
+    collector_number = str(collector_number or "").strip()[:40]
+    normalized_collector = _scanner_mobile_normalize_collector_number(collector_number) if collector_number else ""
+    if name and (len(name) < 2 or not any(len(token) >= 2 for token in name.split())):
+        return []
+    if not name and not (set_code and normalized_collector):
+        return []
+
+    catalog = sqlite3.connect(DB_ART, timeout=10)
+    catalog.row_factory = sqlite3.Row
+    try:
+        columns = {str(row[1]) for row in catalog.execute("PRAGMA table_info(card_art)").fetchall()}
+        required = {"scryfall_id", "name", "set_code", "rarity", "tcgplayer_id", "collector_number"}
+        if not required.issubset(columns):
+            raise RuntimeError("The local card catalog is missing required printing fields. Refresh mtg_art_hashes.db.")
+        select = "scryfall_id, name, set_code, rarity, tcgplayer_id, collector_number"
+        if "set_name" in columns:
+            select += ", set_name"
+        if "finishes_json" in columns:
+            select += ", finishes_json"
+        where: list[str] = []
+        args: list[Any] = []
+        if name:
+            where.append("name LIKE ? COLLATE NOCASE")
+            args.append(_like_pattern(name))
+        if set_code:
+            where.append("LOWER(TRIM(set_code)) = ?")
+            args.append(set_code)
+        if collector_number:
+            # Footer OCR commonly reads 175 as 0175 or includes 175/281.
+            where.append("LOWER(TRIM(COALESCE(collector_number, ''))) IN (?, ?)")
+            args.extend([collector_number.lower(), normalized_collector.lower()])
+        limit = max(1, min(int(limit), 40))
+        if name:
+            sql = f"""SELECT {select},
+                        CASE WHEN LOWER(TRIM(name))=LOWER(TRIM(?)) THEN 0
+                             WHEN name LIKE ? COLLATE NOCASE THEN 1 ELSE 2 END AS match_rank
+                     FROM card_art WHERE {' AND '.join(where)}
+                     ORDER BY match_rank, name COLLATE NOCASE, set_code COLLATE NOCASE,
+                              collector_number COLLATE NOCASE LIMIT ?"""
+            args = [name, _prefix_pattern(name), *args, limit]
+        else:
+            sql = f"""SELECT {select} FROM card_art WHERE {' AND '.join(where)}
+                     ORDER BY name COLLATE NOCASE, set_code COLLATE NOCASE,
+                              collector_number COLLATE NOCASE LIMIT ?"""
+            args.append(limit)
+        rows = catalog.execute(sql, args).fetchall()
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"Local card catalog search failed: {exc}") from exc
+    finally:
+        catalog.close()
+
+    ids = [str(r["scryfall_id"] or "").strip() for r in rows if r["scryfall_id"]]
+    finish_map: dict[str, list[str]] = {}
+    if ids:
+        inventory = connect_inventory()
+        try:
+            ensure_card_mapping_table(inventory)
+            marks = ",".join("?" for _ in ids)
+            for cached in inventory.execute(
+                f"SELECT scryfall_id, finishes_json FROM card_price_mapping WHERE scryfall_id IN ({marks})", ids
+            ).fetchall():
+                try:
+                    vals = json.loads(cached["finishes_json"] or "[]")
+                    finish_map[str(cached["scryfall_id"])] = [str(v).lower() for v in vals] if isinstance(vals, list) else []
+                except (TypeError, json.JSONDecodeError):
+                    finish_map[str(cached["scryfall_id"])] = []
+        finally:
+            inventory.close()
+    price_snapshot = get_tcg_prices()
+    results = []
+    for row in rows:
+        sid = str(row["scryfall_id"] or "").strip()
+        tcg_id = _normalize_tcgplayer_id(row["tcgplayer_id"])
+        price = price_snapshot.get(str(tcg_id), {}) if tcg_id else {}
+        results.append({
+            "id": sid, "scryfall_id": sid, "name": row["name"],
+            "set": str(row["set_code"] or "").lower(), "set_code": str(row["set_code"] or "").lower(),
+            "rarity": row["rarity"], "tcgplayer_id": tcg_id,
+            "collector_number": row["collector_number"],
+            "set_name": row["set_name"] if "set_name" in row.keys() else None,
+            "finishes": finish_map.get(sid, []),
+            "prices": {"usd": price.get("normal"), "usd_foil": price.get("foil")},
+            "price_source": "local_tcgcsv" if price.get("normal") is not None or price.get("foil") is not None else "local_catalog",
+            "image_url": scryfall_image_url(sid),
+        })
+    return results
+
+
+@app.post("/api/scanner/mobile/recognize")
+@login_required
+def api_scanner_mobile_recognize():
+    """Local OCR: use footer metadata as a clue, but corroborate it against the title."""
+    started = time.perf_counter()
+    user = current_user()
+    if not user or (str(user["role"] or "").lower() == "vendor" and not _scanner_user_is_admin(user)):
+        return jsonify({"success": False, "error": "Scanner access denied."}), 403
+    upload = request.files.get("card_image")
+    if not upload:
+        return jsonify({"success": False, "error": "Upload the captured card image."}), 400
+    raw = upload.stream.read(8 * 1024 * 1024 + 1)
+    if not raw or len(raw) > 8 * 1024 * 1024:
+        return jsonify({"success": False, "error": "Card image must be between 1 byte and 8 MB."}), 413
+    try:
+        import cv2
+        import numpy as np
+        encoded = np.frombuffer(raw, dtype=np.uint8)
+        bgr = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        if bgr is None or bgr.ndim != 3 or bgr.shape[0] < 200 or bgr.shape[1] < 120:
+            return jsonify({"success": False, "error": "Could not decode a full card image. Capture the card again."}), 400
+        height, width = bgr.shape[:2]
+        reader = _scanner_mobile_get_easyocr_reader()
+
+        # PASS 1 (priority): isolate the lower-left collector-information rows.
+        # Older code OCRed the entire bottom 14% of the card, including rules text,
+        # set-symbol noise, artist credit and copyright numbers. That caused false
+        # pairs such as REN #1. Modern cards put rarity+collector above SET • LANG.
+        footer_text = ""
+        bottom = bgr[int(height * .895):int(height * .997), int(width * .015):int(width * .72)]
+        if bottom.size:
+            factor = min(4.0, max(2.2, 1500.0 / max(1, bottom.shape[1])))
+            bottom = cv2.resize(bottom, None, fx=factor, fy=factor, interpolation=cv2.INTER_CUBIC)
+            bottom_gray = cv2.cvtColor(bottom, cv2.COLOR_BGR2GRAY)
+            bottom_gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(bottom_gray)
+            footer_rows = reader.readtext(bottom_gray, detail=1, paragraph=False)
+            footer_text = _scanner_mobile_easyocr_footer_text(footer_rows, bottom_gray.shape[1], bottom_gray.shape[0])
+        detected = _scanner_mobile_parse_footer_metadata(footer_text)
+        metadata_results = []
+        if detected.get("set_code") and detected.get("collector_number"):
+            try:
+                metadata_results = _scanner_mobile_catalog_search(
+                    "", str(detected["set_code"]), str(detected["collector_number"]), limit=8
+                )
+            except (FileNotFoundError, RuntimeError) as exc:
+                app.logger.debug("Mobile metadata-first local lookup unavailable: %s", exc)
+                metadata_results = []
+        names = list(dict.fromkeys(str(row.get("name") or "") for row in metadata_results if row.get("name")))
+
+        # PASS 2 is required even when the footer appears to identify one printing.
+        # OCR can confidently misread a collector digit or set code; the visible card
+        # title is an independent sanity check before we call that printing a match.
+        title_crop = bgr[int(height * .01):int(height * .17), int(width * .01):int(width * .99)]
+        if title_crop.size == 0:
+            return jsonify({"success": False, "error": "Card title area is too small."}), 400
+        scale = min(3.2, max(1.8, 1150.0 / max(1, title_crop.shape[1])))
+        enlarged = cv2.resize(title_crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        gray = cv2.cvtColor(enlarged, cv2.COLOR_BGR2GRAY)
+        normalized = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+        text_parts = reader.readtext(normalized, detail=0, paragraph=False)
+        raw_title = re.sub(r"\s+", " ", " ".join(str(v) for v in text_parts if str(v).strip())).strip()
+        ranked = _scanner_mobile_fuzzy_card_names(raw_title, limit=5) if raw_title else []
+        top = ranked[0] if ranked else {"name": None, "score": 0}
+        title_score = int(top.get("score") or 0)
+        title_name = top.get("name") if title_score >= 70 else None
+        metadata_name = names[0] if len(metadata_results) == 1 and len(names) == 1 else None
+        agreement = _scanner_mobile_name_agreement_score(raw_title, metadata_name or "") if metadata_name and raw_title else 0.0
+        metadata_verified = bool(metadata_name and title_name and agreement >= 0.62)
+        metadata_conflict = bool(
+            metadata_name and title_name and title_score >= 72 and agreement < 0.48
+        )
+        if metadata_verified:
+            best_name = metadata_name
+            best_score = max(title_score, 96)
+            recognition_mode = "metadata_title_verified"
+        else:
+            best_name = title_name
+            best_score = title_score
+            recognition_mode = "metadata_title_conflict" if metadata_conflict else "metadata_then_title"
+        return jsonify({
+            "success": True, "engine": "local_easyocr", "network_lookup": False,
+            "recognition_mode": recognition_mode, "ocr_passes": 2,
+            "processing_ms": int((time.perf_counter() - started) * 1000),
+            "raw_title": raw_title, "matched_name": best_name,
+            "match_score": best_score, "suggestions": ranked[:5],
+            "metadata_text": footer_text,
+            "detected_set_code": detected.get("set_code") if metadata_verified else None,
+            "detected_collector_number": detected.get("collector_number") if metadata_verified else None,
+            "metadata_verified": metadata_verified,
+            "metadata_conflict": metadata_conflict,
+            "metadata_title_agreement": round(agreement, 3),
+            "metadata_results": metadata_results,
+        })
+    except ImportError as exc:
+        app.logger.exception("Local EasyOCR dependencies unavailable")
+        return jsonify({"success": False, "error": f"Local OCR dependencies are unavailable: {exc}. Browser OCR remains available."}), 503
+    except Exception as exc:
+        app.logger.exception("Mobile local EasyOCR failed")
+        return jsonify({"success": False, "error": f"Local OCR failed: {type(exc).__name__}: {exc}"}), 500
+
+
+@app.get("/api/scanner/mobile/search")
+@login_required
+def api_scanner_mobile_search():
+    """Authenticated local card-printing search for mobile scanning; no outbound API calls."""
+    user = current_user()
+    if not user or (str(user["role"] or "").lower() == "vendor" and not _scanner_user_is_admin(user)):
+        return jsonify({"success": False, "error": "Scanner access denied."}), 403
+    name = str(request.args.get("name") or "").strip()[:120]
+    explicit_set = str(request.args.get("set_code") or "").strip()[:12]
+    explicit_collector = str(request.args.get("collector_number") or "").strip()[:40]
+    metadata_text = str(request.args.get("metadata_text") or "").strip()[:500]
+    detected = _scanner_mobile_parse_footer_metadata(metadata_text)
+    set_code = explicit_set or str(detected.get("set_code") or "")
+    collector_number = explicit_collector or str(detected.get("collector_number") or "")
+    # Metadata-first scanning may leave the name blank intentionally. Only permit
+    # this when both exact printing identifiers were recovered from the footer.
+    metadata_only_query = bool(set_code and collector_number and not name)
+    if len(name) < 2 and not metadata_only_query:
+        return jsonify({"success": False, "error": "Enter at least two characters of the card name, or provide both set code and collector number."}), 400
+    # OCR can prefix a clear title with a stray glyph (e.g. "8 Dedicated Commons").
+    # Keep the original if it matches a real card; only retry after zero local matches.
+    search_name = name
+    try:
+        results = _scanner_mobile_catalog_search(search_name, set_code, collector_number, limit=40)
+        if not search_name and results:
+            distinct_names = list(dict.fromkeys(str(row.get("name") or "") for row in results if row.get("name")))
+            if len(distinct_names) == 1:
+                search_name = distinct_names[0]
+        if not results and re.match(r"^[0-9Il|]\s+(?=[A-Za-z])", search_name):
+            corrected = re.sub(r"^[0-9Il|]\s+", "", search_name, count=1).strip()
+            if len(corrected) >= 2:
+                corrected_results = _scanner_mobile_catalog_search(corrected, set_code, collector_number, limit=40)
+                if corrected_results:
+                    search_name, results = corrected, corrected_results
+                else:
+                    unfiltered = _scanner_mobile_catalog_search(corrected, "", "", limit=40)
+                    if unfiltered:
+                        search_name, results = corrected, unfiltered
+        # Desktop scanner behavior: compare otherwise-unmatched OCR text against the
+        # full local card-name vocabulary using WRatio. Only accept a strong match.
+        if not results:
+            # Never fuzzy-match snippets with too little information; partial-match
+            # scorers can otherwise turn two or three characters into a wrong card.
+            compact_signal = re.sub(r"[^A-Za-z0-9]", "", search_name)
+            signal_tokens = re.sub(r"[^A-Za-z0-9]+", " ", search_name).split()
+            ranked_names = _scanner_mobile_fuzzy_card_names(search_name, limit=5) if len(compact_signal) >= 5 and any(len(t) >= 3 for t in signal_tokens) else []
+            if ranked_names and int(ranked_names[0].get("score") or 0) >= 74:
+                best_score = int(ranked_names[0]["score"])
+                for candidate in ranked_names:
+                    if int(candidate.get("score") or 0) < max(70, best_score - 7):
+                        continue
+                    candidate_results = _scanner_mobile_catalog_search(str(candidate["name"]), set_code, collector_number, limit=40)
+                    if candidate_results:
+                        search_name, results = str(candidate["name"]), candidate_results
+                        break
+        # Exact set+collector is strong local evidence and may recover a name when
+        # browser OCR returns nonsense. Results are shown for confirmation, never auto-saved.
+        if not results and set_code and collector_number and not name:
+            # Metadata-only recovery is allowed only when the client explicitly says
+            # title OCR was unusable. Do not override a different recognized title.
+            metadata_only = _scanner_mobile_catalog_search("", set_code, collector_number, limit=40)
+            if metadata_only:
+                results = metadata_only
+                distinct_names = list(dict.fromkeys(str(row.get("name") or "") for row in results if row.get("name")))
+                if len(distinct_names) == 1:
+                    search_name = distinct_names[0]
+        if not results and (set_code or collector_number):
+            results = _scanner_mobile_catalog_search(search_name, "", "", limit=40)
+    except FileNotFoundError as exc:
+        return jsonify({"success": False, "error": f"{exc} Mobile search will not fall back to Scryfall; restore or refresh the local card catalog."}), 503
+    except RuntimeError as exc:
+        app.logger.warning("Mobile local catalog search failed: %s", exc)
+        return jsonify({"success": False, "error": str(exc)}), 500
+    metadata_confirmed = bool(
+        set_code and collector_number and any(
+            str(row.get("set_code") or row.get("set") or "").strip().lower() == set_code.lower()
+            and _scanner_mobile_normalize_collector_number(str(row.get("collector_number") or ""))
+                == _scanner_mobile_normalize_collector_number(collector_number)
+            for row in results
+        )
+    )
+    return jsonify({
+        "success": True, "source": "local_catalog", "network_lookup": False, "results": results,
+        # Never fill the UI's set filter with an OCR guess unless a matching local
+        # printing corroborates the set+number pair.
+        "detected_set_code": (detected.get("set_code") or set_code) if metadata_confirmed else None,
+        "detected_collector_number": (detected.get("collector_number") or collector_number or None) if metadata_confirmed else None,
+        "matched_name": search_name if search_name != name else None,
+        "ocr_name_corrected": search_name != name,
+        "recognition_mode": "metadata_first" if metadata_only_query else "local_catalog_search",
+    })
+
+
 @app.get("/api/scanner/mobile/price/<scryfall_id>")
 @login_required
 def api_scanner_mobile_price(scryfall_id: str):
     user = current_user()
     if not user or (str(user["role"] or "").lower() == "vendor" and not _scanner_user_is_admin(user)):
         return jsonify({"success": False, "error": "Scanner access denied."}), 403
+    # Mobile scanning uses only local catalog and TCGCSV snapshot data. Do not call
+    # resolve_scryfall_mapping() here: that helper can make a live Scryfall request
+    # when a mapping is missing, which would create network traffic while scanning.
+    sid = str(scryfall_id or "").strip()
     conn = connect_inventory()
     try:
-        mapping = resolve_scryfall_mapping(scryfall_id, conn)
+        ensure_card_mapping_table(conn)
+        cached = conn.execute(
+            "SELECT tcgplayer_id FROM card_price_mapping WHERE scryfall_id=?", (sid,)
+        ).fetchone()
+        tcg_id = _normalize_tcgplayer_id(cached[0]) if cached else None
     finally:
         conn.close()
-    tcg_id = mapping.get("tcgplayer_id")
+    if not tcg_id:
+        tcg_id = _art_db_tcgplayer_id(sid)
     prices = get_tcg_prices().get(str(tcg_id), {"normal": None, "foil": None}) if tcg_id else {"normal": None, "foil": None}
-    return jsonify({"success": True, "scryfall_id": str(scryfall_id), "tcgplayer_id": tcg_id,
+    return jsonify({"success": True, "scryfall_id": sid, "tcgplayer_id": tcg_id,
                     "normal": prices.get("normal"), "foil": prices.get("foil"),
+                    "source": "local_tcgcsv_snapshot",
                     "source_updated": get_price_meta().get("source_updated"),
                     "snapshot_exists": PRICES_FILE.exists()})
 

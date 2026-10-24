@@ -179,3 +179,33 @@ The updated server validates person/account mappings, persists physical location
 **v39.1 mobile scanner update:** Adds controllable hardware zoom where supported and a digital-crop fallback, continuous capture that keeps the camera active between cards, automatic OCR-assisted printing search in continuous mode, and desktop-style queries that support optional collector numbers and set codes.
 
 This is an unofficial community project and is not affiliated with or endorsed by Wizards of the Coast. Magic: The Gathering is a trademark of Wizards of the Coast LLC.
+
+
+### Mobile scanner v39.2
+
+Mobile printing discovery uses the server local `data/mtg_art_hashes.db` catalog and local TCGCSV price snapshot; it does not query the Scryfall search API. Candidate card thumbnails are still loaded from Scryfall image CDN URLs. Ensure the local art/catalog DB is installed and current on the server.
+
+
+### Mobile scanner v39.3
+
+Title OCR now detects the card boundary first and crops the title bar relative to the card, rather than assuming the card fills the viewport. Low-confidence recognition tries a binarized alternate crop; if card-boundary detection fails, it samples several vertically distributed strips. The page reports OCR confidence and detection score to support local camera tuning.
+
+
+### Mobile batch-scanning workflow (v39.8)
+
+When a printing is selected, the mobile scanner shows a fixed **Save & next** action above the Android navigation area. It stays available while you scroll to review results or inventory options. After a successful save in continuous mode, the page clears the selected printing, keeps the camera running, and scrolls the capture preview back into view. Person, location, and finish choices are retained for batch work; quantity returns to 1 and the vending checkbox resets after each save.
+
+
+### Batch scanning vending mode (v39.8.1)
+
+The vending checkbox is a session/batch setting and is preserved after each successful card save. The fixed mobile save dock contains a matching “Mark all cards in this batch for vending” checkbox, so the mode can be changed without scrolling. Turn it off for cards being allocated to decks; turn it on for a bulk/pulled-card batch intended for vending. Quantity still resets to 1 after each successful save. The setting is not persisted across a browser reload, to avoid accidentally carrying a vending batch into a later deck-scanning session.
+
+
+### Mobile v39.9 — diagonal card handling
+
+The mobile OCR estimates in-plane card skew from a small, downscaled edge-orientation histogram. When a diagonal card is detected, it rotates the image onto an expanded canvas before card-boundary detection and OCR. The correction is accepted only when the card-boundary score supports it; straight cards keep the existing fast path. The prediction banner reports the applied correction angle for local tuning.
+
+
+### Mobile scanner v39.11: OCR sanity check
+
+Footer set/collector OCR is corroborated against an independently read title before quick-confirm is offered. A conflicting footer is ignored; unreadable titles keep candidate confirmation manual. See `CHANGES_scanner-mobile_v39.11.md`.
