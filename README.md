@@ -115,7 +115,7 @@ docker compose down
 
 ## Scanner client
 
-The scanner is a separate desktop application in [`scanner-client/`](scanner-client/). It uses a camera feed, image processing, OCR, and the server's dedicated scanner API. It can be set up and run independently of the web container.
+The scanner is a separate desktop application in [`scanner-client/`](scanner-client/). It uses a camera feed, image processing, OCR, and the server's dedicated scanner API. It can be set up and run independently of the web container. From the inventory page, use **Mobile Scanner** to open the phone-camera PWA or **Download Desktop Scanner** to download a Linux source bundle with setup instructions and a sample configuration. The desktop download is source, not a compiled installer; configure your own server URL and scanner API key after downloading.
 
 Start with [`scanner-client/README.md`](scanner-client/README.md) for client dependencies, camera setup, configuration, and troubleshooting.
 
@@ -158,3 +158,22 @@ Do not assume every update is backward-compatible. Review commits and release no
 This project integrates with or relies on services/data from TCGCSV, Scryfall, and Archidekt, and can optionally send notifications to Discord. Availability, formats, terms, and API behavior can change independently of this project. This is an unofficial community project and is not affiliated with or endorsed by Wizards of the Coast, Scryfall, TCGCSV, Archidekt, or Discord.
 
 Magic: The Gathering is a trademark of Wizards of the Coast LLC. Card names, images, and related game data belong to their respective owners.
+
+
+## Mobile scanner v39.3
+
+The mobile scanner searches the local `data/mtg_art_hashes.db` catalog by card name, set code, and collector number. Mobile prices come from the local TCGCSV snapshot. Mobile search and price lookup do not call the Scryfall API. Static printing thumbnails may still be loaded from Scryfall image CDN URLs. Camera capture requests continuous autofocus when supported and chooses the sharpest frame available from a short capture burst. Title OCR detects the card border and crops its title relative to the card, with thresholded and multi-position fallbacks.
+
+
+**v39.3 mobile OCR fix:** Detects the card rectangle before OCR instead of cropping a fixed region at the top of the entire camera frame. Adds confidence-aware thresholded crops and a vertical multi-crop fallback for nonstandard framing. See `scanner-client/CHANGES_scanner-mobile_v39.3.md`.
+
+
+**v39.4 mobile scanner:** reads the card footer for set/collector number from the local card catalog, normalizes leading zeros, corrects a stray leading OCR glyph only when the original title has no local matches, and matches saved captures to live-view native zoom on Android devices where `takePhoto()` returns an unzoomed image. See `scanner-client/CHANGES_scanner-mobile_v39.4.md`.
+
+
+**v39.4:** Mobile capture avoids Android `ImageCapture.takePhoto()` when native zoom is active, because some devices return a full-frame still that ignores live-preview zoom. It also OCRs the card footer for collector number/set-code clues and uses only the local printing catalog to narrow choices. If title OCR adds a stray leading glyph, the local search retries without it only when the full text has no matches. See `scanner-client/CHANGES_scanner-mobile_v39.4.md`.
+
+
+## Mobile scanner v39.11
+
+The scanner now corroborates a local set/collector match with the card title before showing one-tap confirmation. If title and footer disagree, it ignores the footer guess and searches by title; if title OCR is weak, it shows footer candidates for manual review without one-tap confirmation. See `scanner-client/CHANGES_scanner-mobile_v39.11.md`.

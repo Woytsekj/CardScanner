@@ -18,7 +18,10 @@ button, input, select { font: inherit; }
  .topbar { padding:22px 28px 19px; display:flex; align-items:center; justify-content:space-between; gap:20px; border-bottom:1px solid var(--border); background:#141414; position:sticky; top:0; z-index:20; }
 h1 { margin:0 0 5px; font-size:30px; line-height:1.15; }
 .subtle { color:var(--muted); font-size:14px; }
+.external-card-link { color:#8fe4b5; text-decoration:underline; text-underline-offset:2px; }
+.external-card-link:hover { color:#c2f8d9; }
 .actions,.sort-form,.owner-filter,.search-form,.view-toggle,.inline-form { display:flex; align-items:end; gap:8px; }
+.actions { flex-wrap:wrap; }
 .button { display:inline-flex; align-items:center; justify-content:center; min-height:40px; padding:0 15px; border-radius:5px; border:1px solid #2a9d69; background:var(--green); color:#fff; text-decoration:none; font-weight:600; cursor:pointer; }
 .button.secondary { background:var(--panel-2); border-color:#444; color:#eee; }
 main { padding:22px 28px 46px; }
@@ -538,3 +541,170 @@ body[data-vending-mode="select"] .vending-card { cursor: crosshair; }
   .deck-filter-form label { min-width: 100%; }
   .deck-header-main { align-items: flex-start; }
 }
+
+/* Mobile inventory layout: keep the collection list near the top and tuck less-used controls away. */
+.site-nav-menu { position: relative; }
+.site-nav-toggle { display: none; }
+.mobile-summary-menu > summary { display: none; }
+.inventory-options-menu > summary { display: none; }
+.inventory-options-content { display: contents; }
+
+@media (min-width: 901px) {
+  .site-nav-menu { display: contents; }
+  .site-nav-menu > .actions { display: flex; }
+  .mobile-summary-menu { display: contents; }
+  .mobile-summary-menu > .summary-grid { display: grid; }
+  .inventory-options-menu { display: contents; }
+}
+
+@media (max-width: 900px) {
+  .topbar {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+  .topbar > div:first-child { flex: 1 1 auto; min-width: 0; }
+  .topbar h1 { font-size: 19px; line-height: 1.15; margin: 0 0 3px; }
+  .topbar .subtle { font-size: 11px; line-height: 1.25; }
+  .site-nav-menu { flex: 0 0 auto; align-self: center; z-index: 45; }
+  .site-nav-toggle {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    min-height: 40px;
+    padding: 0 11px;
+    border: 1px solid #444;
+    border-radius: 6px;
+    background: var(--panel-2);
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 650;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .site-nav-toggle::-webkit-details-marker { display: none; }
+  .site-nav-menu > .actions,
+  .site-nav-menu:not([open]) > .actions { display: none; }
+  .site-nav-menu[open] > .actions {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    flex-wrap: nowrap;
+    gap: 7px;
+    width: min(290px, calc(100vw - 24px));
+    padding: 10px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    box-shadow: 0 12px 32px rgba(0,0,0,.55);
+  }
+  .site-nav-menu[open] .actions > .button,
+  .site-nav-menu[open] .actions > .inline-form,
+  .site-nav-menu[open] .actions > .inline-form .button { width: 100%; }
+  .site-nav-menu[open] .actions > .inline-form { display: block; }
+
+  main { padding: 9px 10px 34px; }
+  .mobile-summary-menu { display: block; margin: 0 0 7px; }
+  .mobile-summary-menu > summary {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-height: 38px;
+    padding: 7px 11px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--panel);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .mobile-summary-menu > summary::-webkit-details-marker { display: none; }
+  .mobile-summary-menu > summary strong { color: #8fe4b5; font-size: 15px; }
+  .mobile-summary-menu:not([open]) > .summary-grid { display: none; }
+  .mobile-summary-menu[open] > .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    margin: 7px 0;
+  }
+  .mobile-summary-menu .summary-card { min-height: 0; padding: 8px 9px; }
+  .mobile-summary-menu .summary-card span { font-size: 11px; margin-bottom: 3px; }
+  .mobile-summary-menu .summary-card strong { font-size: 17px; }
+  .mobile-summary-menu .summary-card small { font-size: 10px; margin-top: 3px; }
+
+  #inventoryToolbar {
+    display: flex;
+    grid-template-columns: none;
+    align-items: stretch;
+    gap: 0;
+    padding: 7px;
+    margin-bottom: 7px;
+  }
+  #inventoryToolbar > .search-form { flex-wrap: nowrap; align-items: center; gap: 6px; }
+  #inventoryToolbar > .search-form .inventory-search-box { flex: 1 1 auto; min-width: 0; }
+  #inventoryToolbar > .search-form input[type="search"] { min-width: 0; width: 100%; height: 42px; font-size: 14px; padding: 0 9px; }
+  #inventoryToolbar > .search-form > .button { min-height: 42px; padding: 0 10px; }
+  #inventoryToolbar > .search-form > a.button { padding: 0 8px; }
+
+  .inventory-options-menu {
+    display: block;
+    margin: 0 0 9px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    overflow: visible;
+  }
+  .inventory-options-menu > summary {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-height: 40px;
+    padding: 8px 11px;
+    color: var(--text);
+    font-weight: 650;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .inventory-options-menu > summary::-webkit-details-marker { display: none; }
+  .inventory-options-menu > summary > span:first-child { font-size: 18px; line-height: 1; color: #8fe4b5; }
+  .inventory-options-content { display: none; }
+  .inventory-options-menu[open] > .inventory-options-content {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 0 9px 10px;
+  }
+  .toolbar-controls { display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding-top: 0 !important; }
+  .toolbar-controls > form,
+  .toolbar-controls > .quick-sort-actions,
+  .toolbar-controls > .view-toggle,
+  .toolbar-controls > .interaction-mode-toggle { width: 100%; }
+  .toolbar-controls > form { flex-direction: column; align-items: stretch; gap: 8px; }
+  .toolbar-controls > form label,
+  .filter-bar label { width: 100%; }
+  .toolbar-controls > form select,
+  .filter-bar select { width: 100%; min-width: 0; }
+  .toolbar-controls .quick-sort-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .toolbar-controls .quick-sort-actions .button { min-height: 38px; padding: 0 7px; font-size: 12px; }
+  .toolbar-controls .view-toggle { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-left: 0; }
+  .toolbar-controls .interaction-mode-toggle { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0 0; border-left: 0; border-top: 1px solid var(--border); }
+  .toolbar-controls .interaction-mode-toggle .mode-button { flex: 1 1 30%; padding: 0 8px; }
+  .filter-bar { margin: 0; padding: 9px; }
+  .filter-bar form { display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+  .filter-bar .filter-note { min-width: 0; width: 100%; margin: 2px 0 0; font-size: 12px; }
+  .meta-row { padding: 7px 2px 2px; gap: 5px 10px; font-size: 11px; }
+  .meta-row .hint { width: 100%; margin-left: 0; }
+}
+
+/* The inventory toolbar now contains the always-visible search row only. */
+#inventoryToolbar { display: flex; grid-template-columns: none; align-items: stretch; }
+#inventoryToolbar > .search-form { width: 100%; min-width: 0; }

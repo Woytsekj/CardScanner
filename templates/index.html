@@ -14,7 +14,11 @@
       <h1>MTG Scanner Inventory</h1>
       <div class="subtle">{{ result_count }} matching rows · {{ total_cards }} total cards</div>
     </div>
-    <div class="actions">
+    <details class="site-nav-menu" id="siteNavMenu">
+      <summary class="site-nav-toggle" aria-label="Open site navigation"><span aria-hidden="true">☰</span><span>Menu</span></summary>
+      <nav class="actions" id="siteNavActions" aria-label="Site navigation">
+      <a class="button" href="{{ url_for('scanner_mobile_index') }}" title="Scan cards with your phone camera">Mobile Scanner</a>
+      <a class="button secondary" href="{{ url_for('scanner_desktop_download') }}" title="Download the Linux desktop scanner source bundle">Download Desktop Scanner</a>
       <a class="button secondary" href="{{ url_for('decks_page') }}">Decks</a>
       <a class="button secondary" href="{{ url_for('vending_view') }}">Vending</a>
       <a class="button secondary" href="{{ url_for('export_csv') }}">Export CSV</a>
@@ -26,10 +30,13 @@
       {% else %}
       <a class="button" href="{{ url_for('login') }}">Admin Login</a>
       {% endif %}
-    </div>
+      </nav>
+    </details>
   </header>
 
   <main>
+    <details class="mobile-summary-menu" id="collectionSummary">
+      <summary><span>Collection totals</span><strong>${{ '%.2f'|format(grand_total) }}</strong></summary>
     <section class="summary-grid">
       <div class="summary-card">
         <span>Total collection value</span>
@@ -55,6 +62,7 @@
       </div>
       {% endfor %}
     </section>
+    </details>
 
     <section class="toolbar" id="inventoryToolbar">
       <form class="search-form" method="get" action="{{ url_for('index') }}" id="inventorySearchForm">
@@ -76,7 +84,11 @@
         <a class="button secondary" href="{{ url_for('index', sort=sort_key, dir=direction, view=view) }}">Clear</a>
         {% endif %}
       </form>
+    </section>
 
+    <details class="inventory-options-menu" id="inventoryOptions">
+      <summary><span aria-hidden="true">☰</span><span>Filters, sort &amp; display</span></summary>
+      <div class="inventory-options-content">
       <div class="toolbar-controls">
         <form class="sort-form" method="get" action="{{ url_for('index') }}">
           <input type="hidden" name="q" value="{{ search }}">
@@ -135,7 +147,6 @@
         </div>
         {% endif %}
       </div>
-    </section>
 
     <section class="filter-bar">
       <form method="get" action="{{ url_for('index') }}">
@@ -163,6 +174,8 @@
       {% if scanner_api_enabled %}<span class="api-live">Scanner API: ready</span>{% else %}<span class="api-warning">Scanner API: not configured</span>{% endif %}
       <span class="hint">Finish is stored separately, so normal and foil quantities no longer get mixed together.</span>
     </section>
+      </div>
+    </details>
 
     {% if admin_user %}
     <section class="bulk-edit-bar" id="bulkEditBar">
@@ -218,7 +231,7 @@
             <div><small>Row</small><strong>${{ '%.2f'|format(item.calculated_total_value) }}</strong></div>
           </div>
           <div class="tile-controls">
-            {% if item.tcgplayer_id %}<button class="button secondary price-history-button" data-tcg="{{ item.tcgplayer_id }}" data-name="{{ item.name|e }}" data-finish="{{ item.finish }}">Price History</button>{% endif %}
+            {% if item.tcgplayer_id %}<a class="button secondary tcgplayer-button" href="https://www.tcgplayer.com/product/{{ item.tcgplayer_id|urlencode }}" target="_blank" rel="noopener noreferrer" title="Open this printing on TCGplayer">TCGplayer ↗</a><button class="button secondary price-history-button" data-tcg="{{ item.tcgplayer_id }}" data-name="{{ item.name|e }}" data-finish="{{ item.finish }}">Price History</button>{% endif %}
             {% if item.scryfall_id %}<button class="button secondary oracle-button" data-scryfall="{{ item.scryfall_id }}" data-name="{{ item.name|e }}" data-image="{{ item.image_url or '' }}">Oracle / Image</button>{% endif %}
             {% if admin_user %}
             <button class="button secondary counts-button edit-only-control" data-scryfall="{{ item.scryfall_id }}" data-owner="{{ item.owner|e }}" data-name="{{ item.name|e }}" data-normal="{{ item.owner_normal_qty }}" data-foil="{{ item.owner_foil_qty }}">Edit counts</button>
@@ -261,7 +274,7 @@
                   {% if item.image_url %}<img src="{{ item.image_url }}" class="thumb oracle-image-trigger" alt="" data-scryfall="{{ item.scryfall_id or '' }}" data-name="{{ item.name|e }}" loading="lazy" onerror="imageFailed(this)">{% else %}<div class="thumb placeholder-thumb">—</div>{% endif %}
                   <div>
                     <div class="card-title">{{ item.name }}</div>
-                    {% if item.tcgplayer_id %}<div class="subtle">TCGplayer #{{ item.tcgplayer_id }}</div>{% endif %}
+                    {% if item.tcgplayer_id %}<div class="subtle"><a class="external-card-link" href="https://www.tcgplayer.com/product/{{ item.tcgplayer_id|urlencode }}" target="_blank" rel="noopener noreferrer">TCGplayer #{{ item.tcgplayer_id }} ↗</a></div>{% endif %}
                   </div>
                 </div>
               </td>

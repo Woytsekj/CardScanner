@@ -89,6 +89,7 @@
         </div>
         <input type="hidden" name="scryfall_id" form="{{ form_id }}" value="{{ card.scryfall_id or '' }}">
         <input type="hidden" name="tcgplayer_id" form="{{ form_id }}" value="{{ card.tcgplayer_id or '' }}">
+        {% if card.tcgplayer_id %}<div class="subtle"><a class="external-card-link" href="https://www.tcgplayer.com/product/{{ card.tcgplayer_id|urlencode }}" target="_blank" rel="noopener noreferrer">Open on TCGplayer ↗</a></div>{% endif %}
       </td>
       <td><input class="small-number" type="number" name="quantity" form="{{ form_id }}" min="1" value="{{ card.quantity }}"></td>
       <td><input class="small-text" name="set_code" form="{{ form_id }}" value="{{ card.set_code or '' }}" maxlength="20"></td>
@@ -112,7 +113,7 @@
     <table><thead><tr><th>Card</th><th>Category</th><th>Role tags</th><th>Finish</th><th>Required</th><th>Assigned</th><th>Unassigned available</th><th>Missing</th><th>Set</th><th>Collector #</th><th></th></tr></thead><tbody>
     {% for item in comparison %}
       <tr class="{% if item.missing %}needs-row{% else %}have-row{% endif %}">
-        <td class="name-cell"><div class="name-with-thumb">{% if item.image_url %}<img src="{{ item.image_url }}" class="thumb" alt="" loading="lazy">{% else %}<div class="thumb placeholder-thumb">—</div>{% endif %}<div><div class="card-title">{{ item.name }}</div>{% if item.tcgplayer_id %}<div class="subtle">TCGplayer #{{ item.tcgplayer_id }}</div>{% endif %}</div></div></td>
+        <td class="name-cell"><div class="name-with-thumb">{% if item.image_url %}<img src="{{ item.image_url }}" class="thumb" alt="" loading="lazy">{% else %}<div class="thumb placeholder-thumb">—</div>{% endif %}<div><div class="card-title">{{ item.name }}</div>{% if item.tcgplayer_id %}<div class="subtle"><a class="external-card-link" href="https://www.tcgplayer.com/product/{{ item.tcgplayer_id|urlencode }}" target="_blank" rel="noopener noreferrer">TCGplayer #{{ item.tcgplayer_id }} ↗</a></div>{% endif %}</div></div></td>
         <td>{{ item.category }}</td><td><div class="deck-tag-list">{% for tag in item.role_tags %}<span class="deck-tag">{{ tag }}</span>{% endfor %}</div></td><td><span class="finish-pill {{ item.finish }}">{{ item.finish|capitalize }}</span></td><td>{{ item.required }}</td><td>{{ item.assigned }}</td><td>{{ item.free_available }}</td><td><strong>{{ item.missing }}</strong></td><td>{{ item.set_code or '—' }}</td><td>{{ item.collector_number or '—' }}</td>
         <td>{% if item.missing %}<span class="badge deck-buy-badge">BUY</span>{% else %}<span class="badge deck-have-badge">HAVE</span>{% endif %}</td>
       </tr>
