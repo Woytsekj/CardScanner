@@ -899,5 +899,21 @@ document.getElementById('importForm').addEventListener('submit', async (event) =
   setTimeout(() => window.location.reload(), 700);
 });
 </script>
+<script>
+(() => {
+  // Native <details> remains collapsed even when CSS uses display: contents.
+  // On desktop, keep these sections expanded so navigation, totals, sorting,
+  // filters, and view controls remain visible. On mobile, retain dropdowns.
+  const desktopLayout = window.matchMedia('(min-width: 901px)');
+  const detailsMenus = ['siteNavMenu', 'collectionSummary', 'inventoryOptions']
+    .map(id => document.getElementById(id))
+    .filter(Boolean);
+  const syncDetailsForViewport = () => {
+    for (const menu of detailsMenus) menu.open = desktopLayout.matches;
+  };
+  syncDetailsForViewport();
+  desktopLayout.addEventListener('change', syncDetailsForViewport);
+})();
+</script>
 </body>
 </html>

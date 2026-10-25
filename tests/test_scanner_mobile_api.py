@@ -571,6 +571,8 @@ class ScannerMobileApiTests(unittest.TestCase):
         self.assertIn('id="collectionSummary"', html)
         self.assertIn('id="inventoryOptions"', html)
         self.assertIn('Filters, sort &amp; display', html)
+        self.assertIn("window.matchMedia('(min-width: 901px)')", html)
+        self.assertIn('for (const menu of detailsMenus) menu.open = desktopLayout.matches;', html)
         options_start = html.index('id="inventoryOptions"')
         options_tag_start = html.rfind("<details", 0, options_start)
         options_tag_end = html.index(">", options_start) + 1
