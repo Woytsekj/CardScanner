@@ -740,13 +740,26 @@
     return await apiFetch(API.recognize, {method:'POST', body});
   }
 
+  function titleTextLooksNoisy(value) {
+    const text=String(value ?? '').trim();
+    if(!text) return false;
+    const words=text.match(/[\p{L}\p{N}]+/gu)||[];
+    if(words.length>=12 || text.length>=86) return true;
+    const shortWords=words.filter(word=>word.length<=2).length;
+    const longerWords=words.filter(word=>word.length>=4).length;
+    // Card titles can contain short words, but many tiny tokens plus several
+    // unrelated long tokens is a reliable sign that OCR included artwork noise.
+    return (words.length>=7 && shortWords>=4 && shortWords/words.length>=0.35)
+      || (words.length>=8 && longerWords<=2 && shortWords>=3);
+  }
   function ocrQuality(candidate) {
     const text=String(candidate?.text||'').trim();
     if(!text) return -1;
     const chars=(text.match(/[\p{L}\p{N}]/gu)||[]).length;
     const words=text.split(/\s+/).filter(Boolean);
     const alphaRatio=chars/Math.max(1,text.length);
-    return (Number(candidate.confidence)||0) + Math.min(words.length,4)*2 + (alphaRatio>.72?8:-12) - (words.length>6?8:0);
+    const noisePenalty=titleTextLooksNoisy(text)?35:0;
+    return (Number(candidate.confidence)||0) + Math.min(words.length,4)*2 + (alphaRatio>.72?8:-12) - (words.length>6?8:0) - noisePenalty;
   }
 
   function normalizeCardNameEvidence(value) {
@@ -772,6 +785,7 @@
     return Math.max(edit, overlap*.82);
   }
   function titleEvidenceIsStrong(text, quality, localScore=0) {
+    if(titleTextLooksNoisy(text)) return false;
     const normalized=normalizeCardNameEvidence(text);
     const compact=normalized.replace(/\s/g,'');
     const words=normalized.split(/\s+/).filter(Boolean);
@@ -832,7 +846,8 @@
         let guess=String(title.text||'').trim();
         let localOCR=null;
         let localScore=0;
-        if(card && (!guess || title.confidence<24 || ocrQuality(title)<30)) {
+        let localFragmentSuggestion=false;
+        if(card && (!guess || title.confidence<24 || ocrQuality(title)<30 || titleTextLooksNoisy(guess))) {
           try { localOCR=await recognizeCardOnServer(bitmap,card); }
           catch(serverOcrError) { console.debug('Local EasyOCR fallback unavailable:',serverOcrError); }
           if(localOCR?.metadata_conflict) {
@@ -846,10 +861,16 @@
           if(localOCR?.matched_name && Number(localOCR.match_score)>=78) {
             guess=String(localOCR.matched_name).trim();
             localScore=Number(localOCR.match_score)||0;
+          } else if(localOCR?.fragment_suggestion && Number(localOCR.fragment_score)>=95 && titleTextLooksNoisy(guess)) {
+            // A clean card name found inside noisy OCR is useful for searching,
+            // but is not independent proof of identity: force manual printing choice.
+            guess=String(localOCR.fragment_suggestion).trim();
+            localFragmentSuggestion=true;
+            localScore=0;
           } else if(!guess && localOCR?.raw_title) guess=String(localOCR.raw_title).trim();
         }
 
-        const usableTitle=titleEvidenceIsStrong(guess,ocrQuality(title),localScore);
+        const usableTitle=!localFragmentSuggestion && titleEvidenceIsStrong(guess,ocrQuality(title),localScore);
         const corroboratingMatches=footerMatches.filter(card=>card?.name && cardNameAgreementScore(guess,card.name)>=.62);
         const metadataSupported=corroboratingMatches.length>0;
         const footerConflict=footerMatches.length>0 && usableTitle && !metadataSupported;
@@ -882,6 +903,11 @@
         let message;
         if(footerConflict) {
           message=`${sourceHint} · ${totalMs} ms. Footer metadata disagreed with the readable title, so it was ignored. Search is title-first for this card.`;
+        } else if(localFragmentSuggestion && metadataSupported) {
+          const hit=corroboratingMatches[0];
+          message=`Partial title recovery found ${hit.name} and the footer points to ${String(hit.set||hit.set_code||'').toUpperCase()} #${hit.collector_number||'?'}. Review the printing manually; quick-confirm is disabled. ${totalMs} ms.`;
+        } else if(localFragmentSuggestion) {
+          message=`Recovered “${guess}” from a fragment of noisy title OCR. Review the printing manually; quick-confirm is disabled. ${totalMs} ms.`;
         } else if(metadataSupported) {
           const hit=corroboratingMatches[0];
           message=`Title and footer agree on ${hit.name} · ${String(hit.set||hit.set_code||'').toUpperCase()} #${hit.collector_number||'?'}. ${totalMs} ms.`;
@@ -903,7 +929,7 @@
           if(useUnconfirmedFooter) {
             await findPrintings(state.metadataText,{name:'',allowMetadataOnly:true,allowQuickConfirm:false});
           } else if(guess.length>=2) {
-            await findPrintings(state.metadataText,{name:guess,allowQuickConfirm:usableTitle || metadataSupported});
+            await findPrintings(state.metadataText,{name:guess,allowQuickConfirm:!localFragmentSuggestion && (usableTitle || metadataSupported)});
           } else if(state.metadataText) {
             await findPrintings(state.metadataText,{name:'',allowMetadataOnly:true,allowQuickConfirm:false});
           }

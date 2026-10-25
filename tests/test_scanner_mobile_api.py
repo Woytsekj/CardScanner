@@ -461,6 +461,65 @@ class ScannerMobileApiTests(unittest.TestCase):
         self.assertEqual(data["detected_collector_number"], "175")
         self.assertEqual([row["scryfall_id"] for row in data["results"]], ["sid-soulbreaker"])
 
+    def test_mobile_fuzzy_title_recovery_can_find_a_clear_name_inside_noisy_ocr(self):
+        with patch.object(app_module, "_scanner_mobile_cached_card_names", return_value=["Mountain", "Sol Ring", "Screeching Soulbreaker"]):
+            ranked = app_module._scanner_mobile_fuzzy_card_names(
+                "f RL pamm ll - Mountain y p - go EET TP SOY I Er os aa oo g gg ge oy 1 ' p - ite 8 HL 9 Zi al RY",
+                limit=5,
+            )
+        self.assertTrue(ranked)
+        self.assertEqual(ranked[0]["name"], "Mountain")
+        self.assertTrue(ranked[0]["fragment_match"])
+        self.assertTrue(ranked[0]["exact_fragment"])
+
+    def test_mobile_recognize_offers_noisy_title_fragment_without_auto_match(self):
+        from PIL import Image
+        art_path = Path(self.temp.name) / "mtg_art_hashes.db"
+        app_module.DB_ART = art_path
+        art = sqlite3.connect(art_path)
+        art.execute("""CREATE TABLE card_art (
+            scryfall_id TEXT PRIMARY KEY, name TEXT, set_code TEXT, set_name TEXT,
+            rarity TEXT, tcgplayer_id TEXT, collector_number TEXT, phash TEXT
+        )""")
+        art.executemany(
+            "INSERT INTO card_art(scryfall_id,name,set_code,set_name,rarity,tcgplayer_id,collector_number,phash) VALUES(?,?,?,?,?,?,?,?)",
+            [
+                ("sid-mountain", "Mountain", "m21", "Core Set 2021", "basic", "1001", "277", "a"),
+                ("sid-sol-ring", "Sol Ring", "c21", "Commander 2021", "uncommon", "1002", "267", "b"),
+            ],
+        )
+        art.commit(); art.close()
+        app_module._SCANNER_MOBILE_NAMES_CACHE_KEY = None
+        app_module._SCANNER_MOBILE_NAMES_CACHE = []
+
+        noisy_title = "f RL pamm ll - Mountain y p - go EET TP SOY I Er os aa oo g gg ge oy 1 ' p - ite 8 HL 9 Zi al RY"
+
+        class FakeReader:
+            def __init__(self): self.calls = 0
+            def readtext(self, _image, detail=0, paragraph=False):
+                self.calls += 1
+                return [] if self.calls == 1 else [noisy_title]
+
+        image_bytes = io.BytesIO()
+        Image.new("RGB", (400, 560), "white").save(image_bytes, format="PNG")
+        image_bytes.seek(0)
+        reader = FakeReader()
+        with patch.object(app_module, "_scanner_mobile_get_easyocr_reader", return_value=reader):
+            response = self.client.post(
+                "/api/scanner/mobile/recognize",
+                data={"card_image": (image_bytes, "card.png")},
+                headers=self.csrf_headers(),
+                content_type="multipart/form-data",
+                base_url="http://localhost",
+            )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        data = response.get_json()
+        self.assertIsNone(data["matched_name"], "Noisy OCR fragments must not independently verify a card title")
+        self.assertEqual(data["fragment_suggestion"], "Mountain")
+        self.assertEqual(data["fragment_score"], 100)
+        self.assertFalse(data["metadata_verified"])
+        self.assertEqual(reader.calls, 2)
+
     def test_mobile_local_easyocr_endpoint_uses_local_catalog_and_metadata(self):
         from PIL import Image
         art_path = Path(self.temp.name) / "mtg_art_hashes.db"
@@ -528,6 +587,9 @@ class ScannerMobileApiTests(unittest.TestCase):
         self.assertIn("function recognizeCardMetadata(bitmap, rect)", html)
         self.assertIn("function getOcrWorker()", html)
         self.assertIn("function recognizeCardOnServer(bitmap, rect)", html)
+        self.assertIn("function titleTextLooksNoisy(value)", html)
+        self.assertIn("titleTextLooksNoisy(guess)", html)
+        self.assertIn("localOCR?.fragment_suggestion", html)
         self.assertIn("/api/scanner/mobile/recognize", html)
         self.assertIn("const nativeZoomActive = state.hardwareZoom && state.zoom > 1.05", html)
         self.assertIn("metadata_text", html)
@@ -593,6 +655,60 @@ class ScannerMobileApiTests(unittest.TestCase):
         legacy_tag_start = legacy_html.rfind("<details", 0, legacy_options_start)
         legacy_tag_end = legacy_html.index(">", legacy_options_start) + 1
         self.assertNotIn(" open", legacy_html[legacy_tag_start:legacy_tag_end])
+
+    def test_inventory_page_is_paginated_and_does_not_embed_full_autocomplete_index(self):
+        conn = self.connect()
+        conn.executemany(
+            "INSERT INTO inventory(scryfall_id,name,set_code,rarity,price,owner,quantity,finish,location) VALUES(?,?,?,?,?,?,?,?,?)",
+            [(f"perf-sid-{i:03d}", f"Performance Card {i:03d}", "TST", "common", f"{i / 100:.2f}", "Me", 1, "normal", "Free") for i in range(105)],
+        )
+        conn.commit(); conn.close()
+        first = self.client.get("/?view=list&sort=name&dir=asc", base_url="http://localhost")
+        self.assertEqual(first.status_code, 200, first.get_data(as_text=True)[:1000])
+        html = first.get_data(as_text=True)
+        self.assertIn("105 matching rows", html)
+        self.assertIn("inventory-pagination", html)
+        self.assertIn("Page 1 of 2", html)
+        self.assertIn("Performance Card 000", html)
+        self.assertNotIn("Performance Card 104", html)
+        self.assertNotIn("const inventorySearchIndex =", html)
+        second = self.client.get("/?view=list&sort=name&dir=asc&page=2", base_url="http://localhost")
+        self.assertEqual(second.status_code, 200, second.get_data(as_text=True)[:1000])
+        second_html = second.get_data(as_text=True)
+        self.assertIn("Performance Card 104", second_html)
+        self.assertNotIn("Performance Card 000", second_html)
+
+        # Price sorts must also paginate in SQL; otherwise they used to load and
+        # enrich every row before sorting just to show the first 100.
+        price_first = self.client.get("/?view=list&sort=price&dir=desc", base_url="http://localhost")
+        self.assertEqual(price_first.status_code, 200, price_first.get_data(as_text=True)[:1000])
+        price_first_html = price_first.get_data(as_text=True)
+        self.assertIn("Performance Card 104", price_first_html)
+        self.assertNotIn("Performance Card 000", price_first_html)
+        self.assertIn("Page 1 of 2", price_first_html)
+        price_second = self.client.get("/?view=list&sort=price&dir=desc&page=2", base_url="http://localhost")
+        self.assertEqual(price_second.status_code, 200, price_second.get_data(as_text=True)[:1000])
+        price_second_html = price_second.get_data(as_text=True)
+        self.assertIn("Performance Card 000", price_second_html)
+        self.assertNotIn("Performance Card 104", price_second_html)
+
+    def test_search_suggest_is_authenticated_and_can_scope_to_owner(self):
+        self.add_member()
+        conn = self.connect()
+        conn.execute("INSERT INTO inventory(scryfall_id,name,set_code,rarity,price,owner,quantity,finish) VALUES(?,?,?,?,?,?,?,?)",
+                     ("sid-suggest-me", "Mountain", "M21", "basic", "0.10", "Me", 2, "normal"))
+        conn.execute("INSERT INTO inventory(scryfall_id,name,set_code,rarity,price,owner,quantity,finish) VALUES(?,?,?,?,?,?,?,?)",
+                     ("sid-suggest-friend", "Mountain", "M20", "basic", "0.10", "Friend", 3, "normal"))
+        conn.commit(); conn.close()
+        guest = app_module.app.test_client()
+        unauthenticated = guest.get("/search_suggest?q=Mountain", base_url="http://localhost")
+        # The endpoint uses the same admin permission as the inventory page.
+        self.assertIn(unauthenticated.status_code, (302, 401, 403))
+        scoped = self.client.get("/search_suggest?q=Mountain&owner=Me", base_url="http://localhost")
+        self.assertEqual(scoped.status_code, 200, scoped.get_data(as_text=True))
+        results = scoped.get_json()["results"]
+        self.assertTrue(results)
+        self.assertTrue(all(row["quantity"] == 2 and row["set_code"] == "M21" for row in results))
 
     def test_inventory_card_has_direct_tcgplayer_product_link(self):
         conn = self.connect()

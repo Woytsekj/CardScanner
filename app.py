@@ -1129,16 +1129,12 @@ def parse_scryfall_search(search: str) -> tuple[list[str], list[Any], str | None
     return where, args, order_override, direction_override
 
 
-def inventory_rows(search: str, owner_filter: str, finish_filter: str, sort_key: str, direction: str, type_filter: str = "", color_filter: str = "", location_filter: str = "", vending_filter: str = ""):
-    prices = get_tcg_prices()
-    conn = connect_inventory()
-    join_sql = attach_art_join(conn)
-
+def _inventory_filter_parts(
+    search: str, owner_filter: str, finish_filter: str,
+    type_filter: str = "", color_filter: str = "", location_filter: str = "", vending_filter: str = "",
+) -> tuple[list[str], list[Any], str | None, str | None]:
+    """Build the common safe WHERE clauses for inventory rows and summary queries."""
     where, args, query_order, query_direction = parse_scryfall_search(search)
-    if query_order:
-        sort_key = query_order
-    if query_direction:
-        direction = query_direction
     if owner_filter:
         where.append("IFNULL(i.owner, 'Me') = ?")
         args.append(owner_filter)
@@ -1162,12 +1158,112 @@ def inventory_rows(search: str, owner_filter: str, finish_filter: str, sort_key:
         where.append("COALESCE(i.for_vending,0) = 1")
     elif vending_filter == "no":
         where.append("COALESCE(i.for_vending,0) = 0")
+    return where, args, query_order, query_direction
+
+
+def inventory_summary(
+    search: str, owner_filter: str, finish_filter: str, sort_key: str, direction: str,
+    type_filter: str = "", color_filter: str = "", location_filter: str = "", vending_filter: str = "",
+):
+    """Calculate totals using a lightweight query without materializing card metadata/aliases."""
+    prices = get_tcg_prices()
+    conn = connect_inventory()
+    join_sql = attach_art_join(conn)
+    where, args, _, _ = _inventory_filter_parts(
+        search, owner_filter, finish_filter, type_filter, color_filter, location_filter, vending_filter
+    )
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+    owner_expr = "IFNULL(i.owner, 'Me')"
+    finish_expr = "IFNULL(NULLIF(i.finish, ''), 'normal')"
+    quantity_expr = "CASE WHEN i.quantity IS NULL OR CAST(i.quantity AS INTEGER) < 1 THEN 1 ELSE CAST(i.quantity AS INTEGER) END"
+    tcg_id_expr = "COALESCE(NULLIF(TRIM(i.tcgplayer_id), ''), NULLIF(TRIM(a.tcgplayer_id), ''), NULLIF(TRIM(m.tcgplayer_id), ''))"
+    try:
+        # Inventory rows are often split by storage location or scan session even
+        # when they share the same price identity. Aggregate compatible rows in SQL
+        # before computing collection totals, but retain the number of physical rows
+        # separately for the pagination count.
+        rows = conn.execute(
+            f"""SELECT i.scryfall_id, {owner_expr} AS owner, {finish_expr} AS finish,
+                       SUM({quantity_expr}) AS quantity, COUNT(*) AS row_count,
+                       i.price AS scanned_price, {tcg_id_expr} AS tcgplayer_id
+                FROM inventory i
+                {join_sql}
+                LEFT JOIN card_metadata cm ON cm.scryfall_id = i.scryfall_id
+                {where_sql}
+                GROUP BY i.scryfall_id, {owner_expr}, {finish_expr}, i.price, {tcg_id_expr}""",
+            args,
+        ).fetchall()
+    finally:
+        conn.close()
+
+    owner_totals: dict[str, float] = {}
+    owner_counts: dict[str, dict[str, int]] = {}
+    owner_row_counts: dict[str, int] = {}
+    finish_totals = {"normal": 0, "foil": 0}
+    grand_total = 0.0
+    for row in rows:
+        item = dict(row)
+        finish = normalize_finish(item.get("finish"))
+        quantity = parse_qty(item.get("quantity"))
+        _, _, unit_value = card_value(item, prices)
+        row_value = unit_value * quantity
+        owner = str(item.get("owner") or "Me")
+        owner_totals[owner] = owner_totals.get(owner, 0.0) + row_value
+        owner_counts.setdefault(owner, {"normal": 0, "foil": 0})[finish] += quantity
+        owner_row_counts[owner] = owner_row_counts.get(owner, 0) + int(item.get("row_count") or 0)
+        finish_totals[finish] += quantity
+        grand_total += row_value
+    row_count = sum(owner_row_counts.values())
+    return owner_totals, owner_counts, grand_total, finish_totals, row_count, owner_row_counts
+
+
+def inventory_rows(
+    search: str, owner_filter: str, finish_filter: str, sort_key: str, direction: str,
+    type_filter: str = "", color_filter: str = "", location_filter: str = "", vending_filter: str = "",
+    limit: int | None = None, offset: int = 0,
+):
+    prices = get_tcg_prices()
+    conn = connect_inventory()
+    join_sql = attach_art_join(conn)
+
+    where, args, query_order, query_direction = _inventory_filter_parts(
+        search, owner_filter, finish_filter, type_filter, color_filter, location_filter, vending_filter
+    )
+    if query_order:
+        sort_key = query_order
+    if query_direction:
+        direction = query_direction
     where_sql = "WHERE " + " AND ".join(where) if where else ""
 
     sort_key = sort_key if sort_key in SORTS else "date"
     direction_sql = "ASC" if direction == "asc" else "DESC"
     price_sort = sort_key in {"normal", "foil", "price", "value"}
+    price_sort_join = ""
     sql_sort = SORTS[sort_key] if not price_sort else "i.scan_time"
+    if limit is not None and price_sort:
+        # Current market prices live in a cached JSON snapshot rather than a SQL
+        # table. Load that compact map into a temporary table so price/value sorts
+        # can also LIMIT in SQL instead of enriching and sorting the entire library.
+        conn.execute("CREATE TEMP TABLE inventory_price_sort (tcgplayer_id TEXT PRIMARY KEY, normal_price REAL, foil_price REAL)")
+        conn.executemany(
+            "INSERT INTO inventory_price_sort(tcgplayer_id, normal_price, foil_price) VALUES(?,?,?)",
+            [(str(pid), to_float(values.get("normal")) if values.get("normal") is not None else None,
+              to_float(values.get("foil")) if values.get("foil") is not None else None)
+             for pid, values in prices.items() if str(pid).strip()],
+        )
+        joined_tcg_id = "COALESCE(NULLIF(TRIM(i.tcgplayer_id), ''), NULLIF(TRIM(a.tcgplayer_id), ''), NULLIF(TRIM(m.tcgplayer_id), ''))"
+        price_sort_join = f"LEFT JOIN inventory_price_sort ips ON ips.tcgplayer_id = {joined_tcg_id}"
+        finish_expr = "IFNULL(NULLIF(i.finish, ''), 'normal')"
+        quantity_expr = "CASE WHEN i.quantity IS NULL OR CAST(i.quantity AS INTEGER) < 1 THEN 1 ELSE CAST(i.quantity AS INTEGER) END"
+        unit_price_expr = f"CASE WHEN {finish_expr} = 'foil' THEN COALESCE(ips.foil_price, CAST(i.price AS REAL), 0) ELSE COALESCE(ips.normal_price, CAST(i.price AS REAL), 0) END"
+        if sort_key == "normal":
+            sql_sort = "COALESCE(ips.normal_price, 0)"
+        elif sort_key == "foil":
+            sql_sort = "COALESCE(ips.foil_price, 0)"
+        elif sort_key == "price":
+            sql_sort = unit_price_expr
+        else:  # value = current/fallback unit price multiplied by the stored quantity
+            sql_sort = f"({unit_price_expr}) * ({quantity_expr})"
     if sort_key == "set":
         order_sql = (
             f"COALESCE(i.set_code, '') COLLATE NOCASE {direction_sql}, "
@@ -1177,6 +1273,7 @@ def inventory_rows(search: str, owner_filter: str, finish_filter: str, sort_key:
     else:
         order_sql = f"{sql_sort} {direction_sql}"
 
+    page_limit_in_sql = limit is not None
     query = f"""
         SELECT i.id, i.scryfall_id, i.name, i.set_code, i.rarity,
                i.price AS scanned_price, i.scan_time,
@@ -1194,21 +1291,50 @@ def inventory_rows(search: str, owner_filter: str, finish_filter: str, sort_key:
                COALESCE((SELECT GROUP_CONCAT(ca.alias, ' · ') FROM card_aliases ca WHERE ca.scryfall_id = i.scryfall_id), '') AS alternate_names
         FROM inventory i
         {join_sql}
+        {price_sort_join}
         LEFT JOIN card_metadata cm ON cm.scryfall_id = i.scryfall_id
         {where_sql}
         ORDER BY {order_sql}, i.id ASC
     """
-    rows = conn.execute(query, args).fetchall()
+    query_args = list(args)
+    safe_limit = max(1, int(limit)) if limit is not None else None
+    safe_offset = max(0, int(offset))
+    if page_limit_in_sql:
+        query += " LIMIT ? OFFSET ?"
+        query_args.extend([safe_limit, safe_offset])
+    rows = conn.execute(query, query_args).fetchall()
 
-    all_count_rows = conn.execute(
-        """
-        SELECT scryfall_id, IFNULL(owner, 'Me') owner,
-               IFNULL(NULLIF(finish, ''), 'normal') finish,
-               SUM(IFNULL(quantity,1)) qty
-        FROM inventory
-        GROUP BY scryfall_id, owner, finish
-        """
-    ).fetchall()
+    # Count Normal/Foil copies only for the cards on this page. The old page path
+    # grouped the entire inventory on every query, even when rendering 50–100 rows.
+    page_sids = sorted({str(row["scryfall_id"]).strip() for row in rows if row["scryfall_id"]})
+    if page_limit_in_sql:
+        page_has_null_sid = any(not row["scryfall_id"] for row in rows)
+        count_predicates = []
+        count_args: list[Any] = []
+        if page_sids:
+            marks = ",".join("?" for _ in page_sids)
+            count_predicates.append(f"scryfall_id IN ({marks})")
+            count_args.extend(page_sids)
+        if page_has_null_sid:
+            count_predicates.append("scryfall_id IS NULL")
+        if count_predicates:
+            all_count_rows = conn.execute(
+                f"""SELECT scryfall_id, IFNULL(owner, 'Me') owner,
+                           IFNULL(NULLIF(finish, ''), 'normal') finish,
+                           SUM(IFNULL(quantity,1)) qty
+                    FROM inventory WHERE {' OR '.join(count_predicates)}
+                    GROUP BY scryfall_id, owner, finish""",
+                count_args,
+            ).fetchall()
+        else:
+            all_count_rows = []
+    else:
+        all_count_rows = conn.execute(
+            """SELECT scryfall_id, IFNULL(owner, 'Me') owner,
+                      IFNULL(NULLIF(finish, ''), 'normal') finish,
+                      SUM(IFNULL(quantity,1)) qty
+               FROM inventory GROUP BY scryfall_id, owner, finish"""
+        ).fetchall()
     conn.close()
 
     owner_finish: dict[tuple[str, str], dict[str, int]] = {}
@@ -1262,7 +1388,7 @@ def inventory_rows(search: str, owner_filter: str, finish_filter: str, sort_key:
         grand_total += item["calculated_total_value"]
         inventory.append(item)
 
-    if sort_key in {"normal", "foil", "price", "value"}:
+    if sort_key in {"normal", "foil", "price", "value"} and not page_limit_in_sql:
         key_name = {"normal": "curr_normal", "foil": "curr_foil", "price": "calculated_unit_price", "value": "calculated_total_value"}[sort_key]
         inventory.sort(key=lambda x: to_float(x.get(key_name)), reverse=(direction_sql == "DESC"))
 
@@ -1635,9 +1761,11 @@ def catalog_suggest():
 
 
 @app.get("/search_suggest")
+@admin_required
 def search_suggest():
-    """Autocomplete suggestions from cards in inventory, including alternate names."""
+    """Small, owner-scoped autocomplete endpoint; the main page no longer embeds the full index."""
     q = str(request.args.get("q") or "").strip()[:80]
+    owner = str(request.args.get("owner") or "").strip()
     if len(q) < 2:
         return jsonify({"success": True, "results": []})
 
@@ -1645,6 +1773,10 @@ def search_suggest():
     prefix = _prefix_pattern(q)
     conn = connect_inventory()
     join_sql = attach_art_join(conn)
+    owner_sql = " AND IFNULL(i.owner, 'Me') = ? COLLATE NOCASE" if owner else ""
+    params = [contains, prefix, prefix, prefix, prefix, prefix, contains, contains, contains, contains]
+    if owner:
+        params.append(owner)
     try:
         rows = conn.execute(
             f"""SELECT i.scryfall_id, i.name, i.set_code,
@@ -1656,19 +1788,21 @@ def search_suggest():
                         WHEN i.name LIKE ? COLLATE NOCASE THEN 0
                         WHEN EXISTS (SELECT 1 FROM card_aliases ca2 WHERE ca2.scryfall_id=i.scryfall_id AND ca2.alias LIKE ? COLLATE NOCASE) THEN 1
                         WHEN COALESCE(i.collector_number, a.collector_number) LIKE ? COLLATE NOCASE THEN 2
-                        ELSE 3
+                        WHEN COALESCE(i.set_code, '') LIKE ? COLLATE NOCASE THEN 3
+                        ELSE 4
                       END AS match_rank
                FROM inventory i
                {join_sql}
-               WHERE i.name LIKE ? COLLATE NOCASE
+               WHERE (i.name LIKE ? COLLATE NOCASE
                   OR COALESCE(i.collector_number, a.collector_number) LIKE ? COLLATE NOCASE
-                  OR EXISTS (SELECT 1 FROM card_aliases ca3 WHERE ca3.scryfall_id=i.scryfall_id AND ca3.alias LIKE ? COLLATE NOCASE)
+                  OR COALESCE(i.set_code, '') LIKE ? COLLATE NOCASE
+                  OR EXISTS (SELECT 1 FROM card_aliases ca3 WHERE ca3.scryfall_id=i.scryfall_id AND ca3.alias LIKE ? COLLATE NOCASE)){owner_sql}
                GROUP BY i.scryfall_id, i.name, i.set_code,
                         COALESCE(i.collector_number, a.collector_number)
                ORDER BY match_rank, i.name COLLATE NOCASE, i.set_code COLLATE NOCASE,
                         COALESCE(i.collector_number, a.collector_number) COLLATE NOCASE
                LIMIT 12""",
-            (contains, prefix, prefix, prefix, prefix, contains, contains, contains),
+            params,
         ).fetchall()
     finally:
         conn.close()
@@ -1677,10 +1811,8 @@ def search_suggest():
         "success": True,
         "results": [
             {
-                "scryfall_id": row["scryfall_id"],
-                "name": row["name"],
-                "set_code": row["set_code"],
-                "collector_number": row["collector_number"],
+                "scryfall_id": row["scryfall_id"], "name": row["name"],
+                "set_code": row["set_code"], "collector_number": row["collector_number"],
                 "quantity": int(row["total_quantity"] or 0),
                 "alternate_names": row["alternate_names"] or "",
                 "matched_alias": row["matched_alias"],
@@ -2210,16 +2342,45 @@ def index():
     if view not in {"list", "grid"}:
         view = "list"
 
-    inventory, visible_owner_totals, visible_owner_counts, visible_total, visible_finish_totals, result_count = inventory_rows(
-        search, owner_filter, finish_filter, sort_key, direction, type_filter, color_filter, location_filter, vending_filter
+    page_size = 100
+    try:
+        page = max(1, int(request.args.get("page", "1")))
+    except (TypeError, ValueError):
+        page = 1
+
+    only_owner_scope = bool(owner_filter) and not (
+        search or finish_filter or type_filter or color_filter or location_filter or vending_filter
     )
-    if not (search or owner_filter or finish_filter or type_filter or color_filter or location_filter or vending_filter):
-        # Nothing is filtered, so the result above already IS the full inventory.
-        all_inventory, owner_totals, owner_counts, grand_total, global_finish_totals = (
-            inventory, visible_owner_totals, visible_owner_counts, visible_total, visible_finish_totals
+    if only_owner_scope:
+        # The common default view is a linked person's collection. One grouped
+        # full-inventory summary gives both global totals and that person's visible
+        # total/row count, avoiding two full summary passes on every page request.
+        owner_totals, owner_counts, grand_total, global_finish_totals, _, owner_row_counts = inventory_summary(
+            "", "", "", sort_key, direction
         )
+        selected_owner_counts = owner_counts.get(owner_filter, {"normal": 0, "foil": 0})
+        visible_total = owner_totals.get(owner_filter, 0.0)
+        visible_owner_totals = {owner_filter: visible_total}
+        visible_owner_counts = {owner_filter: selected_owner_counts}
+        visible_finish_totals = dict(selected_owner_counts)
+        result_count = owner_row_counts.get(owner_filter, 0)
     else:
-        all_inventory, owner_totals, owner_counts, grand_total, global_finish_totals, _ = inventory_rows("", "", "", "date", "desc")
+        visible_owner_totals, visible_owner_counts, visible_total, visible_finish_totals, result_count, _ = inventory_summary(
+            search, owner_filter, finish_filter, sort_key, direction, type_filter, color_filter, location_filter, vending_filter
+        )
+        if not (search or owner_filter or finish_filter or type_filter or color_filter or location_filter or vending_filter):
+            owner_totals, owner_counts, grand_total, global_finish_totals = (
+                visible_owner_totals, visible_owner_counts, visible_total, visible_finish_totals
+            )
+        else:
+            owner_totals, owner_counts, grand_total, global_finish_totals, _, _ = inventory_summary("", "", "", "date", "desc")
+
+    page_count = max(1, (result_count + page_size - 1) // page_size)
+    page = min(page, page_count)
+    inventory, *_ = inventory_rows(
+        search, owner_filter, finish_filter, sort_key, direction, type_filter, color_filter, location_filter, vending_filter,
+        limit=page_size, offset=(page - 1) * page_size,
+    )
 
     conn = connect_inventory()
     owners = active_people(conn)
@@ -2230,12 +2391,6 @@ def index():
     if "Free" not in locations:
         locations.insert(0, "Free")
     conn.close()
-    # Keep client-side autocomplete scoped to the selected/default owner.
-    # all_inventory is intentionally unfiltered for collection-wide summary
-    # totals, but using it for autocomplete exposes other owners' card names
-    # even when a linked account defaults to its own collection.
-    autocomplete_rows, *_ = inventory_rows("", owner_filter, "", "date", "desc")
-    inventory_search_index = build_inventory_search_index(autocomplete_rows)
 
     return render_template(
         "index.html",
@@ -2263,6 +2418,9 @@ def index():
         direction=direction,
         view=view,
         result_count=result_count,
+        page=page,
+        page_size=page_size,
+        page_count=page_count,
         total_rows=total_rows,
         total_cards=total_cards,
         price_meta=get_price_meta(),
@@ -2270,7 +2428,6 @@ def index():
         scanner_api_enabled=bool(SCANNER_API_KEY),
         admin_user=current_admin(),
         admin_is_superadmin=is_superadmin_user(current_user()),
-        inventory_search_index=inventory_search_index,
     )
 
 
@@ -3115,14 +3272,30 @@ def _scanner_mobile_name_agreement_score(left: str, right: str) -> float:
     return max(sequence, token_overlap * 0.82)
 
 
-def _scanner_mobile_fuzzy_card_names(ocr_text: str, limit: int = 5) -> list[dict[str, Any]]:
-    """Rank OCR text against the same local card-name catalog used by desktop OCR."""
+def _scanner_mobile_title_looks_noisy(ocr_text: str) -> bool:
+    """Detect long title-crop transcripts dominated by fragments and unrelated glyphs."""
     raw = re.sub(r"\s+", " ", str(ocr_text or "")).strip()
+    if not raw:
+        return False
+    tokens = re.findall(r"[A-Za-z0-9]+", raw)
+    if len(tokens) >= 12 or len(raw) >= 86:
+        return True
+    short_tokens = sum(len(token) <= 2 for token in tokens)
+    longer_tokens = sum(len(token) >= 4 for token in tokens)
+    return (len(tokens) >= 7 and short_tokens >= 4 and short_tokens / max(1, len(tokens)) >= 0.35) or (
+        len(tokens) >= 8 and longer_tokens <= 2 and short_tokens >= 3
+    )
+
+
+def _scanner_mobile_fuzzy_card_names(ocr_text: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Rank noisy OCR as a whole and recover exact card-name fragments cheaply.
+
+    An exact fragment is useful for finding printing candidates, but callers must
+    never treat it as independent title proof or use it for one-tap confirmation.
+    """
+    raw = re.sub(r"\s+", " ", str(ocr_text or "")).strip()[:300]
     if len(raw) < 3:
         return []
-    # WRatio can give very short, low-information OCR strings surprisingly high
-    # partial-match scores (e.g. "a p" can match "Cardassia Prime"). Only use
-    # fuzzy recovery when there is enough signal to distinguish a real card name.
     tokens = re.sub(r"[^A-Za-z0-9]+", " ", raw).split()
     compact = re.sub(r"[^A-Za-z0-9]", "", raw)
     if len(compact) < 5 or not any(len(token) >= 3 for token in tokens):
@@ -3131,19 +3304,106 @@ def _scanner_mobile_fuzzy_card_names(ocr_text: str, limit: int = 5) -> list[dict
     if not names:
         return []
     limit = max(1, min(int(limit), 8))
-    if process is not None and fuzz is not None:
-        choices = process.extract(raw, names, scorer=fuzz.WRatio, limit=limit)
-        return [{"name": str(name), "score": int(score)} for name, score, *_ in choices]
-    # Conservative standard-library fallback for minimal dev images where thefuzz
-    # has not been installed yet. Normal app installs use the desktop WRatio scorer.
-    from difflib import SequenceMatcher
     norm = lambda value: re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
-    needle = norm(raw)
-    ranked = sorted(
-        ((name, int(100 * SequenceMatcher(None, needle, norm(name)).ratio())) for name in names),
-        key=lambda pair: pair[1], reverse=True,
+
+    # On very noisy output, first look for a clean, contiguous card-name fragment.
+    # This dictionary pass is linear once and avoids 30k+ fuzzy comparisons per scan.
+    fragments: list[str] = []
+    exact_fragments: dict[str, dict[str, Any]] = {}
+    needs_fragments = len(tokens) > 4 or len(compact) > 28
+    if needs_fragments:
+        by_normalized_name: dict[str, str] = {}
+        for name in names:
+            by_normalized_name.setdefault(norm(name), str(name))
+        seen: set[str] = {norm(raw)}
+        examined = 0
+        for window in (1, 2, 3, 4):
+            for start_index in range(len(tokens)):
+                phrase_tokens = tokens[start_index:start_index + window]
+                if len(phrase_tokens) != window:
+                    continue
+                if window == 1 and len(phrase_tokens[0]) < 6:
+                    continue
+                if window > 1 and sum(len(token) >= 3 for token in phrase_tokens) < 2:
+                    continue
+                phrase = " ".join(phrase_tokens)
+                normalized_phrase = norm(phrase)
+                if len(normalized_phrase.replace(" ", "")) < 5 or normalized_phrase in seen:
+                    continue
+                seen.add(normalized_phrase)
+                fragments.append(phrase)
+                exact_name = by_normalized_name.get(normalized_phrase)
+                if exact_name:
+                    key = exact_name.casefold()
+                    candidate = {
+                        "name": exact_name, "score": 100, "fragment_match": True,
+                        "exact_fragment": True, "fragment_length": len(normalized_phrase),
+                    }
+                    current = exact_fragments.get(key)
+                    if current is None or candidate["fragment_length"] > current["fragment_length"]:
+                        exact_fragments[key] = candidate
+                examined += 1
+                if examined >= 48:
+                    break
+            if examined >= 48:
+                break
+
+    if exact_fragments and _scanner_mobile_title_looks_noisy(raw):
+        # The browser/EasyOCR text contains enough unrelated tokens that a fuzzy
+        # partial-ratio match against the entire line is not reliable. Return the
+        # clean fragment(s) as candidates for manual printing selection instead.
+        return sorted(
+            exact_fragments.values(),
+            key=lambda item: (-int(item["fragment_length"]), item["name"].casefold()),
+        )[:limit]
+
+    # Use the fuzzy scorer for the entire crop once. Repeating catalogue-wide fuzzy
+    # searches for every fragment made the CPU fallback unnecessarily expensive.
+    if process is not None and fuzz is not None:
+        whole_choices = process.extract(raw, names, scorer=fuzz.WRatio, limit=max(limit, 8))
+    else:
+        from difflib import SequenceMatcher
+        needle = norm(raw)
+        whole_choices = [(name, int(100 * SequenceMatcher(None, needle, norm(name)).ratio()), None)
+                         for name in names]
+        whole_choices.sort(key=lambda item: item[1], reverse=True)
+        whole_choices = whole_choices[:max(limit, 8)]
+
+    ranked_by_name: dict[str, dict[str, Any]] = {}
+    for choice in whole_choices:
+        name, score = str(choice[0]), int(choice[1])
+        ranked_by_name[name.casefold()] = {
+            "name": name, "score": score, "fragment_match": False,
+            "exact_fragment": False, "fragment_length": 0,
+        }
+    for key, candidate in exact_fragments.items():
+        current = ranked_by_name.get(key)
+        if current is None or int(candidate["score"]) > int(current["score"]) or (
+            int(candidate["score"]) == int(current["score"]) and int(candidate["fragment_length"]) > int(current.get("fragment_length") or 0)
+        ):
+            ranked_by_name[key] = candidate
+
+    if not exact_fragments and fragments and process is not None and fuzz is not None:
+        # If there was no exact sequence, try only a few longer fragments for OCR
+        # typos; never perform dozens of full-catalogue fuzzy scans on one image.
+        near_fragments = sorted(set(fragments), key=lambda value: (len(value.split()), len(value)), reverse=True)[:8]
+        for phrase in near_fragments:
+            choices = process.extract(phrase, names, scorer=fuzz.WRatio, limit=max(limit, 8))
+            for choice in choices:
+                name, score = str(choice[0]), int(choice[1])
+                key = name.casefold()
+                candidate = {
+                    "name": name, "score": score, "fragment_match": True,
+                    "exact_fragment": False, "fragment_length": len(norm(phrase)),
+                }
+                current = ranked_by_name.get(key)
+                if current is None or score > int(current["score"]):
+                    ranked_by_name[key] = candidate
+
+    return sorted(
+        ranked_by_name.values(),
+        key=lambda item: (-int(item.get("score") or 0), -int(item.get("fragment_length") or 0), item["name"].casefold()),
     )[:limit]
-    return [{"name": str(name), "score": score} for name, score in ranked]
 
 
 def _scanner_mobile_get_easyocr_reader():
@@ -3322,7 +3582,15 @@ def api_scanner_mobile_recognize():
         ranked = _scanner_mobile_fuzzy_card_names(raw_title, limit=5) if raw_title else []
         top = ranked[0] if ranked else {"name": None, "score": 0}
         title_score = int(top.get("score") or 0)
-        title_name = top.get("name") if title_score >= 70 else None
+        # A clean full-crop match is stronger evidence than finding a name-shaped
+        # fragment among unrelated OCR noise. Exact fragment matches can help the
+        # client search the catalog, but never independently verify a printing.
+        title_name = top.get("name") if (
+            title_score >= 70 and not top.get("fragment_match") and not _scanner_mobile_title_looks_noisy(raw_title)
+        ) else None
+        fragment_candidate = next((candidate for candidate in ranked
+                                   if candidate.get("fragment_match") and candidate.get("exact_fragment")
+                                   and int(candidate.get("score") or 0) >= 95), None)
         metadata_name = names[0] if len(metadata_results) == 1 and len(names) == 1 else None
         agreement = _scanner_mobile_name_agreement_score(raw_title, metadata_name or "") if metadata_name and raw_title else 0.0
         metadata_verified = bool(metadata_name and title_name and agreement >= 0.62)
@@ -3342,7 +3610,10 @@ def api_scanner_mobile_recognize():
             "recognition_mode": recognition_mode, "ocr_passes": 2,
             "processing_ms": int((time.perf_counter() - started) * 1000),
             "raw_title": raw_title, "matched_name": best_name,
-            "match_score": best_score, "suggestions": ranked[:5],
+            "match_score": best_score,
+            "fragment_suggestion": fragment_candidate.get("name") if fragment_candidate else None,
+            "fragment_score": int(fragment_candidate.get("score") or 0) if fragment_candidate else 0,
+            "suggestions": ranked[:5],
             "metadata_text": footer_text,
             "detected_set_code": detected.get("set_code") if metadata_verified else None,
             "detected_collector_number": detected.get("collector_number") if metadata_verified else None,
