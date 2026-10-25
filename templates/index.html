@@ -180,7 +180,7 @@
     {% if admin_user %}
     <section class="bulk-edit-bar" id="bulkEditBar">
       <div class="bulk-selection-row">
-        <label class="check-row"><input type="checkbox" id="selectAllInventory"> Select all {{ result_count }} matching rows</label>
+        <label class="check-row"><input type="checkbox" id="selectAllInventory"> Select all rows on this page</label>
         <span><strong id="bulkSelectedCount">0</strong> selected</span>
         <button type="button" class="button secondary" id="clearInventorySelection">Clear selection</button>
       </div>
@@ -193,6 +193,18 @@
       </div>
       <div class="status" id="bulkEditStatus" role="status" aria-live="polite"></div>
     </section>
+    {% endif %}
+
+    {% if page_count > 1 %}
+    <nav class="inventory-pagination" aria-label="Inventory pages">
+      {% if page > 1 %}
+      <a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view=view, page=page-1) }}">← Previous</a>
+      {% else %}<span class="button secondary disabled" aria-disabled="true">← Previous</span>{% endif %}
+      <span>Page {{ page }} of {{ page_count }} · Rows {{ (page - 1) * page_size + 1 }}–{{ [page * page_size, result_count]|min }} of {{ result_count }}</span>
+      {% if page < page_count %}
+      <a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view=view, page=page+1) }}">Next →</a>
+      {% else %}<span class="button secondary disabled" aria-disabled="true">Next →</span>{% endif %}
+    </nav>
     {% endif %}
 
     {% if view == 'grid' %}
@@ -260,7 +272,7 @@
         <table>
           <thead>
             <tr>
-              <th class="selection-column">{% if admin_user %}<input type="checkbox" id="selectAllInventoryTable" aria-label="Select all matching rows">{% endif %}</th>
+              <th class="selection-column">{% if admin_user %}<input type="checkbox" id="selectAllInventoryTable" aria-label="Select all rows on this page">{% endif %}</th>
               <th>Card</th><th>Collector #</th><th>Set</th><th>Rarity</th><th>Finish</th><th>Owner</th><th>Qty</th><th>Storage location</th><th>Deck assignment</th><th>Vending</th>
               <th>Card Count</th><th>Scanned</th><th>Current (Norm)</th><th>Current (Foil)</th><th>Total Value</th><th>Scan Date</th><th></th>
             </tr>
@@ -581,10 +593,14 @@ document.getElementById('countsForm').addEventListener('submit', async (event) =
 const inventorySearchInput = document.getElementById('inventorySearchInput');
 const inventorySearchSuggestions = document.getElementById('inventorySearchSuggestions');
 const inventorySearchForm = document.getElementById('inventorySearchForm');
-const inventorySearchIndex = {{ inventory_search_index|tojson }};
+const inventorySearchSuggestUrl = {{ url_for('search_suggest')|tojson }};
+const inventorySearchOwner = {{ selected_owner|tojson }};
 let inventorySuggestionCards = [];
 let inventorySuggestionIndex = -1;
 let inventorySuggestionVisible = false;
+let inventorySuggestTimer = null;
+let inventorySuggestController = null;
+let inventorySuggestRequest = 0;
 
 function escInventory(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -642,14 +658,30 @@ function renderInventorySuggestions(items) {
 }
 function fetchInventorySuggestions() {
   const term = inventorySearchInput.value.trim();
+  if (inventorySuggestTimer) clearTimeout(inventorySuggestTimer);
+  inventorySuggestController?.abort();
   if (term.length < 2 || /(?:^|\s)-?[a-z][a-z0-9_]*(?::|>=|<=|=|>|<)/i.test(term)) { hideInventorySuggestions(); return; }
-  const results = [];
-  for (const card of inventorySearchIndex) {
-    const scored = scoreInventorySuggestion(card, term);
-    if (scored) results.push({...card, _rank: scored.rank, _len: scored.len, matchedAlias: scored.matchedAlias});
-  }
-  results.sort((a,b) => a._rank-b._rank || a._len-b._len || String(a.name).localeCompare(String(b.name), undefined, {sensitivity:'base'}) || String(a.set_code).localeCompare(String(b.set_code), undefined, {sensitivity:'base'}));
-  renderInventorySuggestions(results.slice(0, 12));
+  const requestId = ++inventorySuggestRequest;
+  inventorySuggestTimer = setTimeout(async () => {
+    const controller = new AbortController();
+    inventorySuggestController = controller;
+    try {
+      const params = new URLSearchParams({q:term, owner:inventorySearchOwner || ''});
+      const response = await fetch(`${inventorySearchSuggestUrl}?${params}`, {credentials:'same-origin', headers:{'Accept':'application/json'}, signal:controller.signal});
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.success || requestId !== inventorySuggestRequest) return;
+      const results = (Array.isArray(data.results) ? data.results : []).map(card => {
+        const aliases = String(card.alternate_names || '').split(' · ').map(v => v.trim()).filter(Boolean);
+        const normalized = {...card, alternate_names:aliases, matchedAlias:card.matched_alias || ''};
+        const score = scoreInventorySuggestion(normalized, term);
+        return score ? {...normalized, _rank:score.rank, _len:score.len, matchedAlias:normalized.matchedAlias || score.matchedAlias} : null;
+      }).filter(Boolean);
+      results.sort((a,b) => a._rank-b._rank || a._len-b._len || String(a.name).localeCompare(String(b.name), undefined, {sensitivity:'base'}) || String(a.set_code).localeCompare(String(b.set_code), undefined, {sensitivity:'base'}));
+      renderInventorySuggestions(results.slice(0,12));
+    } catch (error) {
+      if (error?.name !== 'AbortError') hideInventorySuggestions();
+    }
+  }, 120);
 }
 function highlightInventorySuggestion(index) {
   const buttons = [...inventorySearchSuggestions.querySelectorAll('.autocomplete-item')];

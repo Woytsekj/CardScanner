@@ -708,3 +708,16 @@ body[data-vending-mode="select"] .vending-card { cursor: crosshair; }
 /* The inventory toolbar now contains the always-visible search row only. */
 #inventoryToolbar { display: flex; grid-template-columns: none; align-items: stretch; }
 #inventoryToolbar > .search-form { width: 100%; min-width: 0; }
+
+
+/* Server-side inventory pagination keeps large collections responsive. */
+.inventory-pagination {
+  display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:10px;
+  margin:12px 0 16px; padding:10px; border:1px solid var(--border); border-radius:12px;
+  background:var(--panel); color:var(--muted); font-size:13px;
+}
+.inventory-pagination .disabled { opacity:.45; pointer-events:none; }
+@media (max-width:600px) {
+  .inventory-pagination { gap:7px; font-size:12px; }
+  .inventory-pagination > span:not(.button) { flex:1 1 100%; text-align:center; order:-1; }
+}
