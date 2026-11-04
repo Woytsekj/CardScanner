@@ -212,13 +212,6 @@ dialog input[type=file] { width:100%; margin:14px 0; }
 .quick-sort-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
 .section-heading { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; padding:14px 16px 0; }
 .section-heading h2 { margin:0 0 4px; }
-.deck-editor-panel { margin-top:16px; padding:0 0 16px; overflow:hidden; }
-.deck-editor-table input, .deck-editor-table select { width:100%; box-sizing:border-box; }
-.deck-editor-table .small-number { min-width:70px; }
-.deck-editor-table .small-text { min-width:95px; }
-.deck-editor-table .name-with-thumb { min-width:240px; }
-.deck-editor-table .name-with-thumb input { min-width:175px; }
-.deck-editor-table .row-actions { white-space:nowrap; }
 .commander-row { box-shadow: inset 3px 0 0 #8d67e8; }
 @media (max-width:1200px){ .quick-sort-actions { grid-column:1/-1; } }
 .deck-add-form { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:14px 16px; background:#181818; border-top:1px solid #333; border-bottom:1px solid #333; }
@@ -721,3 +714,368 @@ body[data-vending-mode="select"] .vending-card { cursor: crosshair; }
   .inventory-pagination { gap:7px; font-size:12px; }
   .inventory-pagination > span:not(.button) { flex:1 1 100%; text-align:center; order:-1; }
 }
+
+/* Deck view: put the deck comparison first and keep admin tools out of the way. */
+.deck-view-page {
+  width: min(100%, 1900px);
+  margin: 0 auto;
+  padding: 18px 22px 48px;
+}
+.deck-view-page > .summary-grid { margin-bottom: 12px; }
+.deck-view-page .summary-card { min-height: 74px; padding: 10px 13px; }
+.deck-view-page .summary-card span { font-size: 12px; margin-bottom: 3px; }
+.deck-view-page .summary-card strong { font-size: 23px; }
+.deck-price-overview {
+  margin: 0 0 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+}
+.deck-price-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 11px;
+}
+.deck-price-heading h2 { margin: 0 0 3px; font-size: 19px; }
+.deck-price-heading .subtle { font-size: 12px; }
+.deck-price-updated { text-align: right; }
+.deck-price-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 9px;
+}
+.deck-price-card {
+  min-width: 0;
+  min-height: 92px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 11px 13px;
+  border: 1px solid #3c3c3c;
+  border-radius: 7px;
+  background: #202020;
+}
+.deck-price-card > span { color: #aaa; font-size: 12px; }
+.deck-price-card > strong { font-size: clamp(20px, 2vw, 27px); line-height: 1.1; font-variant-numeric: tabular-nums; }
+.deck-price-card > small { color: #999; font-size: 11px; line-height: 1.3; }
+.deck-price-low { border-color: #76632d; }
+.deck-price-low > strong { color: #f1d47a; }
+.deck-price-owned { border-color: #286548; }
+.deck-price-owned > strong { color: #73d4a2; }
+.deck-price-missing { border-color: #754343; }
+.deck-price-missing > strong { color: #ff9696; }
+.deck-price-note { margin: 10px 1px 0; color: #999; font-size: 11px; line-height: 1.4; }
+.deck-view-page .deck-owner-bar { margin-bottom: 12px; }
+.deck-view-page .table-card { margin-top: 0; }
+.deck-view-page .table-wrap { max-height: none; }
+.deck-view-page .table-card table { min-width: 1320px; }
+.deck-admin-accordion {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel);
+}
+.deck-admin-accordion > summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 10px 15px;
+  cursor: pointer;
+  list-style: none;
+  background: #202020;
+}
+.deck-admin-accordion > summary::-webkit-details-marker { display: none; }
+.deck-admin-accordion > summary::after {
+  content: "+";
+  margin-left: auto;
+  color: #aaa;
+  font-size: 22px;
+  line-height: 1;
+}
+.deck-admin-accordion[open] > summary::after { content: "−"; }
+.deck-admin-accordion > summary:hover { background: #252525; }
+.deck-accordion-title { color: var(--text); font-size: 15px; font-weight: 750; }
+.deck-accordion-hint { color: var(--muted); font-size: 12px; }
+.deck-admin-accordion .deck-settings-content { padding: 12px; }
+.deck-admin-accordion .deck-settings-grid { margin: 0; }
+.deck-admin-accordion .deck-settings-grid .admin-panel { padding: 18px; }
+@media (max-width: 1100px) {
+  .deck-price-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 700px) {
+  .deck-view-page { padding: 12px 10px 32px; }
+  .deck-price-overview { padding: 11px; }
+  .deck-price-heading { flex-direction: column; gap: 4px; }
+  .deck-price-updated { text-align: left; }
+  .deck-price-grid { grid-template-columns: 1fr 1fr; gap: 7px; }
+  .deck-price-card { min-height: 82px; padding: 9px; }
+  .deck-price-card > strong { font-size: 20px; }
+  .deck-admin-accordion > summary { align-items: flex-start; flex-direction: column; gap: 3px; padding-right: 38px; position: relative; }
+  .deck-admin-accordion > summary::after { position: absolute; right: 14px; top: 12px; }
+}
+@media (max-width: 420px) {
+  .deck-price-grid { grid-template-columns: 1fr; }
+}
+
+/* Inline deck editing: one visible decklist, with per-card editing in a dialog. */
+.deck-row-edit-trigger {
+  display: inline-flex;
+  align-items: center;
+  min-height: 25px;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border: 1px solid #4b4b4b;
+  border-radius: 5px;
+  background: #292929;
+  color: #d6d6d6;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.deck-row-edit-trigger:hover { border-color: var(--green); color: #fff; }
+.deck-add-accordion .deck-add-form {
+  margin: 0;
+  border: 0;
+  border-top: 1px solid #333;
+  background: transparent;
+}
+.deck-card-edit-dialog {
+  width: min(720px, calc(100vw - 28px));
+  max-width: calc(100vw - 28px);
+  padding: 22px;
+}
+.deck-card-edit-dialog h2 { margin: 0 0 16px; font-size: 21px; }
+.deck-card-edit-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.deck-card-edit-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.deck-card-edit-form input,
+.deck-card-edit-form select {
+  width: 100%;
+  min-width: 0;
+  height: 42px;
+  margin: 0;
+  padding: 0 10px;
+  border: 1px solid #444;
+  border-radius: 5px;
+  background: #2a2a2a;
+  color: #eee;
+}
+.deck-card-edit-form .deck-edit-name,
+.deck-card-edit-form .deck-edit-tags,
+.deck-card-edit-form .deck-edit-actions,
+.deck-card-edit-form .check-row { grid-column: 1 / -1; }
+.deck-card-edit-form .check-row { flex-direction: row; align-items: center; gap: 9px; color: var(--text); }
+.deck-card-edit-form .check-row input[type="checkbox"] { width: 18px; height: 18px; flex: 0 0 auto; }
+.deck-basic-land-help { flex: 1 1 100%; grid-column: 1 / -1; margin: 0; font-size: 12px; }
+.deck-edit-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 5px; }
+.deck-delete-form {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 14px;
+  padding-top: 13px;
+  border-top: 1px solid #383838;
+}
+@media (max-width: 520px) {
+  .deck-card-edit-dialog { padding: 16px; }
+  .deck-card-edit-form { grid-template-columns: 1fr 1fr; gap: 9px; }
+  .deck-card-edit-form .deck-edit-name,
+  .deck-card-edit-form .deck-edit-tags,
+  .deck-card-edit-form .deck-edit-actions,
+  .deck-card-edit-form .check-row { grid-column: 1 / -1; }
+}
+
+/* v39.12 deck allocation search and source-priority legend. */
+.deck-settings-accordion { margin: 0 0 14px; }
+.deck-owner-summary { display: flex; flex-direction: column; gap: 3px; min-width: 220px; }
+.deck-owner-summary strong { color: #eee; font-size: 14px; }
+.deck-source-tools { margin: 0 0 10px; padding: 13px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+.deck-source-heading { display: flex; align-items: end; justify-content: space-between; gap: 14px; }
+.deck-source-heading h2 { margin: 0 0 3px; font-size: 19px; }
+.deck-source-heading p { margin: 0; }
+.deck-card-search { width: min(440px, 100%); }
+.deck-card-search input { width: 100%; min-height: 40px; padding: 0 11px; border: 1px solid #444; border-radius: 5px; color: var(--text); background: #2a2a2a; }
+.deck-source-legend { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+.deck-state { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border: 1px solid #444; border-radius: 5px; color: #ddd; font-size: 12px; }
+.deck-state i { display: block; width: 9px; height: 9px; border-radius: 50%; }
+.deck-state.current i { background: #28b878; }
+.deck-state.free i { background: #f0c643; }
+.deck-state.other-deck i { background: #439de5; }
+.deck-state.other-owner i { background: #ad79e7; }
+.deck-state.missing i { background: #e45b5b; }
+.deck-allocation-table .table-wrap { overflow-x: auto; }
+.deck-allocation-table table { min-width: 1500px; }
+.deck-allocation-row.status-current > td:first-child { box-shadow: inset 4px 0 #28b878; }
+.deck-allocation-row.status-free > td:first-child { box-shadow: inset 4px 0 #f0c643; }
+.deck-allocation-row.status-other-deck > td:first-child { box-shadow: inset 4px 0 #439de5; }
+.deck-allocation-row.status-other-owner > td:first-child { box-shadow: inset 4px 0 #ad79e7; }
+.deck-allocation-row.status-missing > td:first-child { box-shadow: inset 4px 0 #e45b5b; }
+.deck-missing-count { color: #ff8585; }
+.deck-sources-cell { min-width: 490px; white-space: normal; }
+.deck-source-list { display: grid; gap: 6px; min-width: 440px; }
+.deck-source-row { display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 7px 9px; border: 1px solid #404040; border-left-width: 4px; border-radius: 5px; background: #202020; }
+.deck-source-row.source-current { border-left-color: #28b878; }
+.deck-source-row.source-free { border-left-color: #f0c643; }
+.deck-source-row.source-other-deck { border-left-color: #439de5; }
+.deck-source-row.source-other-owner { border-left-color: #ad79e7; }
+.deck-source-row.source-missing { border-left-color: #e45b5b; }
+.deck-source-copy { display: grid; gap: 2px; min-width: 0; }
+.deck-source-copy > strong { font-size: 13px; }
+.deck-source-badge { width: fit-content; padding: 2px 6px; border-radius: 4px; background: #333; color: #eee; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .02em; }
+.source-current .deck-source-badge { background: #174d36; color: #a4f0c7; }
+.source-free .deck-source-badge { background: #54430b; color: #ffe78a; }
+.source-other-deck .deck-source-badge { background: #183e5b; color: #a9d9ff; }
+.source-other-owner .deck-source-badge { background: #482f63; color: #e0c5ff; }
+.source-missing .deck-source-badge { background: #5d2727; color: #ffbaba; }
+.deck-source-meta { color: #aaa; font-size: 11px; line-height: 1.35; }
+.deck-source-move-form { flex: 0 0 auto; }
+.deck-source-action { min-height: 32px; padding: 0 10px; font-size: 11px; }
+.deck-source-protected { max-width: 150px; color: #d7bbff; font-size: 11px; }
+.deck-source-row[hidden], .deck-allocation-row[hidden] { display: none !important; }
+.deck-source-tools + .table-card { margin-top: 0; }
+@media (max-width: 800px) {
+  .deck-source-heading { align-items: stretch; flex-direction: column; }
+  .deck-card-search { width: 100%; }
+  .deck-owner-summary { width: 100%; }
+  .deck-source-row { align-items: flex-start; flex-direction: column; }
+  .deck-source-move-form, .deck-source-action { width: 100%; }
+  .deck-source-list { min-width: 360px; }
+}
+.deck-source-quantity { width: 58px; min-width: 58px; height: 32px; padding: 0 5px; border: 1px solid #555; border-radius: 4px; background: #292929; color: #fff; text-align: center; }
+
+
+/* CardScanner color themes and responsive price hierarchy */
+.theme-picker { display:flex; align-items:center; flex:0 0 auto; }
+.theme-picker label { display:flex; flex-direction:row; align-items:center; gap:8px; color:var(--muted); white-space:nowrap; }
+.theme-picker select { min-width:132px; height:38px; padding:0 28px 0 9px; background:var(--panel-2); color:var(--text); border:1px solid var(--border); border-radius:6px; }
+.price-grid { grid-template-columns:repeat(2,minmax(0,1fr)); align-items:stretch; }
+.price-grid > .price-cell { min-width:0; min-height:61px; display:flex; flex-direction:column; justify-content:space-between; gap:4px; border:1px solid var(--border); }
+.price-grid .price-cell strong { display:block; line-height:1.2; font-size:clamp(14px,1.2vw,17px); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.price-grid .price-scanned { background:rgba(130,145,165,.12); }
+.price-grid .price-row { background:rgba(30,155,98,.12); border-color:rgba(30,155,98,.32); }
+.price-grid .price-row strong { color:#79e0a8; }
+.price-grid .price-normal { background:rgba(16,183,223,.14); border-color:rgba(16,183,223,.42); }
+.price-grid .price-normal small { color:#7bdaf2; }
+.price-grid .price-normal strong { color:#9beaff; }
+.price-grid .price-foil { background:rgba(245,184,0,.14); border-color:rgba(245,184,0,.42); }
+.price-grid .price-foil small { color:#f6d36d; }
+.price-grid .price-foil strong { color:#ffe18a; }
+.inventory-pagination-bottom { margin-top:18px; margin-bottom:8px; }
+.vending-card-actions { display:flex; flex-wrap:wrap; gap:7px; margin-top:10px; }
+.vending-card-actions .button { min-height:36px; padding:0 10px; font-size:12px; }
+.price-history-unavailable { display:block; font-size:12px; padding:7px 0; }
+
+body[data-theme="midnight"] { color-scheme:dark; --bg:#09111f; --panel:#111d31; --panel-2:#1a2a43; --border:#304765; --text:#e9f2ff; --muted:#9eb2cc; --green:#148b76; --cyan:#39bde8; --gold:#f2c45a; --red:#e06470; }
+body[data-theme="midnight"] .topbar, body[data-theme="midnight"] .toolbar, body[data-theme="midnight"] .summary-card, body[data-theme="midnight"] .table-card, body[data-theme="midnight"] .card-tile, body[data-theme="midnight"] .grid-card, body[data-theme="midnight"] .admin-panel, body[data-theme="midnight"] .auth-card, body[data-theme="midnight"] .vendor-selection-toolbar, body[data-theme="midnight"] .inventory-pagination { background:var(--panel); border-color:var(--border); color:var(--text); }
+body[data-theme="midnight"] .tile-image-wrap, body[data-theme="midnight"] .vending-grid .grid-image-wrap { background:#07101e; }
+body[data-theme="midnight"] input[type="search"], body[data-theme="midnight"] input[type="text"], body[data-theme="midnight"] input[type="number"], body[data-theme="midnight"] input[type="password"], body[data-theme="midnight"] select, body[data-theme="midnight"] textarea { background:#17263d; border-color:#39516f; color:var(--text); }
+body[data-theme="midnight"] th { background:#1a2a43; color:var(--text); } body[data-theme="midnight"] tbody tr:hover { background:#1a2a43; } body[data-theme="midnight"] dialog { background:#111d31; border-color:var(--border); color:var(--text); }
+
+body[data-theme="forest"] { color-scheme:dark; --bg:#101a15; --panel:#19271f; --panel-2:#26382c; --border:#3a5643; --text:#edf7ef; --muted:#a7bba9; --green:#338a56; --cyan:#6cc6bd; --gold:#e7c76c; --red:#df7777; }
+body[data-theme="forest"] .topbar, body[data-theme="forest"] .toolbar, body[data-theme="forest"] .summary-card, body[data-theme="forest"] .table-card, body[data-theme="forest"] .card-tile, body[data-theme="forest"] .grid-card, body[data-theme="forest"] .admin-panel, body[data-theme="forest"] .auth-card, body[data-theme="forest"] .vendor-selection-toolbar, body[data-theme="forest"] .inventory-pagination { background:var(--panel); border-color:var(--border); color:var(--text); }
+body[data-theme="forest"] .tile-image-wrap, body[data-theme="forest"] .vending-grid .grid-image-wrap { background:#0c1510; }
+body[data-theme="forest"] input[type="search"], body[data-theme="forest"] input[type="text"], body[data-theme="forest"] input[type="number"], body[data-theme="forest"] input[type="password"], body[data-theme="forest"] select, body[data-theme="forest"] textarea { background:#203328; border-color:#45634d; color:var(--text); }
+body[data-theme="forest"] th { background:#26382c; color:var(--text); } body[data-theme="forest"] tbody tr:hover { background:#26382c; } body[data-theme="forest"] dialog { background:#19271f; border-color:var(--border); color:var(--text); }
+
+body[data-theme="light"] { color-scheme:light; --bg:#f2f5f9; --panel:#fff; --panel-2:#e8edf4; --border:#cbd4df; --text:#1c2735; --muted:#5e6b7b; --green:#177b50; --cyan:#087caa; --gold:#9b6b00; --red:#b9313d; }
+body[data-theme="light"] .topbar, body[data-theme="light"] .toolbar, body[data-theme="light"] .summary-card, body[data-theme="light"] .table-card, body[data-theme="light"] .card-tile, body[data-theme="light"] .grid-card, body[data-theme="light"] .admin-panel, body[data-theme="light"] .auth-card, body[data-theme="light"] .vendor-selection-toolbar, body[data-theme="light"] .inventory-pagination { background:var(--panel); border-color:var(--border); color:var(--text); box-shadow:0 2px 8px rgba(30,45,65,.06); }
+body[data-theme="light"] .tile-image-wrap, body[data-theme="light"] .vending-grid .grid-image-wrap { background:#e3e9f1; }
+body[data-theme="light"] input[type="search"], body[data-theme="light"] input[type="text"], body[data-theme="light"] input[type="number"], body[data-theme="light"] input[type="password"], body[data-theme="light"] select, body[data-theme="light"] textarea, body[data-theme="light"] .inline-input, body[data-theme="light"] .qty-input, body[data-theme="light"] .finish-input { background:#fff; border-color:#bac6d3; color:#1c2735; }
+body[data-theme="light"] .button.secondary { background:#e8edf4; border-color:#c5ced9; color:#243246; } body[data-theme="light"] th { background:#e6ebf2; color:#27364a; } body[data-theme="light"] td { border-color:#e1e6ed; } body[data-theme="light"] tbody tr:hover { background:#edf2f7; }
+body[data-theme="light"] .price-grid > div { background-color:#f1f4f8; } body[data-theme="light"] .price-grid .price-normal { background:#e2f5fc; border-color:#a6d9eb; } body[data-theme="light"] .price-grid .price-normal small { color:#126783; } body[data-theme="light"] .price-grid .price-normal strong { color:#075b79; } body[data-theme="light"] .price-grid .price-foil { background:#fff4d7; border-color:#e8d18b; } body[data-theme="light"] .price-grid .price-foil small { color:#82600c; } body[data-theme="light"] .price-grid .price-foil strong { color:#704d00; } body[data-theme="light"] .price-grid .price-row strong { color:#12643e; }
+body[data-theme="light"] dialog { background:#fff; border-color:var(--border); color:var(--text); } body[data-theme="light"] .history-chart-wrap { background:#f7f9fc; border-color:#ccd5df; } body[data-theme="light"] .history-stats > div { background:#f1f4f8; border-color:#d6dee8; } body[data-theme="light"] .history-stats span, body[data-theme="light"] .history-stats small { color:#5e6b7b; } body[data-theme="light"] .oracle-text { background:#f4f6f9; border-color:#d5dde7; color:#1c2735; } body[data-theme="light"] .legality-chip { background:#f4f6f9; border-color:#d5dde7; } body[data-theme="light"] .autocomplete-menu { background:#fff; border-color:#cbd4df; box-shadow:0 12px 30px rgba(20,35,55,.18); } body[data-theme="light"] .autocomplete-item { color:#1c2735; } body[data-theme="light"] .autocomplete-item:hover, body[data-theme="light"] .autocomplete-item.active { background:#e8edf4; } body[data-theme="light"] .vendor-card-select { background:rgba(255,255,255,.93); border-color:#cbd4df; color:#1c2735; } body[data-theme="light"] .deck-settings-content, body[data-theme="light"] .deck-add-form { background:#f1f4f8; border-color:#d7dfe8; } body[data-theme="light"] .settings-list > div { background:#f3f6fa; border-color:#d7dfe8; } body[data-theme="light"] .price-history-dialog .dialog-close { background:#edf1f6; color:#1c2735; border-color:#c5ced9; }
+
+/* Keep supporting screens in step with the selected theme, not only the inventory tiles. */
+body[data-theme="midnight"] .person-row,
+body[data-theme="midnight"] .catalog-result,
+body[data-theme="midnight"] .deck-list-row,
+body[data-theme="midnight"] .alias-row,
+body[data-theme="midnight"] .deck-source-row,
+body[data-theme="midnight"] .deck-admin-accordion > summary,
+body[data-theme="midnight"] .deck-add-form,
+body[data-theme="midnight"] .deck-card-edit-form input,
+body[data-theme="midnight"] .deck-card-edit-form select,
+body[data-theme="midnight"] .deck-source-quantity,
+body[data-theme="midnight"] .manual-preview,
+body[data-theme="midnight"] .history-stats > div { background-color:var(--panel-2); border-color:var(--border); color:var(--text); }
+body[data-theme="midnight"] .deck-owner-summary strong,
+body[data-theme="midnight"] .deck-state,
+body[data-theme="midnight"] .deck-source-meta,
+body[data-theme="midnight"] .settings-list span { color:var(--muted); }
+
+body[data-theme="forest"] .person-row,
+body[data-theme="forest"] .catalog-result,
+body[data-theme="forest"] .deck-list-row,
+body[data-theme="forest"] .alias-row,
+body[data-theme="forest"] .deck-source-row,
+body[data-theme="forest"] .deck-admin-accordion > summary,
+body[data-theme="forest"] .deck-add-form,
+body[data-theme="forest"] .deck-card-edit-form input,
+body[data-theme="forest"] .deck-card-edit-form select,
+body[data-theme="forest"] .deck-source-quantity,
+body[data-theme="forest"] .manual-preview,
+body[data-theme="forest"] .history-stats > div { background-color:var(--panel-2); border-color:var(--border); color:var(--text); }
+body[data-theme="forest"] .deck-owner-summary strong,
+body[data-theme="forest"] .deck-state,
+body[data-theme="forest"] .deck-source-meta,
+body[data-theme="forest"] .settings-list span { color:var(--muted); }
+
+body[data-theme="light"] .person-row,
+body[data-theme="light"] .catalog-result,
+body[data-theme="light"] .deck-list-row,
+body[data-theme="light"] .alias-row,
+body[data-theme="light"] .deck-source-row,
+body[data-theme="light"] .deck-admin-accordion > summary,
+body[data-theme="light"] .deck-add-form,
+body[data-theme="light"] .deck-card-edit-form input,
+body[data-theme="light"] .deck-card-edit-form select,
+body[data-theme="light"] .deck-source-quantity,
+body[data-theme="light"] .manual-preview,
+body[data-theme="light"] .history-stats > div,
+body[data-theme="light"] .settings-list > div,
+body[data-theme="light"] .deck-dashboard-card,
+body[data-theme="light"] .deck-price-card,
+body[data-theme="light"] .bulk-edit-bar,
+body[data-theme="light"] .deck-settings-content { background:#f1f4f8; border-color:#d5dde7; color:#1c2735; }
+body[data-theme="light"] .deck-owner-summary strong,
+body[data-theme="light"] .deck-source-meta,
+body[data-theme="light"] .settings-list span,
+body[data-theme="light"] .deck-price-card > small,
+body[data-theme="light"] .deck-price-note,
+body[data-theme="light"] .filter-note,
+body[data-theme="light"] .catalog-result small { color:#5e6b7b; }
+body[data-theme="light"] .deck-state { color:#34465c; border-color:#c4ceda; }
+body[data-theme="light"] .deck-card-search input,
+body[data-theme="light"] .deck-source-quantity,
+body[data-theme="light"] .location-input,
+body[data-theme="light"] .count-editor input { background:#fff; border-color:#bac6d3; color:#1c2735; }
+body[data-theme="light"] .deck-row-edit-trigger,
+body[data-theme="light"] .icon-button,
+body[data-theme="light"] #moveDialog .dialog-close { background:#e8edf4; border-color:#c5ced9; color:#243246; }
+body[data-theme="light"] .deck-admin-accordion > summary:hover,
+body[data-theme="light"] .catalog-result:hover,
+body[data-theme="light"] .deck-list-row:hover { background:#e5ebf2; }
+body[data-theme="light"] .manual-preview { color:#6b7787; }
+body[data-theme="light"] .deck-delete-form { border-color:#d5dde7; }
+body[data-theme="light"] #moveDialog { background:#fff; border-color:var(--border); color:var(--text); }
+body[data-theme="light"] .deck-source-badge { color:#28364a; background:#e2e8f0; }
+body[data-theme="light"] .source-current .deck-source-badge { background:#d9f3e4; color:#145c39; }
+body[data-theme="light"] .source-free .deck-source-badge { background:#fff1c2; color:#735400; }
+body[data-theme="light"] .source-other-deck .deck-source-badge { background:#dceeff; color:#174d78; }
+body[data-theme="light"] .source-other-owner .deck-source-badge { background:#efe2ff; color:#603b88; }
+body[data-theme="light"] .source-missing .deck-source-badge { background:#ffe0e0; color:#7c2525; }

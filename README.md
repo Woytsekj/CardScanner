@@ -146,6 +146,36 @@ docker compose logs --tail=100 web
 
 Do not assume every update is backward-compatible. Review commits and release notes before applying updates to a live inventory.
 
+## Local development preview (no GitHub publishing required)
+
+On Linux with Fish installed, run the web app directly from your working tree:
+
+```fish
+./dev.fish
+```
+
+The first run creates `.venv/`, installs `requirements.txt`, and makes an isolated `data-dev/` snapshot from `data/` (if present). The development server is available at `http://127.0.0.1:5050`, uses Flask's debug reloader, and watches your local Python, template, and CSS changes. Save a file and refresh the browser; there is no need to commit, push, or rebuild the production container.
+
+The helper uses SQLite's backup API when copying `.db` files so committed WAL data is included. It intentionally does not copy scheduled backups. The ZIP/repository does not include private runtime data, so when there is no local `data/` folder, point it at a safe copy of the server's data directory:
+
+```fish
+env CARD_SCANNER_DEV_SOURCE=/path/to/a/safe/data-copy ./dev.fish --reset-data
+```
+
+The development server still uses a separate `data-dev/` snapshot and never writes to the source directory. The first snapshot is reused on later runs; after updating the source backup, refresh the isolated copy with:
+
+```fish
+./dev.fish --reset-data
+```
+
+When the source database already has users, sign in with the copied account. A brand-new empty development database bootstraps an `admin` user with password `local-dev-only-password-change-me`. That password is for the loopback-only development copy; never reuse it elsewhere. The dev server binds only to `127.0.0.1`; do not expose this debug server publicly. Remove `data-dev/` when you no longer need the local snapshot.
+
+Run the automated regression suite from the virtual environment with:
+
+```fish
+.venv/bin/python -m unittest discover -s tests -v
+```
+
 ## Development and collaboration
 
 - Keep web application code and scanner-client code in their respective areas.
