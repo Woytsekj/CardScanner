@@ -44,14 +44,21 @@ jobs:
         run: docker build --pull -t mtg-scanner-web:test .
 
       - name: Scan Docker image for HIGH and CRITICAL vulnerabilities (report only)
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: image
-          image-ref: mtg-scanner-web:test
-          format: table
-          vuln-type: os,library
-          severity: HIGH,CRITICAL
-          exit-code: "0"
+        run: |
+          mkdir -p "$RUNNER_TEMP/trivy-cache"
+          docker pull aquasec/trivy:0.70.0
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            --volume "$RUNNER_TEMP/trivy-cache:/root/.cache/" \
+            aquasec/trivy:0.70.0 \
+            image \
+            --scanners vuln \
+            --vuln-type os,library \
+            --severity HIGH,CRITICAL \
+            --exit-code 0 \
+            --format table \
+            --timeout 10m \
+            mtg-scanner-web:test
 
 
       - name: Start test container
@@ -249,7 +256,12 @@ jobs:
 
       - name: Show logs if test fails
         if: failure()
-        run: docker logs mtg-scanner-test
+        run: |
+          if docker container inspect mtg-scanner-test >/dev/null 2>&1; then
+            docker logs mtg-scanner-test
+          else
+            echo "Test container was not created; failure occurred before startup."
+          fi
 
       - name: Clean up
         if: always()
