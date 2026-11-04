@@ -204,8 +204,68 @@ def enable_inventory_wal(conn: sqlite3.Connection) -> None:
 
 
 def normalize_finish(value: Any) -> str:
-    value = str(value or "normal").strip().lower()
-    return "foil" if value in {"foil", "etched", "foil etched", "etched foil"} else "normal"
+    value = str(value or "normal").strip().lower().replace("_", " ").replace("-", " ")
+    return "foil" if value in {"foil", "etched", "foil etched", "etched foil", "traditional foil", "surge foil", "galaxy foil", "textured foil", "glossy foil"} else "normal"
+
+
+def _import_foil_flag(value: Any) -> bool | None:
+    """Return an explicit foil flag, preserving false rather than relying on truthiness."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().casefold().replace("_", " ").replace("-", " ")
+    if text in {"", "unknown", "none", "null"}:
+        return None
+    if text in {"1", "true", "yes", "y", "foil", "etched", "etched foil", "traditional foil"}:
+        return True
+    if text in {"0", "false", "no", "n", "nonfoil", "non foil", "normal"}:
+        return False
+    if "foil" in text or text == "etched":
+        return True
+    return None
+
+
+def _first_import_value(source: dict[str, Any], *keys: str) -> tuple[Any, bool]:
+    for key in keys:
+        if key in source and source[key] is not None and str(source[key]).strip() != "":
+            return source[key], True
+    return None, False
+
+
+def _imported_finish(entry: dict[str, Any], card_obj: dict[str, Any] | None = None) -> str:
+    """Normalize importer finish data, honoring explicit false flags and modifier lists."""
+    card_obj = card_obj if isinstance(card_obj, dict) else {}
+    flag, present = _first_import_value(entry, "isFoil", "is_foil", "foil", "is foil")
+    if not present:
+        flag, present = _first_import_value(card_obj, "isFoil", "is_foil", "foil", "is foil")
+    parsed_flag = _import_foil_flag(flag) if present else None
+    if present and parsed_flag is not None:
+        return "foil" if parsed_flag else "normal"
+
+    finish_value, finish_present = _first_import_value(entry, "finish", "printing", "treatment")
+    if not finish_present:
+        finish_value, finish_present = _first_import_value(card_obj, "finish", "printing", "treatment")
+    if finish_present:
+        return normalize_finish(finish_value)
+
+    # Some exporters represent foil as a card modifier rather than isFoil/finish.
+    # Do not treat unrelated modifiers (e.g. full-art or borderless) as foil.
+    for source in (entry, card_obj):
+        modifiers = source.get("modifiers")
+        if isinstance(modifiers, str):
+            values = [modifiers]
+        elif isinstance(modifiers, (list, tuple, set)):
+            values = list(modifiers)
+        elif isinstance(modifiers, dict):
+            values = [key for key, enabled in modifiers.items() if enabled]
+        else:
+            values = []
+        if any("foil" in str(value).casefold() or str(value).casefold() == "etched" for value in values):
+            return "foil"
+    return "normal"
 
 
 def _normalize_tcgplayer_id(value: Any) -> str | None:
@@ -798,6 +858,7 @@ def migrate_db() -> None:
         ("finish", "ALTER TABLE deck_cards ADD COLUMN finish TEXT DEFAULT 'normal'"),
         ("tcgplayer_id", "ALTER TABLE deck_cards ADD COLUMN tcgplayer_id TEXT"),
         ("role_tags_json", "ALTER TABLE deck_cards ADD COLUMN role_tags_json TEXT NOT NULL DEFAULT '[]'"),
+        ("any_printing", "ALTER TABLE deck_cards ADD COLUMN any_printing INTEGER NOT NULL DEFAULT 0"),
     ):
         try:
             c.execute(ddl)
@@ -822,6 +883,24 @@ def migrate_db() -> None:
     # `location` implicitly meant membership in that deck. Never repeat this on
     # subsequent starts: storage locations are now independent of deck membership.
     c.execute("CREATE TABLE IF NOT EXISTS app_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)")
+    # Basic-land deck entries are generic requirements by default: Archidekt's
+    # chosen placeholder art should not constrain which physical Plains/Island/etc.
+    # can be assigned. This is a one-time backfill so admins can later opt a row
+    # back into exact-art matching in the Edit card dialog.
+    basic_land_migration = "deck_basic_lands_any_printing_v1"
+    if not c.execute("SELECT 1 FROM app_migrations WHERE name=?", (basic_land_migration,)).fetchone():
+        basic_land_names = (
+            "plains", "island", "swamp", "mountain", "forest", "wastes",
+            "snow-covered plains", "snow-covered island", "snow-covered swamp",
+            "snow-covered mountain", "snow-covered forest",
+        )
+        placeholders = ",".join("?" for _ in basic_land_names)
+        c.execute(
+            f"UPDATE deck_cards SET any_printing=1 WHERE LOWER(TRIM(name)) IN ({placeholders})",
+            basic_land_names,
+        )
+        c.execute("INSERT OR IGNORE INTO app_migrations(name,applied_at) VALUES(?,?)",
+                  (basic_land_migration, datetime.now(timezone.utc).isoformat()))
     migrated = c.execute("SELECT 1 FROM app_migrations WHERE name='deck_location_to_deck_id_v1'").fetchone()
     if not migrated:
         try:
@@ -837,6 +916,25 @@ def migrate_db() -> None:
         c.execute("INSERT OR IGNORE INTO app_migrations(name, applied_at) VALUES('deck_location_to_deck_id_v1', ?)", (datetime.now(timezone.utc).isoformat(),))
 
     ensure_people_and_auth(conn)
+    # Decks have exactly one person owner. Normalize them to the existing
+    # person record named Jonathan. The previous v39.12 draft accidentally
+    # created the display name "People Jonathan"; this follow-up migration
+    # corrects deck ownership without changing inventory.owner or card data.
+    owner_migration = "deck_single_owner_jonathan_v2"
+    if not c.execute("SELECT 1 FROM app_migrations WHERE name=?", (owner_migration,)).fetchone():
+        c.execute("INSERT OR IGNORE INTO people(name,active) VALUES('Jonathan',1)")
+        c.execute("UPDATE people SET active=1 WHERE name='Jonathan' COLLATE NOCASE")
+        c.execute("UPDATE decklists SET person_name='Jonathan'")
+        # Retire the erroneous person entry only when no inventory rows refer
+        # to it. If such rows exist, preserve that ownership record untouched.
+        legacy_alias_used = c.execute(
+            "SELECT 1 FROM inventory WHERE LOWER(TRIM(COALESCE(owner,'')))=LOWER(?) LIMIT 1",
+            ("People Jonathan",),
+        ).fetchone()
+        if not legacy_alias_used:
+            c.execute("UPDATE people SET active=0 WHERE name='People Jonathan' COLLATE NOCASE")
+        c.execute("INSERT OR IGNORE INTO app_migrations(name,applied_at) VALUES(?,?)",
+                  (owner_migration, datetime.now(timezone.utc).isoformat()))
     conn.commit()
     conn.close()
 
@@ -934,17 +1032,26 @@ def _load_tcg_prices_from_disk() -> dict[str, dict[str, Any]]:
             pid = str(int(float(pid_raw)))
         except (TypeError, ValueError):
             continue
-        entry = prices.setdefault(pid, {"normal": None, "foil": None})
+        entry = prices.setdefault(pid, {
+            "normal": None, "foil": None,
+            "normal_low": None, "foil_low": None,
+        })
         subtype = str(item.get("subTypeName") or "").lower()
+        variant = "foil" if ("foil" in subtype or "etched" in subtype) else "normal"
+
+        # Keep the actual TCGCSV lowPrice separate from the normal price used
+        # elsewhere in the app (marketPrice, falling back to mid/low).
+        low_price = item.get("lowPrice")
+        low_key = f"{variant}_low"
+        if low_price is not None and entry[low_key] is None:
+            entry[low_key] = low_price
+
         price = item.get("marketPrice")
         if price is None:
             price = item.get("midPrice")
         if price is None:
-            price = item.get("lowPrice")
-        if price is None:
-            continue
-        variant = "foil" if ("foil" in subtype or "etched" in subtype) else "normal"
-        if entry[variant] is None:
+            price = low_price
+        if price is not None and entry[variant] is None:
             entry[variant] = price
     return prices
 
@@ -979,6 +1086,76 @@ def card_value(item: dict[str, Any], prices: dict[str, dict[str, Any]]) -> tuple
         unit = scanned
     unit = to_float(unit, scanned)
     return to_float(normal, 0.0), to_float(foil, 0.0), unit
+
+
+def deck_price_summary(comparison: list[dict[str, Any]], prices: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Summarize deck prices using the exact printing/finish selected in its decklist.
+
+    Owned value uses the number of copies satisfied by the selected owner's
+    assigned + unassigned inventory, priced at the requested deck printing.
+    """
+    totals = {
+        "low_total": 0.0,
+        "market_total": 0.0,
+        "owned_value": 0.0,
+        "missing_cost": 0.0,
+    }
+    unpriced = {key: 0 for key in totals}
+    priced_quantities = {key: 0 for key in totals}
+    quantities = {
+        "low_total": "required",
+        "market_total": "required",
+        "owned_value": "owned",
+        "missing_cost": "missing",
+    }
+
+    for item in comparison:
+        tcg_id = str(item.get("tcgplayer_id") or "").strip()
+        finish = normalize_finish(item.get("finish"))
+        price_row = prices.get(tcg_id, {}) if tcg_id else {}
+        market = price_row.get(finish)
+        low = price_row.get(f"{finish}_low")
+        price_by_metric = {
+            "low_total": low,
+            "market_total": market,
+            "owned_value": market,
+            "missing_cost": market,
+        }
+        for metric, quantity_key in quantities.items():
+            quantity = max(0, int(item.get(quantity_key) or 0))
+            unit_price = price_by_metric[metric]
+            if not quantity:
+                continue
+            if unit_price is None:
+                unpriced[metric] += quantity
+            else:
+                totals[metric] += to_float(unit_price) * quantity
+                priced_quantities[metric] += quantity
+
+    def display(metric: str) -> str:
+        # Keep a partial subtotal visible even when its priced cards total $0.00.
+        # A dash is reserved for the case where no copy has usable price data.
+        return f"${totals[metric]:,.2f}" if priced_quantities[metric] > 0 or not unpriced[metric] else "—"
+
+    def detail(metric: str, label: str) -> str:
+        count = unpriced[metric]
+        if count == 0:
+            return label
+        noun = "copy" if count == 1 else "copies"
+        if priced_quantities[metric] > 0:
+            return f"Partial total; excludes {count:,} {noun} missing price data"
+        return f"{count:,} {noun} missing price data"
+
+    return {
+        "low_total": display("low_total"),
+        "market_total": display("market_total"),
+        "owned_value": display("owned_value"),
+        "missing_cost": display("missing_cost"),
+        "low_detail": detail("low_total", "TCGCSV lowest listed price"),
+        "market_detail": detail("market_total", "TCGCSV market price"),
+        "owned_detail": detail("owned_value", "Current value of copies counted toward this deck"),
+        "missing_detail": detail("missing_cost", "Estimated cost at current prices"),
+    }
 
 
 def parse_scryfall_search(search: str) -> tuple[list[str], list[Any], str | None, str | None]:
@@ -2338,7 +2515,7 @@ def index():
         sort_key = "date"
     if direction not in {"asc", "desc"}:
         direction = "desc"
-    view = request.args.get("view", "list")
+    view = request.args.get("view", "grid")
     if view not in {"list", "grid"}:
         view = "list"
 
@@ -2722,11 +2899,14 @@ def import_csv():
     owner_override = str(request.form.get("owner") or "").strip()[:100]
     location_override = str(request.form.get("location") or "").strip()[:120]
 
-    def manabox_finish(value: Any) -> str:
-        v = str(value or "").strip().lower()
-        if v in {"true", "yes", "1", "y"}:
-            return "foil"
-        return normalize_finish(v or "normal")
+    def manabox_finish(row: dict[str, Any]) -> str:
+        # ManaBox exports a dedicated Foil boolean. It must override a generic
+        # Finish/Printing column when both are present (including explicit false).
+        foil_flag = _import_foil_flag(get(row, "foil", "is foil", "is_foil", "isFoil"))
+        if foil_flag is not None:
+            return "foil" if foil_flag else "normal"
+        finish_value = get(row, "finish", "printing", "treatment", default="normal")
+        return normalize_finish(finish_value)
 
     conn = connect_inventory()
     ensure_people_and_auth(conn)
@@ -2751,7 +2931,7 @@ def import_csv():
             skipped += 1
             continue
         qty = parse_qty(get(row, "quantity", "qty", default=1))
-        finish = manabox_finish(get(row, "finish", "printing", "treatment", "foil", default="normal"))
+        finish = manabox_finish(row)
         scan_time = get(row, "scan_date", "scan_time", "scan time", "date", "added", default=datetime.now(timezone.utc).isoformat())
         collector_number = get(row, "collector_number", "collector number", "card number", "number", default="")
         tcgplayer_id = get(row, "tcgplayer_id", "tcgplayer id", "tcgplayer product id", "product id", default="")
@@ -3929,7 +4109,7 @@ def api_scan_batch():
 
 
 @app.get("/api/price-history/<tcg_id>")
-@admin_required
+@vendor_or_admin_required
 def api_price_history(tcg_id: str):
     tcg_id = str(tcg_id).strip()
     if not tcg_id:
@@ -3943,6 +4123,15 @@ def api_price_history(tcg_id: str):
 
     conn = connect_inventory()
     join_sql = attach_art_join(conn)
+    user = current_user()
+    is_vendor_only = bool(
+        user
+        and not int(user["is_admin"])
+        and str(user["role"]).lower() == "vendor"
+    )
+    # Vendors can inspect history only for inventory rows explicitly offered
+    # for vending. Admins retain access to history across the full collection.
+    vending_scope_sql = " AND COALESCE(i.for_vending, 0) = 1" if is_vendor_only else ""
     owned = conn.execute(
         f"""SELECT COUNT(*) FROM inventory i
             {join_sql}
@@ -3950,7 +4139,7 @@ def api_price_history(tcg_id: str):
                 NULLIF(TRIM(i.tcgplayer_id), ''),
                 NULLIF(TRIM(a.tcgplayer_id), ''),
                 NULLIF(TRIM(m.tcgplayer_id), '')
-            ) = ?""",
+            ) = ?{vending_scope_sql}""",
         (tcg_id,),
     ).fetchone()[0]
     if not owned:
@@ -4005,6 +4194,56 @@ def test_discord():
 
 def _norm_card_name(value: Any) -> str:
     return " ".join(str(value or "").strip().casefold().split())
+
+
+_BASIC_LAND_NAMES = frozenset({
+    "plains", "island", "swamp", "mountain", "forest", "wastes",
+    "snow-covered plains", "snow-covered island", "snow-covered swamp",
+    "snow-covered mountain", "snow-covered forest",
+})
+
+
+def _is_basic_land_name(value: Any) -> bool:
+    """Return True for the six basic land names and their snow-covered versions."""
+    return _norm_card_name(value) in _BASIC_LAND_NAMES
+
+
+def _deck_inventory_matches(deck_card: Any, inventory_card: Any, *, fuzzy: bool = False) -> bool:
+    """Match exact printings, fuzzy Oracle identities, or generic basic-land requirements."""
+    def value(row: Any, key: str) -> Any:
+        try:
+            return row[key]
+        except (KeyError, IndexError, TypeError):
+            return None
+
+    deck_name = _norm_card_name(value(deck_card, "name"))
+    inv_name = _norm_card_name(value(inventory_card, "name"))
+    deck_oracle = str(value(deck_card, "card_oracle_id") or value(deck_card, "oracle_id") or "").strip()
+    inv_oracle = str(value(inventory_card, "oracle_id") or "").strip()
+    any_printing = bool(value(deck_card, "any_printing"))
+
+    # Fuzzy mode relaxes art/printing identity, not the finish requirement. This
+    # keeps foil and nonfoil copies from being silently interchanged or priced
+    # against the wrong finish.
+    if normalize_finish(value(deck_card, "finish")) != normalize_finish(value(inventory_card, "finish")):
+        return False
+
+    if any_printing:
+        # Generic basic-land requirements ignore Scryfall ID/set/art but retain
+        # the exact land name and finish.
+        return bool(deck_name and inv_name and deck_name == inv_name)
+
+    if fuzzy:
+        if deck_oracle and inv_oracle:
+            return deck_oracle == inv_oracle
+        # When either side lacks metadata, normalized name matching remains available.
+        return bool(deck_name and inv_name and deck_name == inv_name)
+    deck_sid = str(value(deck_card, "scryfall_id") or "").strip()
+    inv_sid = str(value(inventory_card, "scryfall_id") or "").strip()
+    if deck_sid and inv_sid:
+        return deck_sid == inv_sid
+    return bool(deck_name and inv_name and deck_name == inv_name)
+
 
 
 def _looks_like_uuid(value: Any) -> bool:
@@ -4145,11 +4384,7 @@ def normalize_archidekt_cards(payload: dict[str, Any], include_extra: bool = Fal
             or card_obj.get("setCode") or card_obj.get("set_code")
         )
         collector_number = card_obj.get("collectorNumber") or card_obj.get("collector_number") or card_obj.get("cardNumber")
-        finish_raw = (
-            entry.get("finish") or entry.get("printing") or entry.get("treatment")
-            or card_obj.get("finish") or card_obj.get("printing") or card_obj.get("treatment")
-        )
-        finish = normalize_finish(finish_raw)
+        finish = _imported_finish(entry, card_obj)
         tcgplayer_id = card_obj.get("tcgplayerId") or card_obj.get("tcgplayer_id") or card_obj.get("tcgplayer")
         role_tags = _entry_role_tags(entry, cats)
         raw.append({
@@ -4159,9 +4394,11 @@ def normalize_archidekt_cards(payload: dict[str, Any], include_extra: bool = Fal
             "category": category, "finish": finish,
             "tcgplayer_id": _normalize_tcgplayer_id(tcgplayer_id), "role_tags": role_tags,
         })
-    merged: dict[tuple[str, str | None, str, tuple[str, ...]], dict[str, Any]] = {}
+    merged: dict[tuple[Any, ...], dict[str, Any]] = {}
     for card in raw:
-        key = (_norm_card_name(card["name"]), card.get("scryfall_id"), card.get("category") or "Mainboard", tuple(t.casefold() for t in card.get("role_tags", [])))
+        key = (_norm_card_name(card["name"]), card.get("scryfall_id"), card.get("set_code"),
+               card.get("collector_number"), normalize_finish(card.get("finish")),
+               card.get("category") or "Mainboard", tuple(t.casefold() for t in card.get("role_tags", [])))
         if key not in merged:
             merged[key] = dict(card)
         else:
@@ -4211,8 +4448,7 @@ def normalize_moxfield_deck(payload: dict[str, Any], include_extra: bool = False
             sid = str(sid_raw).strip() if _looks_like_uuid(sid_raw) else None
             set_code = card_obj.get("set") or card_obj.get("set_code") or card_obj.get("setCode") or entry.get("set") or entry.get("set_code")
             collector_number = card_obj.get("cn") or card_obj.get("collector_number") or card_obj.get("collectorNumber") or entry.get("cn") or entry.get("collector_number")
-            is_foil = entry.get("isFoil") or entry.get("is_foil") or card_obj.get("isFoil")
-            finish = "foil" if is_foil else normalize_finish(entry.get("finish") or entry.get("printing") or card_obj.get("finish"))
+            finish = _imported_finish(entry, card_obj)
             tcg_id = card_obj.get("tcgplayerId") or card_obj.get("tcgplayer_id") or entry.get("tcgplayerId")
             role_tags = _entry_role_tags(entry)
             # Some exports expose user tags one level below the card object.
@@ -4245,11 +4481,13 @@ def normalize_moxfield_deck(payload: dict[str, Any], include_extra: bool = False
             sid_raw = card.get("scryfall_id") or card.get("scryfallId")
             raw.append({"name": str(name), "quantity": qty, "scryfall_id": str(sid_raw) if _looks_like_uuid(sid_raw) else None,
                         "set_code": card.get("set") or card.get("set_code"), "collector_number": card.get("cn") or card.get("collector_number"),
-                        "category": section, "finish": "foil" if entry.get("isFoil") else normalize_finish(entry.get("finish")),
+                        "category": section, "finish": _imported_finish(entry, card),
                         "tcgplayer_id": _normalize_tcgplayer_id(card.get("tcgplayerId")), "role_tags": role_tags})
-    merged: dict[tuple[str, str | None, str, tuple[str, ...]], dict[str, Any]] = {}
+    merged: dict[tuple[Any, ...], dict[str, Any]] = {}
     for card in raw:
-        key = (_norm_card_name(card["name"]), card.get("scryfall_id"), card.get("category") or "Mainboard", tuple(t.casefold() for t in card.get("role_tags", [])))
+        key = (_norm_card_name(card["name"]), card.get("scryfall_id"), card.get("set_code"),
+               card.get("collector_number"), normalize_finish(card.get("finish")),
+               card.get("category") or "Mainboard", tuple(t.casefold() for t in card.get("role_tags", [])))
         if key not in merged:
             merged[key] = dict(card)
         else:
@@ -4332,8 +4570,10 @@ def parse_deck_csv(text: str, include_extra: bool = False) -> tuple[list[dict[st
         try: qty = max(1, int(float(get(row, "quantity", "qty", "count", "amount") or 1)))
         except (TypeError, ValueError): qty = 1
         finish_value = get(row, "finish", "printing", "treatment")
-        if str(get(row, "foil") or "").casefold() in {"true", "yes", "1", "foil", "y"}:
-            finish_value = "foil"
+        foil_flag = get(row, "foil", "is foil", "is_foil")
+        parsed_foil = _import_foil_flag(foil_flag)
+        if parsed_foil is not None:
+            finish_value = "foil" if parsed_foil else "normal"
         sid_raw = get(row, "scryfall id", "scryfall_id", "scryfall uuid")
         card = {
             "name": str(name).strip(), "quantity": qty,
@@ -4428,16 +4668,17 @@ def save_deck(
     conn = connect_inventory()
     conn.execute(
         "INSERT INTO decklists(name,source,source_url,created_at,updated_at,tags_json,person_name) VALUES (?,?,?,?,?,?,?)",
-        (name, source, source_url, now, now, json.dumps(_clean_tag_list(deck_tags or []), ensure_ascii=False), person_name or None),
+        (name, source, source_url, now, now, json.dumps(_clean_tag_list(deck_tags or []), ensure_ascii=False), person_name or "Jonathan"),
     )
     deck_id = int(conn.execute("SELECT last_insert_rowid() FROM decklists").fetchone()[0])
     conn.executemany(
         """INSERT INTO deck_cards
-           (deck_id,name,quantity,scryfall_id,set_code,collector_number,category,finish,tcgplayer_id,role_tags_json)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+           (deck_id,name,quantity,scryfall_id,set_code,collector_number,category,finish,tcgplayer_id,role_tags_json,any_printing)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         [(deck_id, c["name"], int(c["quantity"]), c.get("scryfall_id"), c.get("set_code"),
           c.get("collector_number"), c.get("category"), normalize_finish(c.get("finish")),
-          c.get("tcgplayer_id"), json.dumps(_clean_tag_list(c.get("role_tags") or []), ensure_ascii=False)) for c in cards],
+          c.get("tcgplayer_id"), json.dumps(_clean_tag_list(c.get("role_tags") or []), ensure_ascii=False),
+          int(bool(c.get("any_printing") or _is_basic_land_name(c.get("name"))))) for c in cards],
     )
     conn.commit()
     conn.close()
@@ -4445,99 +4686,162 @@ def save_deck(
 
 
 def deck_comparison(deck_id: int, owner: str, fuzzy: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Compare deck requirements against every owner's inventory, ordered by allocation priority."""
     conn = connect_inventory()
-    deck = conn.execute("SELECT name FROM decklists WHERE id=?", (deck_id,)).fetchone()
+    deck = conn.execute("SELECT name,person_name FROM decklists WHERE id=?", (deck_id,)).fetchone()
     if not deck:
         conn.close()
-        return [], {"required": 0, "owned": 0, "assigned": 0, "free_available": 0, "missing": 0, "complete": False, "fuzzy": fuzzy}
+        return [], {"required": 0, "owned": 0, "assigned": 0, "free_available": 0,
+                    "other_deck_available": 0, "other_people_available": 0,
+                    "missing": 0, "complete": False, "fuzzy": fuzzy}
+    deck_owner = str(deck["person_name"] or owner or "Jonathan").strip()
     cards = conn.execute(
         """SELECT dc.id,dc.name,dc.quantity,dc.scryfall_id,dc.set_code,dc.collector_number,
-                  dc.category,dc.finish,dc.tcgplayer_id,dc.role_tags_json,cm.oracle_id AS card_oracle_id
-           FROM deck_cards dc LEFT JOIN card_metadata cm ON cm.scryfall_id=dc.scryfall_id
+                  dc.category,dc.finish,COALESCE(dc.any_printing,0) AS any_printing,
+                  COALESCE(NULLIF(dc.tcgplayer_id,''), NULLIF(cpm.tcgplayer_id,'')) AS resolved_tcgplayer_id,
+                  dc.role_tags_json,cm.oracle_id AS card_oracle_id
+           FROM deck_cards dc
+           LEFT JOIN card_metadata cm ON cm.scryfall_id=dc.scryfall_id
+           LEFT JOIN card_price_mapping cpm ON cpm.scryfall_id=dc.scryfall_id
            WHERE dc.deck_id=?
            ORDER BY CASE WHEN LOWER(COALESCE(dc.category,''))='commander' THEN 0 ELSE 1 END,
                     dc.category, dc.name COLLATE NOCASE, dc.id""",
         (deck_id,),
     ).fetchall()
-    inv = conn.execute(
-        """SELECT i.scryfall_id,i.name,i.set_code,i.collector_number,i.finish,
-                  i.deck_id, COALESCE(i.for_vending,0) AS for_vending,
-                  SUM(IFNULL(i.quantity,1)) AS qty,cm.oracle_id AS oracle_id
-           FROM inventory i LEFT JOIN card_metadata cm ON cm.scryfall_id=i.scryfall_id
-           WHERE i.owner=? AND (i.deck_id=? OR i.deck_id IS NULL)
-           GROUP BY i.scryfall_id,i.name,i.set_code,i.collector_number,i.finish,
-                    i.deck_id,COALESCE(i.for_vending,0),cm.oracle_id""",
-        (owner, deck_id),
+    inventory = conn.execute(
+        """SELECT i.id,i.scryfall_id,i.name,i.set_code,i.collector_number,i.finish,
+                  i.owner,i.quantity,i.deck_id,COALESCE(i.for_vending,0) AS for_vending,
+                  COALESCE(i.location,'Free') AS location,i.tcgplayer_id,
+                  cm.oracle_id AS oracle_id,d.name AS assigned_deck_name
+           FROM inventory i
+           LEFT JOIN card_metadata cm ON cm.scryfall_id=i.scryfall_id
+           LEFT JOIN decklists d ON d.id=i.deck_id
+           ORDER BY i.id"""
     ).fetchall()
     conn.close()
 
-    free_exact: dict[tuple[str, str], int] = {}
-    assigned_exact: dict[tuple[str, str], int] = {}
-    free_name: dict[tuple[str, str], int] = {}
-    assigned_name: dict[tuple[str, str], int] = {}
-    free_fuzzy: dict[str, int] = {}
-    assigned_fuzzy: dict[str, int] = {}
-    for r in inv:
-        finish = normalize_finish(r["finish"])
-        qty = int(r["qty"] or 0)
-        sid = str(r["scryfall_id"] or "").strip()
-        is_assigned = r["deck_id"] is not None and int(r["deck_id"]) == deck_id
-        exact = assigned_exact if is_assigned else free_exact
-        by_name = assigned_name if is_assigned else free_name
-        fuzzy_map = assigned_fuzzy if is_assigned else free_fuzzy
-        if sid:
-            exact[(sid, finish)] = exact.get((sid, finish), 0) + qty
-        name_key = (_norm_card_name(r["name"]), finish)
-        by_name[name_key] = by_name.get(name_key, 0) + qty
-        fuzzy_key = str(r["oracle_id"] or "").strip() or _norm_card_name(r["name"])
-        fuzzy_map[fuzzy_key] = fuzzy_map.get(fuzzy_key, 0) + qty
+    remaining = {int(row["id"]): max(0, int(row["quantity"] or 0)) for row in inventory}
+    out: list[dict[str, Any]] = []
+    req = have = assigned_total = free_total = other_deck_total = other_people_total = missing_total = 0
 
-    out = []
-    req = have = assigned_total = free_total = missing = 0
-    for r in cards:
-        required = int(r["quantity"] or 0)
-        finish = normalize_finish(r["finish"])
-        sid = str(r["scryfall_id"] or "").strip()
-        if fuzzy:
-            fuzzy_key = str(r["card_oracle_id"] or "").strip() or _norm_card_name(r["name"])
-            already = assigned_fuzzy.get(fuzzy_key, 0)
-            free_av = free_fuzzy.get(fuzzy_key, 0)
-            assigned = min(required, already)
-            free_used = min(max(0, required - assigned), free_av)
-            h = assigned + free_used
-            m = max(0, required - h)
-            assigned_fuzzy[fuzzy_key] = max(0, already - assigned)
-            free_fuzzy[fuzzy_key] = max(0, free_av - free_used)
-        else:
-            key = (sid, finish) if sid else None
-            already = assigned_exact.get(key, 0) if key else assigned_name.get((_norm_card_name(r["name"]), finish), 0)
-            free_av = free_exact.get(key, 0) if key else free_name.get((_norm_card_name(r["name"]), finish), 0)
-            assigned = min(required, already)
-            free_used = min(max(0, required - assigned), free_av)
-            h = assigned + free_used
-            m = max(0, required - h)
-            if key:
-                assigned_exact[key] = max(0, assigned_exact.get(key, 0) - assigned)
-                free_exact[key] = max(0, free_exact.get(key, 0) - free_used)
-            nk = (_norm_card_name(r["name"]), finish)
-            assigned_name[nk] = max(0, assigned_name.get(nk, 0) - assigned)
-            free_name[nk] = max(0, free_name.get(nk, 0) - free_used)
-        req += required
-        have += h
-        assigned_total += assigned
-        free_total += free_av
-        missing += m
+    def priority(row: Any) -> int:
+        same_owner = str(row["owner"] or "").strip().casefold() == deck_owner.casefold()
+        if same_owner and row["deck_id"] is not None and int(row["deck_id"]) == deck_id:
+            return 0  # Green: actively in this deck.
+        if same_owner and row["deck_id"] is None:
+            return 1  # Yellow: owner's free pool.
+        if same_owner and row["deck_id"] is not None:
+            return 2  # Blue: owner's copy committed to another deck.
+        return 3      # Purple: someone else's card; never move ownership automatically.
+
+    status_data = {
+        0: ("current", "Current deck"),
+        1: ("free", "Free pool"),
+        2: ("other-deck", "Another deck"),
+        3: ("other-owner", "Other owner's card"),
+    }
+
+    for card_row in cards:
+        card = dict(card_row)
+        required = max(0, int(card.get("quantity") or 0))
+        matches = [row for row in inventory
+                   if remaining.get(int(row["id"]), 0) > 0
+                   and _deck_inventory_matches(card, row, fuzzy=fuzzy)]
+        matches.sort(key=lambda row: (priority(row), int(row["id"])))
+
+        assigned = 0
+        free_available = 0
+        other_deck_available = 0
+        other_people_available = 0
+        blue_used = 0
+        purple_used = 0
+        still_needed = required
+        sources: list[dict[str, Any]] = []
+
+        for row in matches:
+            inv_id = int(row["id"])
+            available = remaining.get(inv_id, 0)
+            if available <= 0:
+                continue
+            p = priority(row)
+            status, label = status_data[p]
+            allocated = 0
+            if p == 0:
+                allocated = min(still_needed, available)
+                assigned += allocated
+                still_needed -= allocated
+                remaining[inv_id] = available - allocated
+            elif p == 1:
+                free_available += available
+                allocated = min(still_needed, available)
+                still_needed -= allocated
+                remaining[inv_id] = available - allocated
+            elif p == 2:
+                other_deck_available += available
+                allocated = min(still_needed, available)
+                blue_used += allocated
+                still_needed -= allocated
+                remaining[inv_id] = available - allocated
+            else:
+                other_people_available += available
+                allocated = min(still_needed, available)
+                purple_used += allocated
+                still_needed -= allocated
+                remaining[inv_id] = available - allocated
+            sources.append({
+                "inventory_id": inv_id, "status": status, "status_label": label,
+                "quantity": available, "allocated": allocated,
+                "owner": str(row["owner"] or "Unknown owner"),
+                "deck_name": str(row["assigned_deck_name"] or "") if row["deck_id"] is not None else "",
+                "finish": normalize_finish(row["finish"]),
+                "set_code": str(row["set_code"] or ""),
+                "collector_number": str(row["collector_number"] or ""),
+                "location": str(row["location"] or "Free"),
+                "can_move": (str(row["owner"] or "").strip().casefold() == deck_owner.casefold()
+                             and not (row["deck_id"] is not None and int(row["deck_id"]) == deck_id)),
+            })
+
+        free_used = min(max(0, required - assigned), free_available)
+        # Blue copies are still owned by the deck owner; purple copies are owned
+        # by someone else. Both prevent a red "need to buy" state, but only the
+        # owner's blue copies count toward owned-value pricing.
+        owned = assigned + free_used + blue_used
+        missing = max(0, required - assigned - free_used - blue_used - purple_used)
+        row_status = "current" if assigned else ("free" if free_available else
+                     "other-deck" if other_deck_available else
+                     "other-owner" if other_people_available else "missing")
+        row_status_label = {"current": "In this deck", "free": "Free copy available",
+                            "other-deck": "In another deck", "other-owner": "Other person's copy",
+                            "missing": "Need to buy"}[row_status]
         try:
-            role_tags = _clean_tag_list(json.loads(r["role_tags_json"] or "[]"))
+            role_tags = _clean_tag_list(json.loads(card.get("role_tags_json") or "[]"))
         except (TypeError, json.JSONDecodeError):
             role_tags = []
-        out.append({"id": r["id"], "name": r["name"], "category": r["category"] or "Mainboard", "role_tags": role_tags,
-                    "required": required, "owned": h, "assigned": assigned, "free_available": free_av,
-                    "missing": m, "scryfall_id": r["scryfall_id"], "set_code": r["set_code"],
-                    "collector_number": r["collector_number"], "finish": finish, "tcgplayer_id": r["tcgplayer_id"],
-                    "image_url": scryfall_image_url(r["scryfall_id"]), "fuzzy": fuzzy})
-    return out, {"required": req, "owned": have, "assigned": assigned_total, "free_available": free_total,
-                 "missing": missing, "complete": missing == 0, "fuzzy": fuzzy}
+        out.append({
+            "id": card["id"], "name": card["name"], "category": card.get("category") or "Mainboard",
+            "role_tags": role_tags, "required": required, "owned": owned, "assigned": assigned,
+            "free_available": free_available, "other_deck_available": other_deck_available,
+            "other_people_available": other_people_available, "missing": missing,
+            "scryfall_id": card.get("scryfall_id"), "set_code": card.get("set_code"),
+            "collector_number": card.get("collector_number"), "finish": normalize_finish(card.get("finish")),
+            "any_printing": bool(card.get("any_printing")),
+            "tcgplayer_id": card.get("resolved_tcgplayer_id"),
+            "image_url": scryfall_image_url(card.get("scryfall_id")), "fuzzy": fuzzy,
+            "sources": sources, "availability_status": row_status,
+            "availability_label": row_status_label,
+        })
+        req += required
+        have += owned
+        assigned_total += assigned
+        free_total += free_available
+        other_deck_total += other_deck_available
+        other_people_total += other_people_available
+        missing_total += missing
+
+    return out, {"required": req, "owned": have, "assigned": assigned_total,
+                 "free_available": free_total, "other_deck_available": other_deck_total,
+                 "other_people_available": other_people_total, "missing": missing_total,
+                 "complete": missing_total == 0, "fuzzy": fuzzy, "owner": deck_owner}
 
 
 @app.get("/decks")
@@ -4673,7 +4977,9 @@ def decks_import():
         if not deck_person:
             user = current_user()
             mapped = str(user["person_name"] or "").strip() if user else ""
-            deck_person = mapped if mapped in people else (owner if owner in people else "")
+            deck_person = mapped if mapped in people else ("Jonathan" if "Jonathan" in people else (owner if owner in people else ""))
+        if not deck_person:
+            raise ValueError("A deck owner is required. Add or activate a person named Jonathan first.")
         resolved_cards = []
         for card in cards:
             resolved = resolve_local_printing(card["name"], card.get("scryfall_id"), card.get("set_code"), card.get("collector_number"))
@@ -4744,12 +5050,12 @@ def update_deck_settings(deck_id: int):
     if not conn.execute("SELECT 1 FROM decklists WHERE id=?", (deck_id,)).fetchone():
         conn.close()
         return redirect(url_for("decks_page", message="Deck not found."))
-    if person_name and not conn.execute("SELECT 1 FROM people WHERE name=? COLLATE NOCASE AND active=1", (person_name,)).fetchone():
+    if not person_name or not conn.execute("SELECT 1 FROM people WHERE name=? COLLATE NOCASE AND active=1", (person_name,)).fetchone():
         conn.close()
-        return redirect(url_for("deck_view", deck_id=deck_id, message="Select an active person for this deck."))
+        return redirect(url_for("deck_view", deck_id=deck_id, message="Every deck must have exactly one active owner."))
     conn.execute(
         "UPDATE decklists SET name=?, tags_json=?, person_name=?, updated_at=? WHERE id=?",
-        (name, json.dumps(tags, ensure_ascii=False), person_name or None, datetime.now(timezone.utc).isoformat(), deck_id),
+        (name, json.dumps(tags, ensure_ascii=False), person_name, datetime.now(timezone.utc).isoformat(), deck_id),
     )
     conn.commit()
     conn.close()
@@ -4839,11 +5145,26 @@ def update_deck_cover(deck_id: int):
 @app.get("/decks/<int:deck_id>")
 @admin_required
 def deck_view(deck_id:int):
-    owner = str(request.args.get("owner") or "").strip()
     fuzzy = request.args.get("fuzzy", "0").strip().lower() in {"1", "true", "yes", "on"}
     conn = connect_inventory()
     deck_row = conn.execute("SELECT * FROM decklists WHERE id=?", (deck_id,)).fetchone()
     owners = active_people(conn)
+    # A deck created by an older/manual path may still have a NULL owner even
+    # though every deck is now required to have exactly one active owner. Prefer
+    # the signed-in account's linked Person, then Jonathan, then the first active
+    # Person so the fallback follows the same collection defaults as Inventory.
+    user = current_user()
+    mapped_person = str(user["person_name"] or "").strip() if user else ""
+    default_owner = mapped_person if mapped_person in owners else (
+        "Jonathan" if "Jonathan" in owners else (owners[0] if owners else "")
+    )
+    if deck_row and not str(deck_row["person_name"] or "").strip() and default_owner:
+        conn.execute(
+            "UPDATE decklists SET person_name=?, updated_at=? WHERE id=? AND (person_name IS NULL OR TRIM(person_name)='')",
+            (default_owner, datetime.now(timezone.utc).isoformat(), deck_id),
+        )
+        conn.commit()
+        deck_row = conn.execute("SELECT * FROM decklists WHERE id=?", (deck_id,)).fetchone()
     deck_cards_rows = conn.execute(
         "SELECT * FROM deck_cards WHERE deck_id=? ORDER BY CASE WHEN LOWER(COALESCE(category,''))='commander' THEN 0 ELSE 1 END, category, name COLLATE NOCASE, id",
         (deck_id,),
@@ -4862,16 +5183,13 @@ def deck_view(deck_id:int):
         except (TypeError, json.JSONDecodeError): card["role_tags"] = []
         deck_cards.append(card)
     cover_cards = [card for card in deck_cards if card.get("scryfall_id")]
-    if "owner" not in request.args:
-        if deck.get("person_name"):
-            owner = str(deck["person_name"])
-        else:
-            user = current_user()
-            mapped_person = str(user["person_name"] or "").strip() if user else ""
-            owner = mapped_person if mapped_person else (owners[0] if owners else "")
+    owner = str(deck.get("person_name") or default_owner or "Jonathan").strip()
     comparison, stats = deck_comparison(deck_id, owner, fuzzy=fuzzy)
+    price_summary = deck_price_summary(comparison, get_tcg_prices())
+    price_meta = get_price_meta()
     return render_template(
         "deck_view.html", deck=deck, deck_cards=deck_cards, comparison=comparison, stats=stats,
+        price_summary=price_summary, price_meta=price_meta,
         owners=owners, selected_owner=owner, fuzzy=fuzzy, cover_cards=cover_cards,
         message=request.args.get("message", ""),
     )
@@ -4892,6 +5210,7 @@ def edit_deck_card(deck_id:int, card_id:int):
     category=str(request.form.get("category") or "Mainboard").strip()[:100] or "Mainboard"
     role_tags = _clean_tag_list(request.form.get("role_tags") or "")
     finish=normalize_finish(request.form.get("finish"))
+    any_printing = request.form.get("any_printing", "0").strip().lower() in {"1", "true", "yes", "on"}
     scryfall_id=str(request.form.get("scryfall_id") or "").strip() or None
     tcgplayer_id=_normalize_tcgplayer_id(request.form.get("tcgplayer_id"))
 
@@ -4909,9 +5228,9 @@ def edit_deck_card(deck_id:int, card_id:int):
     if not conn.execute("SELECT 1 FROM decklists WHERE id=?",(deck_id,)).fetchone():
         conn.close(); return redirect(url_for("decks_page",message="Deck not found."))
     conn.execute(
-        """UPDATE deck_cards SET name=?,quantity=?,scryfall_id=?,set_code=?,collector_number=?,category=?,finish=?,tcgplayer_id=?,role_tags_json=?
+        """UPDATE deck_cards SET name=?,quantity=?,scryfall_id=?,set_code=?,collector_number=?,category=?,finish=?,tcgplayer_id=?,role_tags_json=?,any_printing=?
            WHERE id=? AND deck_id=?""",
-        (name,qty,scryfall_id,set_code,collector,category,finish,tcgplayer_id,json.dumps(role_tags, ensure_ascii=False),card_id,deck_id),
+        (name,qty,scryfall_id,set_code,collector,category,finish,tcgplayer_id,json.dumps(role_tags, ensure_ascii=False),int(any_printing),card_id,deck_id),
     )
     conn.execute("UPDATE decklists SET updated_at=? WHERE id=?",(datetime.now(timezone.utc).isoformat(),deck_id))
     conn.commit(); conn.close()
@@ -4940,7 +5259,8 @@ def add_deck_card(deck_id:int):
     conn=connect_inventory()
     if not conn.execute("SELECT 1 FROM decklists WHERE id=?",(deck_id,)).fetchone():
         conn.close(); return redirect(url_for("decks_page",message="Deck not found."))
-    conn.execute("INSERT INTO deck_cards(deck_id,name,quantity,scryfall_id,set_code,collector_number,category,finish,tcgplayer_id,role_tags_json) VALUES (?,?,?,?,?,?,?,?,?,?)",(deck_id,name,qty,scryfall_id,set_code,collector,category,finish,tcgplayer_id,json.dumps(role_tags, ensure_ascii=False)))
+    any_printing = _is_basic_land_name(name)
+    conn.execute("INSERT INTO deck_cards(deck_id,name,quantity,scryfall_id,set_code,collector_number,category,finish,tcgplayer_id,role_tags_json,any_printing) VALUES (?,?,?,?,?,?,?,?,?,?,?)",(deck_id,name,qty,scryfall_id,set_code,collector,category,finish,tcgplayer_id,json.dumps(role_tags, ensure_ascii=False),int(any_printing)))
     conn.execute("UPDATE decklists SET updated_at=? WHERE id=?",(datetime.now(timezone.utc).isoformat(),deck_id)); conn.commit(); conn.close()
     return redirect(url_for("deck_view",deck_id=deck_id,message=f"Added {name} to the deck."))
 
@@ -4957,33 +5277,28 @@ def delete_deck_card(deck_id:int, card_id:int):
 
 
 def _deck_available_free_rows(conn: sqlite3.Connection, deck_card: sqlite3.Row, owner: str, fuzzy: bool = False):
-    finish=normalize_finish(deck_card["finish"]); sid=str(deck_card["scryfall_id"] or "").strip()
-    if fuzzy:
-        oracle_id=None
-        if sid:
-            r=conn.execute("SELECT oracle_id FROM card_metadata WHERE scryfall_id=?",(sid,)).fetchone()
-            oracle_id=str(r[0] or "").strip() if r else None
-        if oracle_id:
-            return conn.execute("""SELECT i.* FROM inventory i LEFT JOIN card_metadata cm ON cm.scryfall_id=i.scryfall_id WHERE i.owner=? AND i.deck_id IS NULL AND cm.oracle_id=? ORDER BY i.id""",(owner,oracle_id)).fetchall()
-        return conn.execute("SELECT * FROM inventory WHERE owner=? AND deck_id IS NULL AND name=? COLLATE NOCASE ORDER BY id",(owner,deck_card["name"])).fetchall()
-    if sid:
-        rows=conn.execute("""SELECT * FROM inventory WHERE owner=? AND deck_id IS NULL AND scryfall_id=? AND IFNULL(NULLIF(finish,''),'normal')=? ORDER BY id""",(owner,sid,finish)).fetchall()
-        if rows: return rows
-    return conn.execute("""SELECT * FROM inventory WHERE owner=? AND deck_id IS NULL AND name=? COLLATE NOCASE AND IFNULL(NULLIF(finish,''),'normal')=? ORDER BY id""",(owner,deck_card["name"],finish)).fetchall()
+    deck_data = dict(deck_card)
+    if deck_data.get("scryfall_id"):
+        meta = conn.execute("SELECT oracle_id FROM card_metadata WHERE scryfall_id=?", (deck_data["scryfall_id"],)).fetchone()
+        deck_data["card_oracle_id"] = str(meta["oracle_id"] or "").strip() if meta else ""
+    rows = conn.execute(
+        """SELECT i.*,cm.oracle_id AS oracle_id FROM inventory i
+           LEFT JOIN card_metadata cm ON cm.scryfall_id=i.scryfall_id
+           WHERE i.owner=? AND i.deck_id IS NULL ORDER BY i.id""",
+        (owner,),
+    ).fetchall()
+    return [row for row in rows if _deck_inventory_matches(deck_data, row, fuzzy=fuzzy)]
 
 
 @app.post("/decks/<int:deck_id>/assign-free")
 @admin_required
 def assign_free_to_deck(deck_id:int):
-    owner=str(request.form.get("owner") or "").strip()
     fuzzy=str(request.form.get("fuzzy") or "0").strip().lower() in {"1","true","yes","on"}
     conn=connect_inventory()
     deck=conn.execute("SELECT * FROM decklists WHERE id=?",(deck_id,)).fetchone()
-    owners=active_people(conn)
     if not deck:
         conn.close(); return redirect(url_for("decks_page",message="Deck not found."))
-    if owner not in owners:
-        owner=owners[0] if owners else "Me"
+    owner=str(deck["person_name"] or "Jonathan").strip()
     moved=0; requested=0
     cards=conn.execute("SELECT * FROM deck_cards WHERE deck_id=? ORDER BY id",(deck_id,)).fetchall()
     try:
@@ -4991,33 +5306,17 @@ def assign_free_to_deck(deck_id:int):
         for dc in cards:
             finish=normalize_finish(dc["finish"])
             sid=str(dc["scryfall_id"] or "").strip()
-            if fuzzy:
-                oracle_row=conn.execute("SELECT oracle_id FROM card_metadata WHERE scryfall_id=?",(sid,)).fetchone() if sid else None
-                oracle_id=str(oracle_row[0] or "").strip() if oracle_row else None
-                if oracle_id:
-                    row=conn.execute(
-                        """SELECT COALESCE(SUM(i.quantity),0) q FROM inventory i LEFT JOIN card_metadata cm ON cm.scryfall_id=i.scryfall_id
-                           WHERE i.owner=? AND i.deck_id=? AND cm.oracle_id=?""",
-                        (owner,deck_id,oracle_id),
-                    ).fetchone()
-                else:
-                    row=conn.execute(
-                        """SELECT COALESCE(SUM(quantity),0) q FROM inventory WHERE owner=? AND deck_id=? AND name=? COLLATE NOCASE""",
-                        (owner,deck_id,dc["name"]),
-                    ).fetchone()
-            elif sid:
-                row=conn.execute(
-                    """SELECT COALESCE(SUM(quantity),0) q FROM inventory WHERE owner=? AND deck_id=?
-                       AND scryfall_id=? AND IFNULL(NULLIF(finish,''),'normal')=?""",
-                    (owner,deck_id,sid,finish),
-                ).fetchone()
-            else:
-                row=conn.execute(
-                    """SELECT COALESCE(SUM(quantity),0) q FROM inventory WHERE owner=? AND deck_id=?
-                       AND name=? COLLATE NOCASE AND IFNULL(NULLIF(finish,''),'normal')=?""",
-                    (owner,deck_id,dc["name"],finish),
-                ).fetchone()
-            already=int(row["q"] or 0)
+            deck_data = dict(dc)
+            if sid:
+                oracle_row=conn.execute("SELECT oracle_id FROM card_metadata WHERE scryfall_id=?",(sid,)).fetchone()
+                deck_data["card_oracle_id"] = str(oracle_row["oracle_id"] or "").strip() if oracle_row else ""
+            assigned_rows = conn.execute(
+                """SELECT i.*,cm.oracle_id AS oracle_id FROM inventory i
+                   LEFT JOIN card_metadata cm ON cm.scryfall_id=i.scryfall_id
+                   WHERE i.owner=? AND i.deck_id=? ORDER BY i.id""", (owner,deck_id)
+            ).fetchall()
+            already = sum(int(row["quantity"] or 0) for row in assigned_rows
+                          if _deck_inventory_matches(deck_data,row,fuzzy=fuzzy))
             need=max(0,int(dc["quantity"] or 0)-already)
             requested+=need
             if not need: continue
@@ -5031,15 +5330,21 @@ def assign_free_to_deck(deck_id:int):
                 else:
                     conn.execute("UPDATE inventory SET quantity=quantity-? WHERE id=?",(take,inv["id"]))
                     target=None
-                    if sid:
+                    source_finish=normalize_finish(inv["finish"])
+                    source_sid=str(inv["scryfall_id"] or "").strip()
+                    if source_sid:
                         target=conn.execute(
                             """SELECT id FROM inventory WHERE owner=? AND deck_id=? AND COALESCE(location,'Free')=? AND scryfall_id=?
-                               AND IFNULL(NULLIF(finish,''),'normal')=? AND COALESCE(for_vending,0)=0 LIMIT 1""",(owner,deck_id,inv["location"],sid,finish)
+                               AND COALESCE(set_code,'')=COALESCE(?,'') AND COALESCE(collector_number,'')=COALESCE(?,'')
+                               AND IFNULL(NULLIF(finish,''),'normal')=? AND COALESCE(for_vending,0)=0 LIMIT 1""",
+                            (owner,deck_id,inv["location"],source_sid,inv["set_code"],inv["collector_number"],source_finish)
                         ).fetchone()
                     else:
                         target=conn.execute(
                             """SELECT id FROM inventory WHERE owner=? AND deck_id=? AND COALESCE(location,'Free')=? AND name=? COLLATE NOCASE
-                               AND IFNULL(NULLIF(finish,''),'normal')=? AND COALESCE(for_vending,0)=0 LIMIT 1""",(owner,deck_id,inv["location"],dc["name"],finish)
+                               AND COALESCE(set_code,'')=COALESCE(?,'') AND COALESCE(collector_number,'')=COALESCE(?,'')
+                               AND IFNULL(NULLIF(finish,''),'normal')=? AND COALESCE(for_vending,0)=0 LIMIT 1""",
+                            (owner,deck_id,inv["location"],inv["name"],inv["set_code"],inv["collector_number"],source_finish)
                         ).fetchone()
                     if target:
                         conn.execute("UPDATE inventory SET quantity=quantity+? WHERE id=?",(take,target["id"]))
@@ -5047,7 +5352,7 @@ def assign_free_to_deck(deck_id:int):
                         conn.execute(
                             """INSERT INTO inventory(scryfall_id,name,set_code,rarity,price,owner,quantity,scan_time,finish,collector_number,tcgplayer_id,location,deck_id,for_vending)
                                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0)""",
-                            (inv["scryfall_id"],inv["name"],inv["set_code"],inv["rarity"],inv["price"],owner,take,inv["scan_time"],finish,inv["collector_number"],inv["tcgplayer_id"],inv["location"] or "Free",deck_id),
+                            (inv["scryfall_id"],inv["name"],inv["set_code"],inv["rarity"],inv["price"],owner,take,inv["scan_time"],source_finish,inv["collector_number"],inv["tcgplayer_id"],inv["location"] or "Free",deck_id),
                         )
                 moved+=take; need-=take
         conn.commit()
@@ -5061,9 +5366,117 @@ def assign_free_to_deck(deck_id:int):
     return redirect(url_for("deck_view",deck_id=deck_id,owner=owner,fuzzy="1" if fuzzy else "0",message=message))
 
 
+@app.post("/decks/<int:deck_id>/move-inventory")
+@admin_required
+def move_inventory_to_deck(deck_id: int):
+    """Move a physical copy between deck allocations without changing its owner or printing."""
+    try:
+        inventory_id = int(request.form.get("inventory_id") or 0)
+        quantity = max(1, int(request.form.get("quantity") or 1))
+    except (TypeError, ValueError):
+        return redirect(url_for("deck_view", deck_id=deck_id, message="Choose a valid inventory copy and quantity."))
+    fuzzy = str(request.form.get("fuzzy") or "0").strip().lower() in {"1", "true", "yes", "on"}
+
+    conn = connect_inventory()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        deck = conn.execute("SELECT id,name,person_name FROM decklists WHERE id=?", (deck_id,)).fetchone()
+        source = conn.execute(
+            """SELECT i.*,cm.oracle_id AS oracle_id FROM inventory i
+               LEFT JOIN card_metadata cm ON cm.scryfall_id=i.scryfall_id WHERE i.id=?""",
+            (inventory_id,),
+        ).fetchone()
+        if not deck or not source:
+            raise ValueError("The deck or inventory copy no longer exists.")
+        deck_owner = str(deck["person_name"] or "Jonathan").strip()
+        source_owner = str(source["owner"] or "").strip()
+        if source_owner.casefold() != deck_owner.casefold():
+            raise ValueError("Cards owned by another person cannot be moved into this deck automatically.")
+        requirements = conn.execute(
+            """SELECT dc.*,cm.oracle_id AS card_oracle_id FROM deck_cards dc
+               LEFT JOIN card_metadata cm ON cm.scryfall_id=dc.scryfall_id
+               WHERE dc.deck_id=? ORDER BY dc.id""",
+            (deck_id,),
+        ).fetchall()
+        matching_requirements = [card for card in requirements if _deck_inventory_matches(card, source, fuzzy=fuzzy)]
+        if not matching_requirements:
+            raise ValueError("That inventory copy does not match a card required by this deck.")
+        # Prefer a row that is not already an exact printing match. This makes a
+        # fuzzy assignment retarget the imported Archidekt/Moxfield placeholder
+        # to the physical printing the user actually selected.
+        target_requirement = next(
+            (card for card in matching_requirements if not _deck_inventory_matches(card, source, fuzzy=False)),
+            matching_requirements[0],
+        )
+        previous_deck_id = source["deck_id"]
+        if previous_deck_id is not None and int(previous_deck_id) == deck_id:
+            raise ValueError("That copy is already assigned to this deck.")
+        source_quantity = max(0, int(source["quantity"] or 0))
+        if quantity > source_quantity:
+            raise ValueError(f"Only {source_quantity} copy/copies remain in that inventory row.")
+
+        if quantity == source_quantity:
+            conn.execute("UPDATE inventory SET deck_id=?,for_vending=0 WHERE id=?", (deck_id, inventory_id))
+        else:
+            conn.execute("UPDATE inventory SET quantity=quantity-? WHERE id=?", (quantity, inventory_id))
+            conn.execute(
+                """INSERT INTO inventory
+                   (scryfall_id,name,set_code,rarity,price,owner,quantity,scan_time,finish,
+                    collector_number,tcgplayer_id,location,deck_id,for_vending)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0)""",
+                (source["scryfall_id"],source["name"],source["set_code"],source["rarity"],source["price"],
+                 source_owner,quantity,source["scan_time"],normalize_finish(source["finish"]),
+                 source["collector_number"],source["tcgplayer_id"],source["location"] or "Free",deck_id),
+            )
+        printing_updated = False
+        selected_sid = str(source["scryfall_id"] or "").strip()
+        required_sid = str(target_requirement["scryfall_id"] or "").strip()
+        printing_changed = bool(
+            (selected_sid and selected_sid != required_sid)
+            or (source["set_code"] and str(source["set_code"]).casefold() != str(target_requirement["set_code"] or "").casefold())
+            or (source["collector_number"] and str(source["collector_number"]) != str(target_requirement["collector_number"] or ""))
+            or normalize_finish(source["finish"]) != normalize_finish(target_requirement["finish"])
+        )
+        if (fuzzy or bool(target_requirement["any_printing"])) and printing_changed and (source["scryfall_id"] or source["set_code"] or source["collector_number"]):
+            conn.execute(
+                """UPDATE deck_cards SET name=?,scryfall_id=COALESCE(?,scryfall_id),
+                   set_code=COALESCE(?,set_code),collector_number=COALESCE(?,collector_number),
+                   finish=?,tcgplayer_id=COALESCE(?,tcgplayer_id)
+                   WHERE id=? AND deck_id=?""",
+                (source["name"], source["scryfall_id"], source["set_code"], source["collector_number"],
+                 normalize_finish(source["finish"]), source["tcgplayer_id"], target_requirement["id"], deck_id),
+            )
+            printing_updated = True
+        conn.execute("UPDATE decklists SET updated_at=? WHERE id=?", (datetime.now(timezone.utc).isoformat(), deck_id))
+        conn.commit()
+        previous_name = "the free pool"
+        if previous_deck_id is not None:
+            previous = conn.execute("SELECT name FROM decklists WHERE id=?", (previous_deck_id,)).fetchone()
+            previous_name = previous["name"] if previous else "another deck"
+        message = f"Moved {quantity} {source['name']} copy/copies into {deck['name']}. The previous decklist requirement remains; {previous_name} will now show the copy as allocated elsewhere."
+        if printing_updated:
+            message += " The deck entry artwork/printing was updated to the copy you selected."
+        if bool(target_requirement["any_printing"]):
+            message += " Its generic basic-land requirement still accepts any art/printing."
+    except Exception as exc:
+        conn.rollback()
+        message = f"Could not move card: {exc}"
+    finally:
+        conn.close()
+    return redirect(url_for("deck_view", deck_id=deck_id, fuzzy="1" if fuzzy else "0", message=message))
+
+
 @app.get("/decks/<int:deck_id>/missing.csv")
 def deck_missing_csv(deck_id:int):
-    owner=str(request.args.get("owner") or "Me").strip(); fuzzy=request.args.get("fuzzy","0").strip().lower() in {"1","true","yes","on"}; comparison,_=deck_comparison(deck_id,owner,fuzzy=fuzzy); out=io.StringIO(newline=""); w=csv.writer(out); w.writerow(["name","missing","required","owned","set_code","collector_number"])
+    conn=connect_inventory()
+    deck=conn.execute("SELECT person_name FROM decklists WHERE id=?",(deck_id,)).fetchone()
+    conn.close()
+    if not deck:
+        return redirect(url_for("decks_page",message="Deck not found."))
+    owner=str(deck["person_name"] or "Jonathan").strip()
+    fuzzy=request.args.get("fuzzy","0").strip().lower() in {"1","true","yes","on"}
+    comparison,_=deck_comparison(deck_id,owner,fuzzy=fuzzy)
+    out=io.StringIO(newline=""); w=csv.writer(out); w.writerow(["name","missing","required","owned","set_code","collector_number"])
     for c in comparison:
         if c["missing"]: w.writerow([c["name"],c["missing"],c["required"],c["owned"],c.get("set_code") or "",c.get("collector_number") or ""])
     return send_file(io.BytesIO(out.getvalue().encode()),mimetype="text/csv",as_attachment=True,download_name=f"deck_{deck_id}_missing.csv")
@@ -5350,6 +5763,6 @@ migrate_db()
 if __name__ == "__main__":
     app.run(
         debug=os.environ.get("FLASK_DEBUG", "0") == "1",
-        host="0.0.0.0",
+        host=os.environ.get("APP_HOST", "0.0.0.0"),
         port=int(os.environ.get("PORT", "5000")),
     )

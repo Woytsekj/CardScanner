@@ -3,8 +3,10 @@
 <meta charset="utf-8">
 <meta name="csrf-token" content="{{ csrf_token }}"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vending · MTG Scanner Inventory</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.12.4') }}">
 <script src="{{ url_for('static', filename='security.js') }}" defer></script>
+<script src="{{ url_for('static', filename='theme.js', v='39.12.4') }}" defer></script>
+<script src="{{ url_for('static', filename='price-history.js', v='39.12.4') }}" defer></script>
 </head><body data-vending-mode="browse">
 <header class="topbar">
   <div><h1>Vending View</h1><div class="subtle">Cards marked for vending across all storage locations · {{ result_count }} matching rows</div></div>
@@ -60,7 +62,12 @@
     <div class="vending-price"><div class="vending-unit-price">${{ '%.2f'|format(item.calculated_unit_price) }}</div></div>
     <div class="vending-price-meta"><span>Qty {{ item.quantity }}</span><span>${{ '%.2f'|format(item.calculated_total_value) }} total</span></div>
     <div class="vending-owner">Owner: <strong>{{ item.owner }}</strong></div>
-    {% if item.tcgplayer_id %}<p><a class="button secondary tcgplayer-button" href="https://www.tcgplayer.com/product/{{ item.tcgplayer_id|urlencode }}" target="_blank" rel="noopener noreferrer">Open on TCGplayer ↗</a></p>{% endif %}
+    <div class="vending-card-actions">
+      {% if item.tcgplayer_id %}
+      <button type="button" class="button secondary price-history-button" data-tcg="{{ item.tcgplayer_id }}" data-name="{{ item.name|e }}" data-finish="{{ item.finish }}">Price History</button>
+      <a class="button secondary tcgplayer-button" href="https://www.tcgplayer.com/product/{{ item.tcgplayer_id|urlencode }}" target="_blank" rel="noopener noreferrer">TCGplayer ↗</a>
+      {% else %}<span class="subtle price-history-unavailable" title="A TCGplayer product ID is required to look up saved history">Price history unavailable · no TCGplayer ID</span>{% endif %}
+    </div>
   </div>
 </article>
 {% else %}<div class="empty">No vending cards match the current filters.</div>{% endfor %}
@@ -79,6 +86,23 @@
   </section>
   <button type="button" id="vendorOracleImagePanel" class="oracle-image-panel" hidden aria-label="Switch to Oracle text"><img id="vendorOracleImage" src="" alt=""><span>Click image to return to Oracle text</span></button>
   <div id="vendorOracleStatus" class="status"></div>
+</dialog>
+<dialog id="priceHistoryDialog" class="price-history-dialog">
+  <button class="dialog-close" type="button" onclick="closePriceHistory()">×</button>
+  <h2 id="priceHistoryTitle">Price History</h2>
+  <div id="priceHistorySubtitle" class="subtle"></div>
+  <div class="history-range-buttons">
+    <button type="button" class="button secondary history-range" data-days="3">3 Days</button>
+    <button type="button" class="button secondary history-range" data-days="7">1 Week</button>
+    <button type="button" class="button secondary history-range" data-days="30">1 Month</button>
+    <button type="button" class="button secondary history-range active" data-days="90">3 Months</button>
+    <button type="button" class="button secondary history-range" data-days="180">6 Months</button>
+    <button type="button" class="button secondary history-range" data-days="365">1 Year</button>
+  </div>
+  <div id="priceHistoryStats" class="history-stats"></div>
+  <div id="priceHistoryStatus" class="status"></div>
+  <div class="history-chart-wrap"><svg id="priceHistoryChart" viewBox="0 0 820 360" role="img" aria-label="Card price history chart"></svg></div>
+  <div class="chart-legend"><span class="legend-normal">Normal</span><span class="legend-foil">Foil</span></div>
 </dialog>
 <script src="{{ url_for('static', filename='multi-select.js') }}"></script>
 <script>

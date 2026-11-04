@@ -14,6 +14,7 @@ venv/
 *.sqlite
 *.sqlite3
 data/
+data-dev/
 backups/
 
 # Local logs
