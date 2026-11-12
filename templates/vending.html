@@ -3,7 +3,7 @@
 <meta charset="utf-8">
 <meta name="csrf-token" content="{{ csrf_token }}"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vending · MTG Scanner Inventory</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.12.4') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.12.5') }}">
 <script src="{{ url_for('static', filename='security.js') }}" defer></script>
 <script src="{{ url_for('static', filename='theme.js', v='39.12.4') }}" defer></script>
 <script src="{{ url_for('static', filename='price-history.js', v='39.12.4') }}" defer></script>
@@ -75,17 +75,21 @@
 </main>
 <dialog id="vendorOracleDialog" class="price-history-dialog oracle-dialog">
   <button class="dialog-close" type="button" onclick="document.getElementById('vendorOracleDialog').close()">×</button>
-  <h2 id="vendorOracleTitle">Card details</h2>
-  <div class="oracle-switch-actions"><button type="button" class="button secondary" id="vendorOracleSwitch">Show card image</button><span class="subtle">Click the rules text or image to switch views.</span></div>
-  <section id="vendorOracleTextPanel" class="oracle-switch-panel" role="button" tabindex="0" aria-label="Switch to card image">
-    <div id="vendorOracleSubtitle" class="subtle"></div>
-    <div id="vendorOracleTypeLine" class="oracle-type-line"></div>
-    <div id="vendorOracleManaCost" class="oracle-mana-cost"></div>
-    <pre id="vendorOracleText" class="oracle-text"></pre>
-    <h3>Legality</h3><div id="vendorOracleLegalities" class="legality-grid"></div>
-  </section>
-  <button type="button" id="vendorOracleImagePanel" class="oracle-image-panel" hidden aria-label="Switch to Oracle text"><img id="vendorOracleImage" src="" alt=""><span>Click image to return to Oracle text</span></button>
-  <div id="vendorOracleStatus" class="status"></div>
+  <h2 id="vendorOracleTitle">Card Details</h2>
+  <div class="oracle-detail-layout">
+    <div class="oracle-detail-image-wrap"><img id="vendorOracleImage" class="oracle-detail-image" src="" alt=""></div>
+    <div class="oracle-detail-content">
+      <div id="vendorOracleSubtitle" class="subtle"></div>
+      <div id="vendorOracleTypeLine" class="oracle-type-line"></div>
+      <div id="vendorOracleManaCost" class="oracle-mana-cost"></div>
+      <pre id="vendorOracleText" class="oracle-text"></pre>
+      <h3>Tags</h3>
+      <div class="oracle-tag-section"><strong>Art tags</strong><div id="vendorOracleArtTags" class="oracle-tag-list"></div></div>
+      <div class="oracle-tag-section"><strong>Oracle tags</strong><div id="vendorOracleOracleTags" class="oracle-tag-list"></div></div>
+      <h3>Legality</h3><div id="vendorOracleLegalities" class="legality-grid"></div>
+      <div id="vendorOracleStatus" class="status"></div>
+    </div>
+  </div>
 </dialog>
 <dialog id="priceHistoryDialog" class="price-history-dialog">
   <button class="dialog-close" type="button" onclick="closePriceHistory()">×</button>
@@ -279,18 +283,28 @@ const vType=document.getElementById('vendorOracleTypeLine'), vMana=document.getE
 const vText=document.getElementById('vendorOracleText'), vLeg=document.getElementById('vendorOracleLegalities');
 const vStatus=document.getElementById('vendorOracleStatus'), vTextPanel=document.getElementById('vendorOracleTextPanel');
 const vImagePanel=document.getElementById('vendorOracleImagePanel'), vImage=document.getElementById('vendorOracleImage'), vSwitch=document.getElementById('vendorOracleSwitch');
-function switchVendorDetails(mode){const image=mode==='image';vTextPanel.hidden=image;vImagePanel.hidden=!image;vSwitch.textContent=image?'Show Oracle text':'Show card image';}
 function escapeVendorDetails(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function renderVendorTagList(container,tags,kind){
+  const values=Array.isArray(tags)?tags:[];
+  container.innerHTML=values.length?values.map(tag=>`<span class="oracle-tag-chip ${kind}">${escapeVendorDetails(tag)}</span>`).join(''):'<span class="subtle">No tags available.</span>';
+}
 document.querySelectorAll('.vendor-oracle-image').forEach(img=>img.addEventListener('click',async()=>{
   if(document.body.dataset.vendingMode==='select')return;
-  const sid=img.dataset.scryfall||'';vTitle.textContent=img.dataset.name||img.alt||'Card details';vSub.textContent='Loading cached metadata…';vType.textContent='';vMana.textContent='';vText.textContent='';vLeg.innerHTML='';vStatus.textContent='';vImage.src=img.currentSrc||img.src;vImage.alt=img.alt||'';switchVendorDetails('image');vd.showModal();
+  const sid=img.dataset.scryfall||'';
+  vTitle.textContent=img.dataset.name||img.alt||'Card Details';
+  vSub.textContent='Loading cached metadata…';vType.textContent='';vMana.textContent='';vText.textContent='';
+  vLeg.innerHTML='';document.getElementById('vendorOracleArtTags').innerHTML='';document.getElementById('vendorOracleOracleTags').innerHTML='';
+  vStatus.textContent='';vImage.src=img.currentSrc||img.src;vImage.alt=img.alt||'';vd.showModal();
   if(!sid){vSub.textContent='No Scryfall ID is available for this card.';return;}
-  try{const r=await fetch('/api/card-info/'+encodeURIComponent(sid));const data=await r.json().catch(()=>({}));if(!r.ok||!data.success){vStatus.textContent=data.error||'No cached Oracle metadata.';return;}const c=data.card||{};vSub.textContent=c.colors?'Colors: '+c.colors:'';vType.textContent=c.type_line||'';vMana.textContent=c.mana_cost||'';vText.textContent=c.oracle_text||'No Oracle text.';const legal=c.legalities||{};vLeg.innerHTML=Object.keys(legal).sort((a,b)=>a.localeCompare(b)).map(k=>`<div class="legality-chip ${escapeVendorDetails(legal[k])}"><strong>${escapeVendorDetails(k)}</strong><span>${escapeVendorDetails(String(legal[k]).replace(/^./,m=>m.toUpperCase()))}</span></div>`).join('');}catch(_){vStatus.textContent='Could not load cached Oracle metadata.';}
+  try{
+    const r=await fetch('/api/card-info/'+encodeURIComponent(sid));const data=await r.json().catch(()=>({}));
+    if(!r.ok||!data.success){vStatus.textContent=data.error||'No cached Oracle metadata.';return;}
+    const c=data.card||{};vSub.textContent=c.colors?'Colors: '+c.colors:'';vType.textContent=c.type_line||'';vMana.textContent=c.mana_cost||'';vText.textContent=c.oracle_text||'No Oracle text.';
+    renderVendorTagList(document.getElementById('vendorOracleArtTags'),c.art_tags,'art');
+    renderVendorTagList(document.getElementById('vendorOracleOracleTags'),c.oracle_tags,'oracle');
+    const legal=c.legalities||{};vLeg.innerHTML=Object.keys(legal).sort((a,b)=>a.localeCompare(b)).map(k=>`<div class="legality-chip ${escapeVendorDetails(legal[k])}"><strong>${escapeVendorDetails(k)}</strong><span>${escapeVendorDetails(String(legal[k]).replace(/^./,m=>m.toUpperCase()))}</span></div>`).join('');
+  }catch(_){vStatus.textContent='Could not load cached metadata.';}
 }));
-vTextPanel.addEventListener('click',()=>switchVendorDetails('image'));
-vTextPanel.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();switchVendorDetails('image');}});
-vImagePanel.addEventListener('click',()=>switchVendorDetails('text'));
-vSwitch.addEventListener('click',()=>switchVendorDetails(vImagePanel.hidden?'image':'text'));
 const vendorBulkButton=document.getElementById('vendorApplyBulkEdit');
 if (vendorBulkButton) vendorBulkButton.addEventListener('click', async () => {
   const ids=[...loadVendorSelection()].map(Number).filter(Number.isFinite);
