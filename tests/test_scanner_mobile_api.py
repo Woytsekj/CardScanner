@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import io
+import hashlib
 import sqlite3
 import tempfile
 import unittest
@@ -736,6 +737,95 @@ class ScannerMobileApiTests(unittest.TestCase):
             self.assertIn("cardscanner-desktop/scanner.env.fish.example", names)
             self.assertNotIn("cardscanner-desktop/scanner.env.fish", names)
             self.assertFalse(any(name.endswith(".db") or name.endswith(".jsonl") for name in names))
+
+
+    def _make_test_art_database(self, path: Path):
+        conn = sqlite3.connect(path)
+        conn.execute("""CREATE TABLE card_art (
+            scryfall_id TEXT PRIMARY KEY,
+            name TEXT,
+            set_code TEXT,
+            set_name TEXT,
+            rarity TEXT,
+            tcgplayer_id TEXT,
+            collector_number TEXT,
+            phash TEXT
+        )""")
+        conn.execute(
+            "INSERT INTO card_art VALUES(?,?,?,?,?,?,?,?)",
+            ("sid-sync-test", "Sol Ring", "C21", "Commander 2021",
+             "rare", "12345", "123", "0123456789abcdef"),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_scanner_client_data_manifest_requires_scanner_key_and_reports_hash_counts(self):
+        guest = app_module.app.test_client()
+        rejected = guest.get("/api/scanner/client-data/manifest", base_url="http://localhost")
+        self.assertEqual(rejected.status_code, 401)
+
+        art_path = Path(self.temp.name) / "mtg_art_hashes.db"
+        self._make_test_art_database(art_path)
+        app_module.DB_ART = art_path
+        app_module.PRICES_FILE.write_text(
+            json.dumps({"success": True, "sourceUpdated": "2026-11-12T00:00:00Z",
+                        "results": [{"productId": 12345, "marketPrice": 1.25}]}),
+            encoding="utf-8",
+        )
+        app_module.PRICE_META_FILE.write_text(
+            json.dumps({"source_updated": "2026-11-12T00:00:00Z"}), encoding="utf-8"
+        )
+        app_module._SCANNER_CLIENT_ART_SNAPSHOT_SIGNATURE = None
+        app_module._SCANNER_CLIENT_ART_SNAPSHOT_PATH = None
+        app_module._SCANNER_CLIENT_ART_SNAPSHOT_INFO = {}
+
+        response = self.client.get(
+            "/api/scanner/client-data/manifest",
+            headers=self.api_key_headers(),
+            base_url="http://localhost",
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        data = response.get_json()
+        self.assertTrue(data["success"])
+        art = data["files"]["mtg_art_hashes.db"]
+        self.assertTrue(art["available"])
+        self.assertEqual(art["row_count"], 1)
+        self.assertEqual(art["phash_count"], 1)
+        self.assertEqual(len(art["sha256"]), 64)
+        self.assertTrue(data["files"]["tcg_prices.json"]["available"])
+
+    def test_scanner_client_data_download_is_allowlisted_and_checksum_header_matches(self):
+        art_path = Path(self.temp.name) / "mtg_art_hashes.db"
+        self._make_test_art_database(art_path)
+        app_module.DB_ART = art_path
+        app_module._SCANNER_CLIENT_ART_SNAPSHOT_SIGNATURE = None
+        app_module._SCANNER_CLIENT_ART_SNAPSHOT_PATH = None
+        app_module._SCANNER_CLIENT_ART_SNAPSHOT_INFO = {}
+
+        response = self.client.get(
+            "/api/scanner/client-data/mtg_art_hashes.db",
+            headers=self.api_key_headers(),
+            base_url="http://localhost",
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True)[:500])
+        self.assertEqual(response.headers.get("Cache-Control"), "private, no-store")
+        self.assertEqual(
+            response.headers.get("X-Scanner-File-SHA256"),
+            hashlib.sha256(response.data).hexdigest(),
+        )
+        local_copy = Path(self.temp.name) / "downloaded.db"
+        local_copy.write_bytes(response.data)
+        conn = sqlite3.connect(local_copy)
+        self.assertEqual(conn.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM card_art").fetchone()[0], 1)
+        conn.close()
+
+        unsupported = self.client.get(
+            "/api/scanner/client-data/mtg_inventory.db",
+            headers=self.api_key_headers(),
+            base_url="http://localhost",
+        )
+        self.assertEqual(unsupported.status_code, 404)
 
 
 if __name__ == "__main__":
