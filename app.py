@@ -975,35 +975,6 @@ def attach_art_join(conn: sqlite3.Connection) -> str:
     return f"{art_join}\n{mapping_join}"
 
 
-def art_tag_select_sql() -> str:
-    """Return tag labels for the current printing without changing inventory row cardinality."""
-    return """
-        COALESCE((
-            SELECT GROUP_CONCAT(tag_label, ' · ')
-            FROM (
-                SELECT DISTINCT st.label AS tag_label
-                FROM art_db.card_art_faces af
-                JOIN art_db.art_tag_assignments ata ON ata.illustration_id = af.illustration_id
-                JOIN art_db.scryfall_tags st ON st.id = ata.tag_id AND st.tag_type = 'art'
-                WHERE af.scryfall_id = i.scryfall_id
-                ORDER BY st.label COLLATE NOCASE
-                LIMIT 5
-            )
-        ), '') AS art_tags,
-        COALESCE((
-            SELECT GROUP_CONCAT(tag_label, ' · ')
-            FROM (
-                SELECT DISTINCT st.label AS tag_label
-                FROM art_db.oracle_tag_assignments ota
-                JOIN art_db.scryfall_tags st ON st.id = ota.tag_id AND st.tag_type = 'oracle'
-                WHERE ota.oracle_id = COALESCE(cm.oracle_id, a.oracle_id)
-                ORDER BY st.label COLLATE NOCASE
-                LIMIT 5
-            )
-        ), '') AS oracle_tags
-    """
-
-
 def to_float(value: Any, default: float = 0.0) -> float:
     try:
         if value is None or value == "":
@@ -1522,7 +1493,6 @@ def inventory_rows(
                i.deck_id, COALESCE(i.for_vending, 0) AS for_vending,
                cm.type_line, cm.colors_text, cm.mana_value, cm.oracle_text, cm.oracle_id, cm.legalities_json, cm.updated_at AS metadata_updated_at,
                COALESCE((SELECT GROUP_CONCAT(ca.alias, ' · ') FROM card_aliases ca WHERE ca.scryfall_id = i.scryfall_id), '') AS alternate_names,
-               {art_tag_select_sql()}
         FROM inventory i
         {join_sql}
         {price_sort_join}
@@ -5875,12 +5845,80 @@ def admin_refresh_scryfall_bulk():
 
 @app.get("/api/card-info/<scryfall_id>")
 @admin_required
-def api_card_info(scryfall_id:str):
-    conn=connect_inventory(); row=conn.execute("SELECT scryfall_id,name,type_line,colors_text,mana_value,mana_cost,oracle_text,oracle_id,legalities_json,updated_at FROM card_metadata WHERE scryfall_id=?",(scryfall_id.strip(),)).fetchone(); conn.close()
-    if not row: return jsonify({"success":False,"error":"No cached Scryfall metadata for this card. Use Admin → Download/Refresh Scryfall Bulk Metadata."}),404
-    try: legalities=json.loads(row["legalities_json"] or "{}")
-    except json.JSONDecodeError: legalities={}
-    return jsonify({"success":True,"card":{"scryfall_id":row["scryfall_id"],"name":row["name"],"type_line":row["type_line"],"colors":row["colors_text"] or "","mana_value":row["mana_value"],"mana_cost":row["mana_cost"],"oracle_text":row["oracle_text"] or "","oracle_id":row["oracle_id"],"legalities":legalities,"updated_at":row["updated_at"]}})
+def api_card_info(scryfall_id: str):
+    sid = scryfall_id.strip()
+    conn = connect_inventory()
+    try:
+        row = conn.execute(
+            """SELECT scryfall_id,name,type_line,colors_text,mana_value,mana_cost,
+                      oracle_text,oracle_id,legalities_json,updated_at
+               FROM card_metadata WHERE scryfall_id=?""",
+            (sid,),
+        ).fetchone()
+        if not row:
+            return jsonify({
+                "success": False,
+                "error": "No cached Scryfall metadata for this card. Use Admin → Download/Refresh Scryfall Bulk Metadata.",
+            }), 404
+
+        art_tags: list[str] = []
+        oracle_tags: list[str] = []
+        try:
+            # Tag data is deliberately loaded only when a user opens card details,
+            # never while the inventory page is building its card grid/list.
+            conn.execute("ATTACH DATABASE ? AS art_db", (str(DB_ART),))
+            art_tags = [
+                item[0] for item in conn.execute(
+                    """SELECT DISTINCT st.label
+                       FROM art_db.card_art_faces af
+                       JOIN art_db.art_tag_assignments ata
+                         ON ata.illustration_id = af.illustration_id
+                       JOIN art_db.scryfall_tags st
+                         ON st.id = ata.tag_id AND st.tag_type = 'art'
+                       WHERE af.scryfall_id = ?
+                       ORDER BY st.label COLLATE NOCASE
+                       LIMIT 100""",
+                    (sid,),
+                ).fetchall()
+            ]
+            if row["oracle_id"]:
+                oracle_tags = [
+                    item[0] for item in conn.execute(
+                        """SELECT DISTINCT st.label
+                           FROM art_db.oracle_tag_assignments ota
+                           JOIN art_db.scryfall_tags st
+                             ON st.id = ota.tag_id AND st.tag_type = 'oracle'
+                           WHERE ota.oracle_id = ?
+                           ORDER BY st.label COLLATE NOCASE
+                           LIMIT 100""",
+                        (row["oracle_id"],),
+                    ).fetchall()
+                ]
+        except (OSError, sqlite3.Error) as exc:
+            app.logger.warning("Could not load Scryfall tags for %s: %s", sid, exc)
+        try:
+            legalities = json.loads(row["legalities_json"] or "{}")
+        except json.JSONDecodeError:
+            legalities = {}
+        return jsonify({
+            "success": True,
+            "card": {
+                "scryfall_id": row["scryfall_id"],
+                "name": row["name"],
+                "type_line": row["type_line"],
+                "colors": row["colors_text"] or "",
+                "mana_value": row["mana_value"],
+                "mana_cost": row["mana_cost"],
+                "oracle_text": row["oracle_text"] or "",
+                "oracle_id": row["oracle_id"],
+                "legalities": legalities,
+                "art_tags": art_tags,
+                "oracle_tags": oracle_tags,
+                "updated_at": row["updated_at"],
+            },
+        })
+    finally:
+        conn.close()
 
 
 @app.post("/admin/enrich_metadata")
