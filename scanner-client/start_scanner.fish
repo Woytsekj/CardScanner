@@ -63,6 +63,15 @@ if not set -q MTG_V4L2_DEVICE
 end
 set V4L2_DEVICE "/dev/video$MTG_V4L2_DEVICE"
 
+# When the legacy phone bridge is enabled, prefer the V4L2 node that scrcpy
+# just created. Older scanner.env.fish files often still contain camera index 0.
+if test "$MTG_SCRCPY_CAMERA" = "1"
+    if not set -q MTG_VIDEO_SOURCE; or test "$MTG_VIDEO_SOURCE" = "0"
+        set -gx MTG_VIDEO_SOURCE "$V4L2_DEVICE"
+    end
+end
+echo "[CAMERA] Initial source: $MTG_VIDEO_SOURCE"
+
 function cleanup
     if test -n "$SCRCPY_PID"
         if kill -0 $SCRCPY_PID 2>/dev/null

@@ -1,5 +1,7 @@
+import glob
 import os
 import sys
+from pathlib import Path
 import cv2
 import numpy as np
 import requests
@@ -8,7 +10,7 @@ import re
 import time
 from datetime import datetime, timezone
 
-from PySide6.QtCore import Qt, QTimer, QEvent
+from PySide6.QtCore import Qt, QTimer, QEvent, QSettings
 from PySide6.QtGui import QImage, QPixmap, QFont, QKeyEvent, QIcon
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame, QHBoxLayout,
@@ -26,6 +28,25 @@ LOCAL_OWNER_FALLBACK = [
 ]
 if not LOCAL_OWNER_FALLBACK:
     LOCAL_OWNER_FALLBACK = ["Me"]
+
+
+def discover_camera_sources():
+    """List Linux V4L2 video nodes with friendly names from sysfs."""
+    cameras = []
+    paths = sorted(
+        glob.glob("/dev/video[0-9]*"),
+        key=lambda path: int(Path(path).name[5:]) if Path(path).name[5:].isdigit() else 9999,
+    )
+    for path in paths:
+        node_name = Path(path).name
+        name_file = Path("/sys/class/video4linux") / node_name / "name"
+        try:
+            device_name = name_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            device_name = node_name
+        label = f"{device_name} ({path})" if device_name else path
+        cameras.append((label, path))
+    return cameras
 
 
 def fetch_scanner_options():
@@ -396,12 +417,10 @@ class ScannerWindow(QMainWindow):
 
         self.setFocusPolicy(Qt.StrongFocus)
         self.setAttribute(Qt.WA_KeyCompression, False)
-        self.capture = eng.open_camera()
-        if not self.capture.isOpened():
-            raise RuntimeError(
-                f"Could not open camera source {eng.describe_camera_source()}. "
-                "For phone mode, make sure scrcpy is running and the V4L2 device is readable."
-            )
+        self.capture = None
+        self.selected_camera_source = None
+        self.camera_settings = QSettings("Woytsekj", "CardScannerDesktop")
+        self.camera_frame_error_shown = False
 
         eng.load_local_data()
         if eng.SERVER_URL and eng.SCANNER_API_KEY:
@@ -441,6 +460,19 @@ class ScannerWindow(QMainWindow):
         self.status_label.setFont(QFont("Sans Serif", 21, QFont.Weight.Bold))
         self.status_label.setMinimumHeight(58)
         panel_layout.addWidget(self.status_label)
+
+        camera_row = QHBoxLayout()
+        camera_title = QLabel("Camera source")
+        camera_title.setStyleSheet("color:#aaa; font-size:15px;")
+        self.camera_combo = QComboBox()
+        self.camera_combo.setMinimumWidth(320)
+        self.camera_combo.currentIndexChanged.connect(self.on_camera_selected)
+        self.refresh_cameras_button = QPushButton("Refresh cameras")
+        self.refresh_cameras_button.clicked.connect(self.refresh_cameras)
+        camera_row.addWidget(camera_title)
+        camera_row.addWidget(self.camera_combo, 1)
+        camera_row.addWidget(self.refresh_cameras_button)
+        panel_layout.addLayout(camera_row)
 
         controls = QHBoxLayout()
         controls.setSpacing(10)
@@ -552,9 +584,99 @@ class ScannerWindow(QMainWindow):
 
         self.refresh_people()
         self.update_connection_status()
+        self.refresh_cameras()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_frame)
         self.timer.start(30)
+
+    def release_camera(self):
+        if self.capture is not None:
+            self.capture.release()
+        self.capture = None
+        self.latest_frame = None
+        self.latest_warped = None
+
+    def refresh_cameras(self):
+        """Refresh available V4L2 nodes and restore the last usable selection."""
+        saved_source = str(self.camera_settings.value("camera_source", "") or "")
+        previous_source = self.selected_camera_source or saved_source
+        cameras = discover_camera_sources()
+
+        self.camera_combo.blockSignals(True)
+        self.camera_combo.clear()
+        for label, source in cameras:
+            self.camera_combo.addItem(label, source)
+
+        if not cameras:
+            self.camera_combo.addItem("No video devices found", "")
+            self.camera_combo.setEnabled(False)
+            self.camera_combo.blockSignals(False)
+            self.release_camera()
+            self.video_label.setText(
+                "No camera detected. Connect a webcam or start scrcpy, then select Refresh cameras."
+            )
+            self.set_status("No camera detected. Connect a camera and refresh the device list.")
+            self.scan_button.setEnabled(False)
+            return
+
+        self.camera_combo.setEnabled(True)
+        sources = [source for _label, source in cameras]
+        preferred_source = previous_source if previous_source in sources else str(eng.VIDEO_SOURCE)
+        selected_index = sources.index(preferred_source) if preferred_source in sources else 0
+        self.camera_combo.setCurrentIndex(selected_index)
+        selected_source = self.camera_combo.currentData()
+        self.camera_combo.blockSignals(False)
+        self.open_camera_source(selected_source)
+
+    def on_camera_selected(self, _index=None):
+        source = self.camera_combo.currentData()
+        if source:
+            self.open_camera_source(str(source))
+
+    def open_camera_source(self, source):
+        """Switch the live preview to a selected V4L2 device and remember it."""
+        source = str(source).strip()
+        if not source:
+            return False
+        self.release_camera()
+
+        capture = eng.open_camera(source)
+        if not capture.isOpened():
+            capture.release()
+            self.set_status(
+                f"Could not open {source}. Check that the device is a capture camera and is not in use."
+            )
+            self.video_label.setText(f"Could not open camera: {source}")
+            self.scan_button.setEnabled(False)
+            return False
+
+        frame = None
+        for _attempt in range(6):
+            ok, candidate = capture.read()
+            if ok and candidate is not None and candidate.size:
+                frame = candidate
+                break
+            time.sleep(0.08)
+
+        if frame is None:
+            capture.release()
+            self.set_status(
+                f"{source} opened but did not deliver video frames. Try another camera or refresh the list."
+            )
+            self.video_label.setText(f"No video frames received from {source}")
+            self.scan_button.setEnabled(False)
+            return False
+
+        self.capture = capture
+        self.selected_camera_source = source
+        self.camera_settings.setValue("camera_source", source)
+        self.camera_frame_error_shown = False
+        self.latest_frame = frame.copy()
+        self.latest_warped = None
+        self.show_cv_frame(frame)
+        self.scan_button.setEnabled(self.pending_card is None)
+        self.set_status(f"Camera ready: {self.camera_combo.currentText()}")
+        return True
 
     def refresh_people(self):
         current_person = self.owner_combo.currentData() if hasattr(self, "owner_combo") else None
@@ -644,10 +766,16 @@ class ScannerWindow(QMainWindow):
         self.zoom_spin.setValue(round(value, 1))
 
     def update_frame(self):
+        if self.capture is None or not self.capture.isOpened():
+            return
         ret, frame = self.capture.read()
         if not ret:
-            self.set_status("Camera frame unavailable. Check the camera connection.")
+            self.latest_warped = None
+            if not self.camera_frame_error_shown:
+                self.set_status("Camera frame unavailable. Check the selected camera connection.")
+                self.camera_frame_error_shown = True
             return
+        self.camera_frame_error_shown = False
         self.latest_frame = frame.copy()
         display = frame.copy()
         warped, corners = self.detect_card(display)
@@ -881,6 +1009,9 @@ class ScannerWindow(QMainWindow):
             return
         if time.monotonic() < self.scan_block_until:
             return
+        if self.capture is None or self.latest_frame is None:
+            self.set_status("No active camera. Select a camera source or refresh the camera list.")
+            return
         self.scan_block_until = time.monotonic() + 0.65
         if self.latest_warped is None or not hasattr(self.latest_warped, "shape"):
             self.set_status("No card detected. Place a single card inside the frame.")
@@ -1113,7 +1244,7 @@ class ScannerWindow(QMainWindow):
         return super().eventFilter(obj, event)
 
     def closeEvent(self, event):
-        self.capture.release()
+        self.release_camera()
         event.accept()
 
 
