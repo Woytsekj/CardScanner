@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import io
 import hashlib
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -807,7 +808,7 @@ class ScannerMobileApiTests(unittest.TestCase):
             headers=self.api_key_headers(),
             base_url="http://localhost",
         )
-        self.assertEqual(response.status_code, 200, response.get_data(as_text=True)[:500])
+        self.assertEqual(response.status_code, 200, repr(response.data[:500]))
         self.assertEqual(response.headers.get("Cache-Control"), "private, no-store")
         self.assertEqual(
             response.headers.get("X-Scanner-File-SHA256"),
@@ -830,7 +831,7 @@ class ScannerMobileApiTests(unittest.TestCase):
             headers=self.api_key_headers(),
             base_url="http://localhost",
         )
-        self.assertEqual(price_response.status_code, 200, price_response.get_data(as_text=True)[:500])
+        self.assertEqual(price_response.status_code, 200, repr(price_response.data[:500]))
         self.assertEqual(
             price_response.headers.get("X-Scanner-File-SHA256"),
             hashlib.sha256(price_response.data).hexdigest(),
