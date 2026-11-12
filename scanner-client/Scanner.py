@@ -422,6 +422,22 @@ class ScannerWindow(QMainWindow):
         self.camera_settings = QSettings("Woytsekj", "CardScannerDesktop")
         self.camera_frame_error_shown = False
 
+        # Get the latest production art catalog and price snapshot before loading
+        # local lookup data. The client retains its last good copies on any failure.
+        self.initial_sync_result = None
+        if eng.DATA_SYNC_ON_STARTUP and eng.SERVER_URL and eng.SCANNER_API_KEY:
+            print("[SYNC] Checking production scanner data...")
+            self.initial_sync_result = eng.sync_server_data()
+            if self.initial_sync_result.get("success"):
+                changed = self.initial_sync_result.get("downloaded", [])
+                print(f"[SYNC] Complete. Updated: {', '.join(changed) if changed else 'already current'}.")
+            else:
+                print("[SYNC] Could not fully synchronize production data:")
+                for error in self.initial_sync_result.get("errors", []):
+                    print(f"       {error}")
+                if self.initial_sync_result.get("error"):
+                    print(f"       {self.initial_sync_result['error']}")
+
         eng.load_local_data()
         if eng.SERVER_URL and eng.SCANNER_API_KEY:
             eng.flush_pending_queue()
@@ -543,6 +559,13 @@ class ScannerWindow(QMainWindow):
         self.refresh_people_button = QPushButton("Refresh People")
         self.refresh_people_button.clicked.connect(self.refresh_people)
         buttons.addWidget(self.refresh_people_button)
+
+        self.sync_data_button = QPushButton("Sync Server Data")
+        self.sync_data_button.setToolTip(
+            "Download updated art hashes and TCGCSV prices from the configured production server."
+        )
+        self.sync_data_button.clicked.connect(self.sync_server_data)
+        buttons.addWidget(self.sync_data_button)
 
         self.manual_add_button = QPushButton("Manual Add")
         self.manual_add_button.clicked.connect(self.manual_add_card)
@@ -677,6 +700,68 @@ class ScannerWindow(QMainWindow):
         self.scan_button.setEnabled(self.pending_card is None)
         self.set_status(f"Camera ready: {self.camera_combo.currentText()}")
         return True
+
+    def sync_server_data(self):
+        """Manually synchronize local card catalog and prices from production."""
+        if self.scan_busy or self.pending_card is not None:
+            self.set_status("Save or cancel the pending card before synchronizing scanner data.")
+            return
+        self.sync_data_button.setEnabled(False)
+        self.set_status("Checking production data manifest and downloading any changes…")
+        QApplication.processEvents()
+        try:
+            result = eng.sync_server_data()
+            changed = result.get("downloaded", [])
+            errors = result.get("errors", [])
+            if changed:
+                loaded = eng.load_local_data()
+                if not loaded:
+                    self.set_status(
+                        "Data downloaded, but the local card catalog could not be loaded. "
+                        "Check the terminal for details."
+                    )
+                    return
+            if result.get("success"):
+                if changed:
+                    details = []
+                    for name in changed:
+                        info = result.get("details", {}).get(name, {})
+                        if name == "mtg_art_hashes.db":
+                            rows = info.get("row_count")
+                            hashes = info.get("phash_count")
+                            rows_text = f"{int(rows):,}" if rows is not None else "unknown"
+                            hashes_text = f"{int(hashes):,}" if hashes is not None else "unknown"
+                            details.append(f"{rows_text} printings / {hashes_text} image hashes")
+                        elif name == "tcg_prices.json":
+                            price_rows = info.get("price_rows")
+                            price_rows_text = f"{int(price_rows):,}" if price_rows is not None else "unknown"
+                            details.append(
+                                f"{price_rows_text} price rows "
+                                f"(TCGCSV {info.get('source_updated') or 'source date unavailable'})"
+                            )
+                    note = "; ".join(details) if details else ", ".join(changed)
+                    self.set_status(f"Server data synchronized. Updated: {note}.")
+                else:
+                    self.set_status(
+                        "Server data is already up to date. "
+                        "Local art catalog and TCGCSV prices were not replaced."
+                    )
+            else:
+                if changed:
+                    self.set_status(
+                        f"Partially synchronized {', '.join(changed)}. "
+                        f"Some files were not updated: {'; '.join(errors)}"
+                    )
+                else:
+                    self.set_status(
+                        "Data synchronization failed; existing local files were kept. "
+                        + "; ".join(errors or [result.get("error", "Unknown error")])
+                    )
+        except Exception as exc:
+            traceback.print_exc()
+            self.set_status(f"Data synchronization failed; existing local files were kept: {exc}")
+        finally:
+            self.sync_data_button.setEnabled(True)
 
     def refresh_people(self):
         current_person = self.owner_combo.currentData() if hasattr(self, "owner_combo") else None

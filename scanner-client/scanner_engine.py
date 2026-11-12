@@ -1,4 +1,6 @@
 import cv2
+import hashlib
+import threading
 import imagehash
 from PIL import Image
 import sqlite3
@@ -35,6 +37,9 @@ SCANNER_DEVICE = os.environ.get("MTG_SCANNER_DEVICE", "main-computer")
 QUEUE_FILE = os.path.join(SCRIPT_DIR, os.environ.get("MTG_SCAN_QUEUE", "scan_queue.jsonl"))
 REJECTED_QUEUE_FILE = os.path.join(SCRIPT_DIR, os.environ.get("MTG_SCAN_REJECTED_QUEUE", "scan_queue_rejected.jsonl"))
 REQUEST_TIMEOUT = float(os.environ.get("MTG_SCAN_TIMEOUT", "8"))
+DATA_SYNC_ON_STARTUP = os.environ.get("MTG_SCANNER_SYNC_ON_STARTUP", "1").strip().lower() not in {"0", "false", "no", "off"}
+DATA_SYNC_TIMEOUT = max(15, int(os.environ.get("MTG_SCANNER_SYNC_TIMEOUT", "120")))
+_DATA_SYNC_LOCK = threading.Lock()
 OCR_GPU_SETTING = os.environ.get("MTG_OCR_GPU", "auto").strip().lower()
 if OCR_GPU_SETTING in {"0", "false", "no", "off", "cpu"}:
     OCR_GPU = False
@@ -88,6 +93,221 @@ def open_camera(source=None):
 
 def describe_camera_source(source=None):
     return str(_normalize_camera_source(source))
+
+
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_downloaded_art_database(path: str, manifest_entry: dict) -> dict:
+    """Reject an invalid or unexpectedly incomplete art-hash database."""
+    conn = sqlite3.connect(path, timeout=30)
+    try:
+        integrity = conn.execute("PRAGMA integrity_check").fetchone()
+        if not integrity or str(integrity[0]).lower() != "ok":
+            raise RuntimeError("SQLite integrity_check failed for the downloaded art catalog.")
+        columns = {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(card_art)").fetchall()
+        }
+        required = {
+            "scryfall_id", "name", "set_code", "rarity",
+            "tcgplayer_id", "phash", "collector_number",
+        }
+        if not required.issubset(columns):
+            missing = ", ".join(sorted(required - columns))
+            raise RuntimeError(f"Downloaded art catalog is missing required columns: {missing}")
+        row_count = int(conn.execute("SELECT COUNT(*) FROM card_art").fetchone()[0])
+        phash_count = int(conn.execute(
+            "SELECT COUNT(*) FROM card_art WHERE COALESCE(TRIM(phash),'') <> ''"
+        ).fetchone()[0])
+        expected_rows = manifest_entry.get("row_count")
+        expected_hashes = manifest_entry.get("phash_count")
+        if expected_rows is not None and row_count != int(expected_rows):
+            raise RuntimeError(
+                f"Art catalog row count mismatch: downloaded {row_count}, server reported {expected_rows}."
+            )
+        if expected_hashes is not None and phash_count != int(expected_hashes):
+            raise RuntimeError(
+                f"Art hash count mismatch: downloaded {phash_count}, server reported {expected_hashes}."
+            )
+        return {"row_count": row_count, "phash_count": phash_count}
+    finally:
+        conn.close()
+
+
+def _validate_downloaded_prices(path: str) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Downloaded TCGCSV snapshot is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("success") is not True:
+        raise RuntimeError("Downloaded TCGCSV snapshot is missing success=true.")
+    rows = payload.get("results")
+    if not isinstance(rows, list):
+        raise RuntimeError("Downloaded TCGCSV snapshot is missing its results array.")
+    if not payload.get("sourceUpdated"):
+        raise RuntimeError("Downloaded TCGCSV snapshot has no sourceUpdated marker.")
+    return {"price_rows": len(rows), "source_updated": str(payload["sourceUpdated"])}
+
+
+def sync_server_data() -> dict:
+    """Download changed production art hashes and TCGCSV prices safely.
+
+    Files are written to temporary siblings, SHA256-checked, validated, and
+    atomically replaced. A failed download never overwrites a working local copy.
+    """
+    if not SERVER_URL or not SCANNER_API_KEY:
+        return {
+            "success": False,
+            "error": "Server URL or scanner API key is not configured.",
+            "downloaded": [],
+            "skipped": [],
+        }
+
+    with _DATA_SYNC_LOCK:
+        headers = api_headers()
+        manifest_url = f"{SERVER_URL}/api/scanner/client-data/manifest"
+        try:
+            response = requests.get(manifest_url, headers=headers, timeout=DATA_SYNC_TIMEOUT)
+            response.raise_for_status()
+            manifest = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            return {
+                "success": False,
+                "error": f"Could not retrieve the server data manifest: {exc}",
+                "downloaded": [],
+                "skipped": [],
+            }
+
+        if not isinstance(manifest, dict) or manifest.get("success") is not True:
+            return {
+                "success": False,
+                "error": "The server returned an invalid scanner data manifest.",
+                "downloaded": [],
+                "skipped": [],
+            }
+
+        remote_files = manifest.get("files")
+        if not isinstance(remote_files, dict):
+            return {
+                "success": False,
+                "error": "The server manifest did not include a files object.",
+                "downloaded": [],
+                "skipped": [],
+            }
+
+        files = {
+            "mtg_art_hashes.db": (
+                DB_NAME,
+                _validate_downloaded_art_database,
+            ),
+            "tcg_prices.json": (
+                PRICE_FILE,
+                _validate_downloaded_prices,
+            ),
+        }
+        downloaded = []
+        skipped = []
+        errors = []
+        details = {}
+
+        for file_name, (local_path, validator) in files.items():
+            entry = remote_files.get(file_name)
+            if not isinstance(entry, dict) or not entry.get("available"):
+                reason = entry.get("reason", "The server did not offer this data file.") if isinstance(entry, dict) else "Missing from server manifest."
+                skipped.append(file_name)
+                errors.append(f"{file_name}: {reason}")
+                continue
+
+            expected_sha = str(entry.get("sha256") or "").strip().lower()
+            try:
+                expected_size = int(entry.get("size"))
+            except (TypeError, ValueError):
+                expected_size = -1
+            if len(expected_sha) != 64 or expected_size < 1:
+                errors.append(f"{file_name}: server manifest has invalid size or SHA256.")
+                continue
+
+            if os.path.isfile(local_path):
+                try:
+                    if os.path.getsize(local_path) == expected_size and _sha256_file(local_path) == expected_sha:
+                        skipped.append(file_name)
+                        details[file_name] = {"status": "current", "size": expected_size}
+                        continue
+                except OSError:
+                    pass
+
+            download_url = f"{SERVER_URL}/api/scanner/client-data/{file_name}"
+            temp_path = f"{local_path}.download"
+            digest = hashlib.sha256()
+            received = 0
+            try:
+                parent = os.path.dirname(local_path) or "."
+                os.makedirs(parent, exist_ok=True)
+                try:
+                    os.remove(temp_path)
+                except FileNotFoundError:
+                    pass
+
+                with requests.get(
+                    download_url,
+                    headers=headers,
+                    timeout=DATA_SYNC_TIMEOUT,
+                    stream=True,
+                ) as download:
+                    download.raise_for_status()
+                    header_sha = str(download.headers.get("X-Scanner-File-SHA256") or "").lower()
+                    if header_sha and header_sha != expected_sha:
+                        raise RuntimeError("Download response checksum header did not match the manifest.")
+                    with open(temp_path, "wb") as handle:
+                        for chunk in download.iter_content(chunk_size=1024 * 1024):
+                            if not chunk:
+                                continue
+                            received += len(chunk)
+                            if received > expected_size:
+                                raise RuntimeError("Download exceeded the size advertised by the server.")
+                            digest.update(chunk)
+                            handle.write(chunk)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+
+                if received != expected_size:
+                    raise RuntimeError(
+                        f"Incomplete download: received {received} bytes, expected {expected_size}."
+                    )
+                if digest.hexdigest() != expected_sha:
+                    raise RuntimeError("SHA256 verification failed.")
+                validated = validator(temp_path, entry)
+                os.replace(temp_path, local_path)
+                downloaded.append(file_name)
+                details[file_name] = {
+                    "status": "updated",
+                    "size": received,
+                    **validated,
+                }
+            except Exception as exc:
+                errors.append(f"{file_name}: {exc}")
+                try:
+                    os.remove(temp_path)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    pass
+
+        return {
+            "success": not errors,
+            "downloaded": downloaded,
+            "skipped": skipped,
+            "errors": errors,
+            "details": details,
+            "server_time": manifest.get("server_time"),
+            "price_source_updated": manifest.get("price_source_updated"),
+        }
 
 
 def normalized_finish(is_foil_mode: bool) -> str:
@@ -765,6 +985,11 @@ def save_scan(
 # ----------------- Data Loading -----------------
 def load_local_data():
     global cards_by_name, all_card_names, all_hashes_flat, tcg_prices
+
+    cards_by_name.clear()
+    all_card_names.clear()
+    all_hashes_flat.clear()
+    tcg_prices.clear()
 
     if not os.path.exists(DB_NAME):
         print(f"Error: Could not find database at {DB_NAME}. Run build_db.py first.")

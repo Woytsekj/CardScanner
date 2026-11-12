@@ -84,6 +84,14 @@ Use the actual server URL that is reachable from the scanner computer. For LAN-o
 
 The example also includes optional camera settings and local fallback owner names. The server must be running and reachable before scanning can sync. The desktop UI requests people/account mappings and storage locations from `/api/scanner/options`; the updated main Flask app provides that endpoint and persists location/vending fields.
 
+### Production data synchronization
+
+The desktop client checks the production server for updated data on startup (set `MTG_SCANNER_SYNC_ON_STARTUP=0` to disable this). Use **Sync Server Data** in the application to check on demand. The sync uses the scanner API key and optional Cloudflare Access service-token headers; it does not require SSH or a separate database password.
+
+The server publishes a small authenticated manifest for `mtg_art_hashes.db` and `tcg_prices.json`. The client compares SHA256 hashes and downloads only changed files. Downloads are staged beside the local file, checksum-verified, schema/JSON-validated, and atomically replaced. An interrupted or invalid download leaves the previous local copy untouched. The local files remain usable when the server is offline.
+
+The art catalog download is a consistent SQLite snapshot of the current production `mtg_art_hashes.db`, including committed WAL contents. The manifest reports its file modification time, printing row count, and non-empty image-hash count. This is synchronization of the existing production database, not a generator: the server must still have a process that builds/refreshes image hashes. The current repository does not include a scheduled art-hash rebuild job. TCGCSV prices continue to be refreshed by the server's existing hourly updater.
+
 ## Camera setup
 
 ### Android camera (recommended: mobile PWA)
