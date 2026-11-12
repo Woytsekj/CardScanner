@@ -81,6 +81,12 @@ _SCANNER_MOBILE_NAMES_CACHE: list[str] = []
 _SCANNER_MOBILE_SET_CODES_CACHE_KEY = None
 _SCANNER_MOBILE_SET_CODES_CACHE: set[str] = set()
 
+# Reusable, transactionally consistent SQLite snapshot for desktop scanner downloads.
+_SCANNER_CLIENT_ART_SNAPSHOT_LOCK = threading.Lock()
+_SCANNER_CLIENT_ART_SNAPSHOT_SIGNATURE = None
+_SCANNER_CLIENT_ART_SNAPSHOT_PATH = None
+_SCANNER_CLIENT_ART_SNAPSHOT_INFO: dict[str, Any] = {}
+
 # Whitelisted inventory sort expressions. These are mapped server-side so request
 # parameters can never become raw SQL.
 SORTS = {
@@ -629,6 +635,11 @@ def scanner_api_path_allowed(path: str) -> bool:
         or path == "/api/version"
         or path == "/api/people"
         or path == "/api/scanner/options"
+        or path == "/api/scanner/client-data/manifest"
+        or path in {
+            "/api/scanner/client-data/mtg_art_hashes.db",
+            "/api/scanner/client-data/tcg_prices.json",
+        }
         or path.startswith("/api/price/")
         or path == "/api/scan"
         or path == "/api/scan/batch"
@@ -1577,6 +1588,172 @@ def check_api_key() -> bool:
         return False
     supplied = request.headers.get("X-Scanner-API-Key", "")
     return hmac.compare_digest(supplied, SCANNER_API_KEY)
+
+
+def _scanner_client_file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _scanner_client_art_snapshot() -> tuple[Path, dict[str, Any]]:
+    """Build/cache a consistent SQLite backup of the server's art catalog.
+
+    The source database may use WAL mode. sqlite3.Connection.backup() includes
+    committed WAL pages and gives the downloader a standalone SQLite file.
+    """
+    global _SCANNER_CLIENT_ART_SNAPSHOT_SIGNATURE
+    global _SCANNER_CLIENT_ART_SNAPSHOT_PATH, _SCANNER_CLIENT_ART_SNAPSHOT_INFO
+
+    if not DB_ART.is_file():
+        raise FileNotFoundError("The production mtg_art_hashes.db file is unavailable.")
+
+    with _SCANNER_CLIENT_ART_SNAPSHOT_LOCK:
+        for _attempt in range(2):
+            source_stat = DB_ART.stat()
+            signature = (
+                source_stat.st_dev,
+                source_stat.st_ino,
+                source_stat.st_size,
+                source_stat.st_mtime_ns,
+            )
+            cached_path = _SCANNER_CLIENT_ART_SNAPSHOT_PATH
+            if (
+                signature == _SCANNER_CLIENT_ART_SNAPSHOT_SIGNATURE
+                and cached_path is not None
+                and cached_path.is_file()
+            ):
+                return cached_path, dict(_SCANNER_CLIENT_ART_SNAPSHOT_INFO)
+
+            cache_dir = DATA_DIR / ".scanner-client-data"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            snapshot_path = cache_dir / (
+                f"mtg_art_hashes-{source_stat.st_ino}-{source_stat.st_mtime_ns}-{source_stat.st_size}.db"
+            )
+            if not snapshot_path.is_file():
+                temp_path = cache_dir / f".{uuid4().hex}.sqlite.tmp"
+                source_conn = None
+                target_conn = None
+                try:
+                    source_conn = sqlite3.connect(str(DB_ART), timeout=60)
+                    source_conn.execute("PRAGMA busy_timeout=10000")
+                    target_conn = sqlite3.connect(str(temp_path), timeout=60)
+                    source_conn.backup(target_conn, pages=256, sleep=0.05)
+                    integrity = target_conn.execute("PRAGMA integrity_check").fetchone()
+                    if not integrity or str(integrity[0]).lower() != "ok":
+                        raise RuntimeError("The art-hash SQLite snapshot failed integrity_check.")
+                    columns = {
+                        str(row[1])
+                        for row in target_conn.execute("PRAGMA table_info(card_art)").fetchall()
+                    }
+                    required = {
+                        "scryfall_id", "name", "set_code", "rarity",
+                        "tcgplayer_id", "phash", "collector_number",
+                    }
+                    if not required.issubset(columns):
+                        missing = ", ".join(sorted(required - columns))
+                        raise RuntimeError(f"The art-hash catalog is missing required columns: {missing}")
+                    row_count = int(target_conn.execute("SELECT COUNT(*) FROM card_art").fetchone()[0])
+                    phash_count = int(target_conn.execute(
+                        "SELECT COUNT(*) FROM card_art WHERE COALESCE(TRIM(phash),'') <> ''"
+                    ).fetchone()[0])
+                    target_conn.commit()
+                finally:
+                    if target_conn is not None:
+                        target_conn.close()
+                    if source_conn is not None:
+                        source_conn.close()
+
+                current_stat = DB_ART.stat()
+                current_signature = (
+                    current_stat.st_dev,
+                    current_stat.st_ino,
+                    current_stat.st_size,
+                    current_stat.st_mtime_ns,
+                )
+                if current_signature != signature:
+                    try:
+                        temp_path.unlink()
+                    except FileNotFoundError:
+                        pass
+                    continue
+                os.replace(temp_path, snapshot_path)
+            else:
+                snapshot_conn = sqlite3.connect(str(snapshot_path), timeout=30)
+                try:
+                    integrity = snapshot_conn.execute("PRAGMA integrity_check").fetchone()
+                    if not integrity or str(integrity[0]).lower() != "ok":
+                        raise RuntimeError("The cached art-hash SQLite snapshot is corrupt.")
+                    row_count = int(snapshot_conn.execute("SELECT COUNT(*) FROM card_art").fetchone()[0])
+                    phash_count = int(snapshot_conn.execute(
+                        "SELECT COUNT(*) FROM card_art WHERE COALESCE(TRIM(phash),'') <> ''"
+                    ).fetchone()[0])
+                finally:
+                    snapshot_conn.close()
+
+            info = {
+                "row_count": row_count,
+                "phash_count": phash_count,
+                "source_modified_at": datetime.fromtimestamp(
+                    source_stat.st_mtime, tz=timezone.utc
+                ).isoformat(),
+            }
+            _SCANNER_CLIENT_ART_SNAPSHOT_SIGNATURE = signature
+            _SCANNER_CLIENT_ART_SNAPSHOT_PATH = snapshot_path
+            _SCANNER_CLIENT_ART_SNAPSHOT_INFO = info
+            return snapshot_path, dict(info)
+
+    raise RuntimeError("The art-hash database changed repeatedly while a download snapshot was being prepared.")
+
+
+def _scanner_client_data_entry(path: Path, *, source_modified_at: str | None = None) -> dict[str, Any]:
+    stat = path.stat()
+    return {
+        "available": True,
+        "size": int(stat.st_size),
+        "sha256": _scanner_client_file_sha256(path),
+        "modified_at": source_modified_at or datetime.fromtimestamp(
+            stat.st_mtime, tz=timezone.utc
+        ).isoformat(),
+    }
+
+
+def _scanner_client_data_manifest() -> dict[str, Any]:
+    files: dict[str, dict[str, Any]] = {}
+    try:
+        art_snapshot, art_info = _scanner_client_art_snapshot()
+        art_entry = _scanner_client_data_entry(
+            art_snapshot, source_modified_at=art_info["source_modified_at"]
+        )
+        art_entry.update(art_info)
+        files["mtg_art_hashes.db"] = art_entry
+    except FileNotFoundError as exc:
+        files["mtg_art_hashes.db"] = {"available": False, "reason": str(exc)}
+    except (OSError, sqlite3.Error, RuntimeError) as exc:
+        app.logger.exception("Could not prepare desktop art-hash download")
+        files["mtg_art_hashes.db"] = {"available": False, "reason": str(exc)}
+
+    if PRICES_FILE.is_file():
+        try:
+            price_entry = _scanner_client_data_entry(PRICES_FILE)
+            price_entry["source_updated"] = str(get_price_meta().get("source_updated") or "")
+            files["tcg_prices.json"] = price_entry
+        except OSError as exc:
+            files["tcg_prices.json"] = {"available": False, "reason": str(exc)}
+    else:
+        files["tcg_prices.json"] = {
+            "available": False,
+            "reason": "The production TCGCSV price snapshot has not been created yet.",
+        }
+
+    return {
+        "success": True,
+        "server_time": datetime.now(timezone.utc).isoformat(),
+        "price_source_updated": str(get_price_meta().get("source_updated") or ""),
+        "files": files,
+    }
 
 
 def insert_or_increment_scan(payload: dict[str, Any]) -> dict[str, Any]:
@@ -3143,6 +3320,57 @@ _DESKTOP_SCANNER_DOWNLOAD_FILES = (
     "camera_probe.py",
     "CHANGES_scanner-client_v39.md",
 )
+
+
+@app.get("/api/scanner/client-data/manifest")
+def api_scanner_client_data_manifest():
+    """Return hashes and metadata for authenticated desktop-client data sync."""
+    if not SCANNER_API_KEY:
+        return jsonify({"success": False, "error": "SCANNER_API_KEY is not configured on the server"}), 503
+    if not check_api_key():
+        return jsonify({"success": False, "error": "Invalid scanner API key"}), 401
+    return jsonify(_scanner_client_data_manifest())
+
+
+@app.get("/api/scanner/client-data/<file_name>")
+def api_scanner_client_data_download(file_name: str):
+    """Download one allow-listed scanner data file using the scanner API key."""
+    if not SCANNER_API_KEY:
+        return jsonify({"success": False, "error": "SCANNER_API_KEY is not configured on the server"}), 503
+    if not check_api_key():
+        return jsonify({"success": False, "error": "Invalid scanner API key"}), 401
+
+    if file_name == "mtg_art_hashes.db":
+        try:
+            source_path, _info = _scanner_client_art_snapshot()
+        except FileNotFoundError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 404
+        except (OSError, sqlite3.Error, RuntimeError) as exc:
+            app.logger.exception("Could not prepare desktop art-hash download")
+            return jsonify({"success": False, "error": f"Could not prepare art-hash database: {exc}"}), 503
+    elif file_name == "tcg_prices.json":
+        source_path = PRICES_FILE
+        if not source_path.is_file():
+            return jsonify({"success": False, "error": "The production TCGCSV price snapshot is unavailable."}), 404
+    else:
+        return jsonify({"success": False, "error": "Unsupported scanner data file."}), 404
+
+    try:
+        sha256 = _scanner_client_file_sha256(source_path)
+        response = send_file(
+            source_path,
+            mimetype="application/octet-stream",
+            as_attachment=True,
+            download_name=file_name,
+            conditional=True,
+            max_age=0,
+        )
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["X-Scanner-File-SHA256"] = sha256
+        return response
+    except OSError as exc:
+        app.logger.exception("Could not stream desktop scanner data file %s", file_name)
+        return jsonify({"success": False, "error": f"Could not read scanner data file: {exc}"}), 503
 
 
 @app.get("/scanner/desktop/download")
