@@ -163,12 +163,20 @@
         <label>Location<select name="location" onchange="this.form.submit()"><option value="">All locations</option>{% for location in locations %}<option value="{{ location }}" {% if selected_location == location %}selected{% endif %}>{{ location }}</option>{% endfor %}</select></label>
         <label>Vending status<select name="vending" onchange="this.form.submit()"><option value="" {% if not selected_vending %}selected{% endif %}>All cards</option><option value="yes" {% if selected_vending == 'yes' %}selected{% endif %}>For vending</option><option value="no" {% if selected_vending == 'no' %}selected{% endif %}>Not for vending</option></select></label>
         {% if selected_type or selected_color or selected_location or selected_vending %}<a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, sort=sort_key, dir=direction, view=view) }}">Clear filters</a>{% endif %}
-        <span class="filter-note">Search supports set:, cn:, t:, c:, o:, r:, is:foil, owner:, loc:, deck:, vending:, order: and direction:. Enrich older cards for type/rules filters.</span>
+        <span class="filter-note">Search supports set:, cn:, t:, c:, o:, r:, art:, otag:, is:foil, owner:, loc:, deck:, vending:, order: and direction:. Use art: for illustration tags and otag: for Oracle/function tags.</span>
       </form>
     </section>
 
     <section class="meta-row">
       <span>Prices: TCGCSV</span>
+      {% if scryfall_catalog_meta %}
+        {% set catalog_stats = scryfall_catalog_meta.get('catalog', {}) %}
+        <span>Art hashes: {{ catalog_stats.get('hashed_printings', 0) }} / {{ catalog_stats.get('printings', 0) }}</span>
+        <span>Tagger: {{ catalog_stats.get('art_tag_assignments', 0) }} art · {{ catalog_stats.get('oracle_tag_assignments', 0) }} Oracle</span>
+        <span>Last Scryfall sync: {{ scryfall_catalog_meta.get('synced_at', '')|localdt }}</span>
+      {% else %}
+        <span>Scryfall catalog: initial sync pending</span>
+      {% endif %}
       <span>Normal: {{ global_finish_totals.normal }}</span>
       <span>Foil: {{ global_finish_totals.foil }}</span>
       <span>Last price sync: {{ price_meta.get('synced_at', 'not yet synced')|localdt }}</span>
@@ -224,6 +232,8 @@
         </div>
         <div class="tile-body">
           <div class="card-title">{{ item.name }}</div>
+          {% if item.art_tags %}<div class="card-tags"><span class="tag-kind art-tag-kind">Art</span>{% for tag in item.art_tags.split(' · ') %}<span class="tag-chip art-tag">{{ tag }}</span>{% endfor %}</div>{% endif %}
+          {% if item.oracle_tags %}<div class="card-tags"><span class="tag-kind oracle-tag-kind">Oracle</span>{% for tag in item.oracle_tags.split(' · ') %}<span class="tag-chip oracle-tag">{{ tag }}</span>{% endfor %}</div>{% endif %}
           {% if item.alternate_names %}<div class="alternate-name">Also: {{ item.alternate_names }}</div>{% endif %}
           <div class="subtle">{{ item.set_code or '—' }} · #{{ item.collector_number or '—' }} · {{ item.rarity }}</div>
           <div class="finish-counts"><span>Normal {{ item.card_normal_qty }}</span><span>Foil {{ item.card_foil_qty }}</span></div>
@@ -288,6 +298,8 @@
                   {% if item.image_url %}<img src="{{ item.image_url }}" class="thumb oracle-image-trigger" alt="" data-scryfall="{{ item.scryfall_id or '' }}" data-name="{{ item.name|e }}" loading="lazy" onerror="imageFailed(this)">{% else %}<div class="thumb placeholder-thumb">—</div>{% endif %}
                   <div>
                     <div class="card-title">{{ item.name }}</div>
+                    {% if item.art_tags %}<div class="card-tags"><span class="tag-kind art-tag-kind">Art</span>{% for tag in item.art_tags.split(' · ') %}<span class="tag-chip art-tag">{{ tag }}</span>{% endfor %}</div>{% endif %}
+                    {% if item.oracle_tags %}<div class="card-tags"><span class="tag-kind oracle-tag-kind">Oracle</span>{% for tag in item.oracle_tags.split(' · ') %}<span class="tag-chip oracle-tag">{{ tag }}</span>{% endfor %}</div>{% endif %}
                     {% if item.tcgplayer_id %}<div class="subtle"><a class="external-card-link" href="https://www.tcgplayer.com/product/{{ item.tcgplayer_id|urlencode }}" target="_blank" rel="noopener noreferrer">TCGplayer #{{ item.tcgplayer_id }} ↗</a></div>{% endif %}
                   </div>
                 </div>

@@ -1079,3 +1079,35 @@ body[data-theme="light"] .source-free .deck-source-badge { background:#fff1c2; c
 body[data-theme="light"] .source-other-deck .deck-source-badge { background:#dceeff; color:#174d78; }
 body[data-theme="light"] .source-other-owner .deck-source-badge { background:#efe2ff; color:#603b88; }
 body[data-theme="light"] .source-missing .deck-source-badge { background:#ffe0e0; color:#7c2525; }
+
+
+/* Scryfall Tagger chips */
+.card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 5px;
+}
+.tag-kind {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  margin-right: 2px;
+}
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.art-tag { border-color: #806a39; color: #e6c982; }
+.oracle-tag { border-color: #416879; color: #9ed5e8; }

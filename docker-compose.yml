@@ -63,6 +63,24 @@ services:
       PRICE_ALERT_MAX_PER_SYNC: ${PRICE_ALERT_MAX_PER_SYNC:-10}
     restart: unless-stopped
 
+  scryfall:
+    build: .
+    container_name: mtg-scanner-scryfall
+    user: "${APP_UID:-0}:${APP_GID:-0}"
+    command: ["python", "scryfall_updater.py"]
+    volumes:
+      - ./data:/data
+    environment:
+      DATA_DIR: /data
+      SCRYFALL_USER_AGENT: ${SCRYFALL_USER_AGENT:-CardScanner/1.0 (https://github.com/Woytsekj/CardScanner)}
+      SCRYFALL_CATALOG_CHECK_INTERVAL: ${SCRYFALL_CATALOG_CHECK_INTERVAL:-86400}
+      SCRYFALL_IMAGE_WORKERS: ${SCRYFALL_IMAGE_WORKERS:-4}
+      SCRYFALL_IMAGE_REQUEST_DELAY: ${SCRYFALL_IMAGE_REQUEST_DELAY:-0.12}
+      SCRYFALL_IMAGE_BATCH_SIZE: ${SCRYFALL_IMAGE_BATCH_SIZE:-250}
+      SCRYFALL_BULK_TIMEOUT: ${SCRYFALL_BULK_TIMEOUT:-300}
+      SCRYFALL_IMAGE_TIMEOUT: ${SCRYFALL_IMAGE_TIMEOUT:-30}
+    restart: unless-stopped
+
   backup:
     build: .
     container_name: mtg-scanner-backup

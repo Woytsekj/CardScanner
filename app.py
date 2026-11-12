@@ -31,6 +31,8 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
 from flask.sessions import SecureCookieSessionInterface
 
+from scryfall_catalog import ensure_art_catalog_schema
+
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("DATA_DIR", BASE_DIR))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -62,6 +64,7 @@ SCRYFALL_USER_AGENT = os.environ.get("SCRYFALL_USER_AGENT", "MTGScannerInventory
 SCRYFALL_TIMEOUT = float(os.environ.get("SCRYFALL_TIMEOUT", "10"))
 SCRYFALL_BULK_TIMEOUT = float(os.environ.get("SCRYFALL_BULK_TIMEOUT", "120"))
 SCRYFALL_BULK_META_FILE = DATA_DIR / "scryfall_bulk_sync.json"
+SCRYFALL_CATALOG_META_FILE = DATA_DIR / "scryfall_catalog_sync.json"
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
 PRICE_ALERT_ENABLED = os.environ.get("PRICE_ALERT_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 PRICE_ALERT_LOOKBACK_DAYS = max(1, int(os.environ.get("PRICE_ALERT_LOOKBACK_DAYS", "30")))
@@ -951,37 +954,54 @@ def migrate_db() -> None:
 
 
 def attach_art_join(conn: sqlite3.Connection) -> str:
+    """Attach the local printing/tag catalog, creating an empty compatible DB if needed."""
     art_join = (
         "LEFT JOIN (SELECT NULL AS scryfall_id, "
-        "NULL AS tcgplayer_id, NULL AS collector_number) a ON 1=0"
+        "NULL AS tcgplayer_id, NULL AS collector_number, "
+        "NULL AS oracle_id, NULL AS illustration_id) a ON 1=0"
     )
-
-    if DB_ART.exists():
+    try:
+        ensure_art_catalog_schema(DB_ART)
+        conn.execute("ATTACH DATABASE ? AS art_db", (str(DB_ART),))
+        conn.execute("SELECT 1 FROM art_db.card_art LIMIT 1").fetchone()
+        art_join = "LEFT JOIN art_db.card_art a ON i.scryfall_id = a.scryfall_id"
+    except (OSError, sqlite3.Error) as exc:
+        app.logger.warning("Could not attach the local Scryfall catalog: %s", exc)
         try:
-            conn.execute(
-                "ATTACH DATABASE ? AS art_db",
-                (str(DB_ART),),
-            )
-            conn.execute(
-                "SELECT 1 FROM art_db.card_art LIMIT 1"
-            ).fetchone()
-
-            art_join = (
-                "LEFT JOIN art_db.card_art a "
-                "ON i.scryfall_id = a.scryfall_id"
-            )
+            conn.execute("DETACH DATABASE art_db")
         except sqlite3.Error:
-            try:
-                conn.execute("DETACH DATABASE art_db")
-            except sqlite3.Error:
-                pass
-
-    mapping_join = (
-        "LEFT JOIN card_price_mapping m "
-        "ON m.scryfall_id = i.scryfall_id"
-    )
-
+            pass
+    mapping_join = "LEFT JOIN card_price_mapping m ON m.scryfall_id = i.scryfall_id"
     return f"{art_join}\n{mapping_join}"
+
+
+def art_tag_select_sql() -> str:
+    """Return tag labels for the current printing without changing inventory row cardinality."""
+    return """
+        COALESCE((
+            SELECT GROUP_CONCAT(tag_label, ' · ')
+            FROM (
+                SELECT DISTINCT st.label AS tag_label
+                FROM art_db.card_art_faces af
+                JOIN art_db.art_tag_assignments ata ON ata.illustration_id = af.illustration_id
+                JOIN art_db.scryfall_tags st ON st.id = ata.tag_id AND st.tag_type = 'art'
+                WHERE af.scryfall_id = i.scryfall_id
+                ORDER BY st.label COLLATE NOCASE
+                LIMIT 5
+            )
+        ), '') AS art_tags,
+        COALESCE((
+            SELECT GROUP_CONCAT(tag_label, ' · ')
+            FROM (
+                SELECT DISTINCT st.label AS tag_label
+                FROM art_db.oracle_tag_assignments ota
+                JOIN art_db.scryfall_tags st ON st.id = ota.tag_id AND st.tag_type = 'oracle'
+                WHERE ota.oracle_id = COALESCE(cm.oracle_id, a.oracle_id)
+                ORDER BY st.label COLLATE NOCASE
+                LIMIT 5
+            )
+        ), '') AS oracle_tags
+    """
 
 
 def to_float(value: Any, default: float = 0.0) -> float:
@@ -1218,6 +1238,31 @@ def parse_scryfall_search(search: str) -> tuple[list[str], list[Any], str | None
             if field in {"direction", "dir"}:
                 if value.lower() in {"asc", "desc"}:
                     direction_override = value.lower()
+                continue
+            if field in {"art", "atag", "arttag", "otag", "oracletag", "oracle_tag", "function"}:
+                tag_type = "art" if field in {"art", "atag", "arttag"} else "oracle"
+                safe_value = value.replace("%", "").replace("_", "")
+                pattern = f"%{safe_value.replace('*', '%')}%"
+                if tag_type == "art":
+                    expr = """EXISTS (
+                        SELECT 1 FROM art_db.art_tag_assignments ata
+                        JOIN art_db.scryfall_tags st ON st.id = ata.tag_id AND st.tag_type = 'art'
+                        JOIN art_db.card_art_faces af ON af.illustration_id = ata.illustration_id
+                        WHERE af.scryfall_id = i.scryfall_id
+                          AND (st.slug LIKE ? COLLATE NOCASE OR st.label LIKE ? COLLATE NOCASE
+                               OR EXISTS (SELECT 1 FROM art_db.scryfall_tag_aliases sa
+                                          WHERE sa.tag_id = st.id AND sa.alias LIKE ? COLLATE NOCASE))
+                    )"""
+                else:
+                    expr = """EXISTS (
+                        SELECT 1 FROM art_db.oracle_tag_assignments ota
+                        JOIN art_db.scryfall_tags st ON st.id = ota.tag_id AND st.tag_type = 'oracle'
+                        WHERE ota.oracle_id = COALESCE(cm.oracle_id, a.oracle_id)
+                          AND (st.slug LIKE ? COLLATE NOCASE OR st.label LIKE ? COLLATE NOCASE
+                               OR EXISTS (SELECT 1 FROM art_db.scryfall_tag_aliases sa
+                                          WHERE sa.tag_id = st.id AND sa.alias LIKE ? COLLATE NOCASE))
+                    )"""
+                append(expr, [pattern, pattern, pattern], negated or operator == "!=")
                 continue
             if field in {"set", "s"}:
                 pattern = value.replace("*", "%")
@@ -1476,7 +1521,8 @@ def inventory_rows(
                COALESCE(i.location, 'Free') AS location,
                i.deck_id, COALESCE(i.for_vending, 0) AS for_vending,
                cm.type_line, cm.colors_text, cm.mana_value, cm.oracle_text, cm.oracle_id, cm.legalities_json, cm.updated_at AS metadata_updated_at,
-               COALESCE((SELECT GROUP_CONCAT(ca.alias, ' · ') FROM card_aliases ca WHERE ca.scryfall_id = i.scryfall_id), '') AS alternate_names
+               COALESCE((SELECT GROUP_CONCAT(ca.alias, ' · ') FROM card_aliases ca WHERE ca.scryfall_id = i.scryfall_id), '') AS alternate_names,
+               {art_tag_select_sql()}
         FROM inventory i
         {join_sql}
         {price_sort_join}
@@ -2788,6 +2834,7 @@ def index():
         total_rows=total_rows,
         total_cards=total_cards,
         price_meta=get_price_meta(),
+        scryfall_catalog_meta=get_scryfall_catalog_meta(),
         price_history_days=PRICE_HISTORY_DAYS,
         scanner_api_enabled=bool(SCANNER_API_KEY),
         admin_user=current_admin(),
@@ -5752,6 +5799,15 @@ def get_scryfall_bulk_meta() -> dict[str, Any]:
     if not SCRYFALL_BULK_META_FILE.exists(): return {}
     try: return json.loads(SCRYFALL_BULK_META_FILE.read_text(encoding="utf-8"))
     except (OSError,json.JSONDecodeError): return {}
+
+
+def get_scryfall_catalog_meta() -> dict[str, Any]:
+    """Read the latest automatic printing/hash/Tagger sync status."""
+    try:
+        payload = json.loads(SCRYFALL_CATALOG_META_FILE.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 def get_scryfall_bulk_manifest() -> dict[str, Any]:
