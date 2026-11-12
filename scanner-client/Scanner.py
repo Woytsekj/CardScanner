@@ -727,13 +727,16 @@ class ScannerWindow(QMainWindow):
                     for name in changed:
                         info = result.get("details", {}).get(name, {})
                         if name == "mtg_art_hashes.db":
-                            details.append(
-                                f"{info.get('row_count', '?'):,} printings / "
-                                f"{info.get('phash_count', '?'):,} image hashes"
-                            )
+                            rows = info.get("row_count")
+                            hashes = info.get("phash_count")
+                            rows_text = f"{int(rows):,}" if rows is not None else "unknown"
+                            hashes_text = f"{int(hashes):,}" if hashes is not None else "unknown"
+                            details.append(f"{rows_text} printings / {hashes_text} image hashes")
                         elif name == "tcg_prices.json":
+                            price_rows = info.get("price_rows")
+                            price_rows_text = f"{int(price_rows):,}" if price_rows is not None else "unknown"
                             details.append(
-                                f"{info.get('price_rows', '?'):,} price rows "
+                                f"{price_rows_text} price rows "
                                 f"(TCGCSV {info.get('source_updated') or 'source date unavailable'})"
                             )
                     note = "; ".join(details) if details else ", ".join(changed)
