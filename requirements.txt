@@ -5,3 +5,6 @@ gunicorn>=23,<24
 # Runtime image processing for scanner recognition
 Pillow>=13.0.0,<14
 opencv-python-headless>=4.10,<5
+
+# Shared pHash implementation used by the desktop scanner
+ImageHash>=4.3,<5
