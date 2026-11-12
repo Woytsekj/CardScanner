@@ -1629,11 +1629,12 @@ def _scanner_client_art_snapshot() -> tuple[Path, dict[str, Any]]:
             source_stat.st_mtime_ns,
             wal_signature,
         )
-        return source_stat, signature, effective_mtime
+        wal_tag = "none" if wal_signature is None else "-".join(str(value) for value in wal_signature)
+        return source_stat, signature, effective_mtime, wal_tag
 
     with _SCANNER_CLIENT_ART_SNAPSHOT_LOCK:
         for _attempt in range(2):
-            source_stat, signature, effective_mtime = source_signature()
+            source_stat, signature, effective_mtime, wal_tag = source_signature()
             cached_path = _SCANNER_CLIENT_ART_SNAPSHOT_PATH
             if (
                 signature == _SCANNER_CLIENT_ART_SNAPSHOT_SIGNATURE
@@ -1645,7 +1646,7 @@ def _scanner_client_art_snapshot() -> tuple[Path, dict[str, Any]]:
             cache_dir = DATA_DIR / ".scanner-client-data"
             cache_dir.mkdir(parents=True, exist_ok=True)
             snapshot_path = cache_dir / (
-                f"mtg_art_hashes-{source_stat.st_ino}-{source_stat.st_mtime_ns}-{source_stat.st_size}.db"
+                f"mtg_art_hashes-{source_stat.st_ino}-{source_stat.st_mtime_ns}-{source_stat.st_size}-wal-{wal_tag}.db"
             )
             if not snapshot_path.is_file():
                 temp_path = cache_dir / f".{uuid4().hex}.sqlite.tmp"
@@ -1681,7 +1682,7 @@ def _scanner_client_art_snapshot() -> tuple[Path, dict[str, Any]]:
                     if source_conn is not None:
                         source_conn.close()
 
-                _current_stat, current_signature, _current_mtime = source_signature()
+                _current_stat, current_signature, _current_mtime, _current_wal_tag = source_signature()
                 if current_signature != signature:
                     try:
                         temp_path.unlink()
