@@ -40,6 +40,10 @@ jobs:
       - name: Run inventory and price-history regression tests
         run: python -m unittest discover -s tests -t . -p 'test_*.py' -v
 
+      - name: Check desktop scanner Python syntax
+        run: python -m py_compile scanner-client/Scanner.py scanner-client/scanner_engine.py scanner-client/camera_probe.py
+
+
       - name: Build web Docker image
         run: docker build --pull -t mtg-scanner-web:test .
 
