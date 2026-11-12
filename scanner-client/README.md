@@ -101,7 +101,9 @@ If you still want the desktop PySide6 scanner to use the phone as its camera, ex
 
 ### Desktop camera sources
 
-By default, `start_scanner.fish` uses camera index `0` when `MTG_VIDEO_SOURCE` is not set. Set `MTG_VIDEO_SOURCE` to a device path such as `/dev/video2` if needed and ensure the device is readable by your user.
+The desktop app includes a **Camera source** dropdown and **Refresh cameras** button. It lists Linux V4L2 devices (using their system device names and `/dev/videoN` paths), switches the live preview when a different camera is selected, and remembers the last selection for the next launch. Connect or start a camera stream, then use **Refresh cameras** if it was not present when the app opened.
+
+By default, `start_scanner.fish` uses camera index `0` when `MTG_VIDEO_SOURCE` is not set. Set `MTG_VIDEO_SOURCE` to a device path such as `/dev/video2` if needed and ensure the device is readable by your user. When legacy phone-camera mode is enabled, the launcher automatically uses the configured scrcpy V4L2 node (for example `/dev/video9`) instead of an old `0` setting. The dropdown can still be used to switch to another camera while the app is open.
 
 ## Launch
 
