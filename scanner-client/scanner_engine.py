@@ -1,5 +1,6 @@
 import cv2
 import hashlib
+import threading
 import imagehash
 from PIL import Image
 import sqlite3
@@ -38,7 +39,7 @@ REJECTED_QUEUE_FILE = os.path.join(SCRIPT_DIR, os.environ.get("MTG_SCAN_REJECTED
 REQUEST_TIMEOUT = float(os.environ.get("MTG_SCAN_TIMEOUT", "8"))
 DATA_SYNC_ON_STARTUP = os.environ.get("MTG_SCANNER_SYNC_ON_STARTUP", "1").strip().lower() not in {"0", "false", "no", "off"}
 DATA_SYNC_TIMEOUT = max(15, int(os.environ.get("MTG_SCANNER_SYNC_TIMEOUT", "120")))
-_DATA_SYNC_LOCK = __import__("threading").Lock()
+_DATA_SYNC_LOCK = threading.Lock()
 OCR_GPU_SETTING = os.environ.get("MTG_OCR_GPU", "auto").strip().lower()
 if OCR_GPU_SETTING in {"0", "false", "no", "off", "cpu"}:
     OCR_GPU = False
