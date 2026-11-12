@@ -57,7 +57,15 @@ def connect_art() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_ART, timeout=60)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=30000")
-    conn.execute("PRAGMA journal_mode=WAL")
+    # Prefer WAL so the web app can keep reading while a bulk catalog update commits.
+    # If an existing reader prevents switching journal mode during startup, keep the
+    # current mode; the normal SQLite busy timeout still protects writes.
+    try:
+        current_mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+        if current_mode != "wal":
+            conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError as exc:
+        print(f"[scryfall] could not enable WAL; keeping the current SQLite journal mode: {exc}")
     return conn
 
 
@@ -219,7 +227,10 @@ def import_printings(path: Path, build_updated_at: str) -> dict[str, int]:
             old_hash = old["phash"] if old else None
             old_uri = old["image_uri"] if old else None
             # A hash remains valid only when the exact image resource is unchanged.
-            phash = old_hash if image_uri and old_uri == image_uri else None
+            # Legacy art catalogs predate image_uri. Preserve their valid existing
+            # pHashes on the first metadata migration instead of needlessly rehashing
+            # every printing; subsequent URL changes still invalidate the hash.
+            phash = old_hash if old_hash and image_uri and (old_uri is None or old_uri == image_uri) else None
             if image_uri:
                 images += 1
             conn.execute(
@@ -235,8 +246,11 @@ def import_printings(path: Path, build_updated_at: str) -> dict[str, int]:
                     rarity=excluded.rarity,
                     tcgplayer_id=excluded.tcgplayer_id,
                     collector_number=excluded.collector_number,
-                    phash=CASE WHEN card_art.image_uri IS excluded.image_uri
-                               THEN card_art.phash ELSE NULL END,
+                    phash=CASE
+                        WHEN card_art.image_uri IS NULL AND COALESCE(card_art.phash,'')<>'' THEN card_art.phash
+                        WHEN card_art.image_uri IS excluded.image_uri THEN card_art.phash
+                        ELSE NULL
+                    END,
                     oracle_id=excluded.oracle_id,
                     illustration_id=excluded.illustration_id,
                     image_uri=excluded.image_uri,
