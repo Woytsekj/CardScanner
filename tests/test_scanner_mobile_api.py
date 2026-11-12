@@ -820,6 +820,23 @@ class ScannerMobileApiTests(unittest.TestCase):
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM card_art").fetchone()[0], 1)
         conn.close()
 
+        app_module.PRICES_FILE.write_text(
+            json.dumps({"success": True, "sourceUpdated": "2026-11-12T00:00:00Z",
+                        "results": [{"productId": 12345, "marketPrice": 1.25}]}),
+            encoding="utf-8",
+        )
+        price_response = self.client.get(
+            "/api/scanner/client-data/tcg_prices.json",
+            headers=self.api_key_headers(),
+            base_url="http://localhost",
+        )
+        self.assertEqual(price_response.status_code, 200, price_response.get_data(as_text=True)[:500])
+        self.assertEqual(
+            price_response.headers.get("X-Scanner-File-SHA256"),
+            hashlib.sha256(price_response.data).hexdigest(),
+        )
+        self.assertTrue(json.loads(price_response.data)["success"])
+
         unsupported = self.client.get(
             "/api/scanner/client-data/mtg_inventory.db",
             headers=self.api_key_headers(),
