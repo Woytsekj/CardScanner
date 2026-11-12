@@ -5,7 +5,7 @@
 <meta name="csrf-token" content="{{ csrf_token }}">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MTG Scanner Inventory</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.12.4') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.12.5') }}">
 <script src="{{ url_for('static', filename='security.js') }}" defer></script>
 <script src="{{ url_for('static', filename='theme.js', v='39.12.4') }}" defer></script>
 <script src="{{ url_for('static', filename='price-history.js', v='39.12.4') }}" defer></script>
@@ -232,8 +232,6 @@
         </div>
         <div class="tile-body">
           <div class="card-title">{{ item.name }}</div>
-          {% if item.art_tags %}<div class="card-tags"><span class="tag-kind art-tag-kind">Art</span>{% for tag in item.art_tags.split(' · ') %}<span class="tag-chip art-tag">{{ tag }}</span>{% endfor %}</div>{% endif %}
-          {% if item.oracle_tags %}<div class="card-tags"><span class="tag-kind oracle-tag-kind">Oracle</span>{% for tag in item.oracle_tags.split(' · ') %}<span class="tag-chip oracle-tag">{{ tag }}</span>{% endfor %}</div>{% endif %}
           {% if item.alternate_names %}<div class="alternate-name">Also: {{ item.alternate_names }}</div>{% endif %}
           <div class="subtle">{{ item.set_code or '—' }} · #{{ item.collector_number or '—' }} · {{ item.rarity }}</div>
           <div class="finish-counts"><span>Normal {{ item.card_normal_qty }}</span><span>Foil {{ item.card_foil_qty }}</span></div>
@@ -256,7 +254,7 @@
           </div>
           <div class="tile-controls">
             {% if item.tcgplayer_id %}<a class="button secondary tcgplayer-button" href="https://www.tcgplayer.com/product/{{ item.tcgplayer_id|urlencode }}" target="_blank" rel="noopener noreferrer" title="Open this printing on TCGplayer">TCGplayer ↗</a><button class="button secondary price-history-button" data-tcg="{{ item.tcgplayer_id }}" data-name="{{ item.name|e }}" data-finish="{{ item.finish }}">Price History</button>{% endif %}
-            {% if item.scryfall_id %}<button class="button secondary oracle-button" data-scryfall="{{ item.scryfall_id }}" data-name="{{ item.name|e }}" data-image="{{ item.image_url or '' }}">Oracle / Image</button>{% endif %}
+            {% if item.scryfall_id %}<button class="button secondary oracle-button" data-scryfall="{{ item.scryfall_id }}" data-name="{{ item.name|e }}" data-image="{{ item.image_url or '' }}">Card Details</button>{% endif %}
             {% if admin_user %}
             <button class="button secondary counts-button edit-only-control" data-scryfall="{{ item.scryfall_id }}" data-owner="{{ item.owner|e }}" data-name="{{ item.name|e }}" data-normal="{{ item.owner_normal_qty }}" data-foil="{{ item.owner_foil_qty }}">Edit counts</button>
             <button class="button secondary move-button edit-only-control" data-id="{{ item.id }}" data-name="{{ item.name|e }}" data-qty="{{ item.quantity }}" data-location="{{ item.location|e }}">Move</button>
@@ -298,8 +296,6 @@
                   {% if item.image_url %}<img src="{{ item.image_url }}" class="thumb oracle-image-trigger" alt="" data-scryfall="{{ item.scryfall_id or '' }}" data-name="{{ item.name|e }}" loading="lazy" onerror="imageFailed(this)">{% else %}<div class="thumb placeholder-thumb">—</div>{% endif %}
                   <div>
                     <div class="card-title">{{ item.name }}</div>
-                    {% if item.art_tags %}<div class="card-tags"><span class="tag-kind art-tag-kind">Art</span>{% for tag in item.art_tags.split(' · ') %}<span class="tag-chip art-tag">{{ tag }}</span>{% endfor %}</div>{% endif %}
-                    {% if item.oracle_tags %}<div class="card-tags"><span class="tag-kind oracle-tag-kind">Oracle</span>{% for tag in item.oracle_tags.split(' · ') %}<span class="tag-chip oracle-tag">{{ tag }}</span>{% endfor %}</div>{% endif %}
                     {% if item.tcgplayer_id %}<div class="subtle"><a class="external-card-link" href="https://www.tcgplayer.com/product/{{ item.tcgplayer_id|urlencode }}" target="_blank" rel="noopener noreferrer">TCGplayer #{{ item.tcgplayer_id }} ↗</a></div>{% endif %}
                   </div>
                 </div>
@@ -440,22 +436,23 @@
 
   <dialog id="oracleDialog" class="price-history-dialog oracle-dialog">
     <button class="dialog-close" type="button" onclick="document.getElementById('oracleDialog').close()">×</button>
-    <h2 id="oracleTitle">Oracle Text</h2>
-    <div class="oracle-switch-actions"><button type="button" class="button secondary" id="oracleSwitchButton">Show card image</button><span class="subtle">Click the rules text or image to switch views.</span></div>
-    <section id="oracleTextPanel" class="oracle-switch-panel" role="button" tabindex="0" aria-label="Switch to card image">
-      <div id="oracleSubtitle" class="subtle"></div>
-      <div id="oracleTypeLine" class="oracle-type-line"></div>
-      <div id="oracleManaCost" class="oracle-mana-cost"></div>
-      <pre id="oracleText" class="oracle-text"></pre>
-      <h3>Legality</h3>
-      <div id="oracleLegalities" class="legality-grid"></div>
-    </section>
-    <button type="button" id="oracleImagePanel" class="oracle-image-panel" hidden aria-label="Switch to Oracle text">
-      <img id="oracleCardImage" src="" alt="">
-      <span>Click image to return to Oracle text</span>
-    </button>
-    <div id="oracleUpdated" class="subtle"></div>
-    <div id="oracleStatus" class="status"></div>
+    <h2 id="oracleTitle">Card Details</h2>
+    <div class="oracle-detail-layout">
+      <div class="oracle-detail-image-wrap"><img id="oracleCardImage" class="oracle-detail-image" src="" alt=""></div>
+      <div class="oracle-detail-content">
+        <div id="oracleSubtitle" class="subtle"></div>
+        <div id="oracleTypeLine" class="oracle-type-line"></div>
+        <div id="oracleManaCost" class="oracle-mana-cost"></div>
+        <pre id="oracleText" class="oracle-text"></pre>
+        <h3>Tags</h3>
+        <div class="oracle-tag-section"><strong>Art tags</strong><div id="oracleArtTags" class="oracle-tag-list"></div></div>
+        <div class="oracle-tag-section"><strong>Oracle tags</strong><div id="oracleOracleTags" class="oracle-tag-list"></div></div>
+        <h3>Legality</h3>
+        <div id="oracleLegalities" class="legality-grid"></div>
+        <div id="oracleUpdated" class="subtle"></div>
+        <div id="oracleStatus" class="status"></div>
+      </div>
+    </div>
   </dialog>
 
 <script src="{{ url_for('static', filename='multi-select.js') }}"></script>
@@ -666,24 +663,23 @@ const oracleCardImage = document.getElementById('oracleCardImage');
 const oracleSwitchButton = document.getElementById('oracleSwitchButton');
 let activeOracleImageUrl = '';
 function escOracle(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function switchOracleDisplay(mode) {
-  const showImage = mode === 'image';
-  oracleTextPanel.hidden = showImage;
-  oracleImagePanel.hidden = !showImage;
-  oracleSwitchButton.textContent = showImage ? 'Show Oracle text' : 'Show card image';
-  oracleTextPanel.setAttribute('aria-label', 'Switch to card image');
-  oracleImagePanel.setAttribute('aria-label', 'Switch to Oracle text');
+function renderOracleTagList(container, tags, kind) {
+  const values = Array.isArray(tags) ? tags : [];
+  container.innerHTML = values.length
+    ? values.map(tag => `<span class="oracle-tag-chip ${kind}">${escOracle(tag)}</span>`).join('')
+    : '<span class="subtle">No tags available.</span>';
 }
-async function openOracle(sid, name, imageUrl = '', initialMode = 'text') {
-  oracleTitle.textContent = name || 'Oracle Text';
+async function openOracle(sid, name, imageUrl = '') {
+  oracleTitle.textContent = name || 'Card Details';
   oracleSubtitle.textContent = 'Loading cached metadata…';
-  oracleTypeLine.textContent = ''; oracleManaCost.textContent = ''; oracleTextEl.textContent = ''; oracleLegalities.innerHTML = ''; oracleUpdated.textContent = ''; oracleStatus.textContent = '';
+  oracleTypeLine.textContent = ''; oracleManaCost.textContent = ''; oracleTextEl.textContent = '';
+  oracleLegalities.innerHTML = ''; oracleArtTags.innerHTML = ''; oracleOracleTags.innerHTML = '';
+  oracleUpdated.textContent = ''; oracleStatus.textContent = '';
   activeOracleImageUrl = imageUrl || (sid ? `https://cards.scryfall.io/normal/front/${sid[0]}/${sid[1]}/${sid}.jpg` : '');
   oracleCardImage.src = activeOracleImageUrl;
   oracleCardImage.alt = name || '';
-  switchOracleDisplay(initialMode === 'image' ? 'image' : 'text');
   oracleDialog.showModal();
-  if (!sid) { oracleStatus.textContent = 'No Scryfall ID is available for this printing.'; return; }
+  if (!sid) { oracleSubtitle.textContent = 'No Scryfall ID is available for this printing.'; return; }
   try {
     const r = await fetch('/api/card-info/' + encodeURIComponent(sid));
     const data = await r.json().catch(() => ({}));
@@ -691,22 +687,19 @@ async function openOracle(sid, name, imageUrl = '', initialMode = 'text') {
     const c = data.card || {};
     oracleSubtitle.textContent = c.colors ? 'Colors: ' + c.colors : '';
     oracleTypeLine.textContent = c.type_line || ''; oracleManaCost.textContent = c.mana_cost || ''; oracleTextEl.textContent = c.oracle_text || 'No oracle text.';
+    renderOracleTagList(oracleArtTags, c.art_tags, 'art');
+    renderOracleTagList(oracleOracleTags, c.oracle_tags, 'oracle');
     const legal = c.legalities || {};
     const labels = Object.keys(legal).sort((a,b)=>a.localeCompare(b));
     oracleLegalities.innerHTML = labels.map(k => `<div class="legality-chip ${escOracle(legal[k])}"><strong>${escOracle(k)}</strong><span>${escOracle(String(legal[k]).replace(/^./,m=>m.toUpperCase()))}</span></div>`).join('');
     oracleUpdated.textContent = c.updated_at ? 'Cached metadata updated: ' + c.updated_at : '';
   } catch (_) { oracleStatus.textContent = 'Could not load cached metadata.'; }
 }
-document.querySelectorAll('.oracle-button').forEach(btn => btn.addEventListener('click', () => openOracle(btn.dataset.scryfall, btn.dataset.name, btn.dataset.image || '', 'text')));
+document.querySelectorAll('.oracle-button').forEach(btn => btn.addEventListener('click', () => openOracle(btn.dataset.scryfall, btn.dataset.name, btn.dataset.image || '')));
 document.querySelectorAll('.oracle-image-trigger').forEach(img => img.addEventListener('click', () => {
   if (document.body.dataset.inventoryMode === 'select') return;
-  if (img.dataset.scryfall) openOracle(img.dataset.scryfall, img.dataset.name || img.alt, img.currentSrc || img.src, 'image');
-  else openImage(img.currentSrc || img.src, img.alt);
+  openOracle(img.dataset.scryfall || '', img.dataset.name || img.alt, img.currentSrc || img.src);
 }));
-oracleTextPanel?.addEventListener('click', () => switchOracleDisplay('image'));
-oracleTextPanel?.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchOracleDisplay('image'); } });
-oracleImagePanel?.addEventListener('click', () => switchOracleDisplay('text'));
-oracleSwitchButton?.addEventListener('click', () => switchOracleDisplay(oracleImagePanel.hidden ? 'image' : 'text'));
 
 async function saveField(input) {
   let value = input.dataset.field === 'for_vending' ? input.checked : input.value;
