@@ -1610,15 +1610,30 @@ def _scanner_client_art_snapshot() -> tuple[Path, dict[str, Any]]:
     if not DB_ART.is_file():
         raise FileNotFoundError("The production mtg_art_hashes.db file is unavailable.")
 
+    def source_signature():
+        source_stat = DB_ART.stat()
+        wal_path = Path(str(DB_ART) + "-wal")
+        try:
+            wal_stat = wal_path.stat()
+            wal_signature = (
+                wal_stat.st_dev, wal_stat.st_ino, wal_stat.st_size, wal_stat.st_mtime_ns
+            )
+            effective_mtime = max(source_stat.st_mtime, wal_stat.st_mtime)
+        except FileNotFoundError:
+            wal_signature = None
+            effective_mtime = source_stat.st_mtime
+        signature = (
+            source_stat.st_dev,
+            source_stat.st_ino,
+            source_stat.st_size,
+            source_stat.st_mtime_ns,
+            wal_signature,
+        )
+        return source_stat, signature, effective_mtime
+
     with _SCANNER_CLIENT_ART_SNAPSHOT_LOCK:
         for _attempt in range(2):
-            source_stat = DB_ART.stat()
-            signature = (
-                source_stat.st_dev,
-                source_stat.st_ino,
-                source_stat.st_size,
-                source_stat.st_mtime_ns,
-            )
+            source_stat, signature, effective_mtime = source_signature()
             cached_path = _SCANNER_CLIENT_ART_SNAPSHOT_PATH
             if (
                 signature == _SCANNER_CLIENT_ART_SNAPSHOT_SIGNATURE
@@ -1666,13 +1681,7 @@ def _scanner_client_art_snapshot() -> tuple[Path, dict[str, Any]]:
                     if source_conn is not None:
                         source_conn.close()
 
-                current_stat = DB_ART.stat()
-                current_signature = (
-                    current_stat.st_dev,
-                    current_stat.st_ino,
-                    current_stat.st_size,
-                    current_stat.st_mtime_ns,
-                )
+                _current_stat, current_signature, _current_mtime = source_signature()
                 if current_signature != signature:
                     try:
                         temp_path.unlink()
@@ -1697,7 +1706,7 @@ def _scanner_client_art_snapshot() -> tuple[Path, dict[str, Any]]:
                 "row_count": row_count,
                 "phash_count": phash_count,
                 "source_modified_at": datetime.fromtimestamp(
-                    source_stat.st_mtime, tz=timezone.utc
+                    effective_mtime, tz=timezone.utc
                 ).isoformat(),
             }
             _SCANNER_CLIENT_ART_SNAPSHOT_SIGNATURE = signature
