@@ -74,13 +74,20 @@ except Exception as exc:
     reader = easyocr.Reader(["en"], gpu=False)
 
 
-def open_camera():
-    """Open the configured camera via V4L2. Paths like /dev/video9 avoid index enumeration."""
-    return cv2.VideoCapture(VIDEO_SOURCE, cv2.CAP_V4L2)
+def _normalize_camera_source(source=None):
+    """Normalize numeric camera indexes while preserving explicit V4L2 paths."""
+    raw = VIDEO_SOURCE if source is None else source
+    value = str(raw).strip()
+    return int(value) if value.isdigit() else value
 
 
-def describe_camera_source():
-    return str(VIDEO_SOURCE)
+def open_camera(source=None):
+    """Open a selected camera by index or V4L2 device path."""
+    return cv2.VideoCapture(_normalize_camera_source(source), cv2.CAP_V4L2)
+
+
+def describe_camera_source(source=None):
+    return str(_normalize_camera_source(source))
 
 
 def normalized_finish(is_foil_mode: bool) -> str:
