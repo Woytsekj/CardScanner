@@ -446,15 +446,32 @@ body.selection-dragging img { -webkit-user-drag: none; }
 .meta-row { margin: 12px 0 14px; line-height: 1.55; }
 .bulk-edit-bar { margin: 14px 0 18px; }
 
-/* Click-to-switch card image / Oracle detail panel. */
-.oracle-image-trigger { cursor: pointer; }
-.oracle-switch-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 8px 0 14px; }
-.oracle-switch-panel { cursor: pointer; border: 1px solid transparent; border-radius: 8px; padding: 8px; }
-.oracle-switch-panel:focus-visible { outline: 2px solid var(--green); }
-.oracle-image-panel { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 240px; padding: 12px; color: var(--text); background: #111; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
-.oracle-image-panel[hidden] { display: none !important; }
-.oracle-image-panel img { display: block; max-height: min(68vh, 650px); max-width: min(100%, 420px); object-fit: contain; border-radius: 8px; }
-.oracle-image-panel span { color: var(--muted); font-size: 13px; }
+/* Unified card details: image, Oracle text, tags and legality stay visible together. */
+.oracle-detail-layout { display:grid; grid-template-columns:minmax(180px,280px) minmax(0,1fr); gap:20px; align-items:start; }
+.oracle-detail-image-wrap { position:sticky; top:8px; }
+.oracle-detail-image { display:block; width:100%; max-height:70vh; object-fit:contain; border-radius:10px; }
+.oracle-detail-content { min-width:0; }
+.oracle-detail-content h3 { margin:16px 0 8px; }
+.oracle-text { white-space:pre-wrap; background:#101010; border:1px solid #303030; border-radius:8px; padding:14px; font:inherit; line-height:1.5; max-height:34vh; overflow:auto; }
+.oracle-type-line { font-weight:800; margin-top:8px; }
+.oracle-mana-cost { margin-top:4px; color:#bcdfff; }
+.oracle-tag-section { margin:8px 0 12px; }
+.oracle-tag-section > strong { display:block; margin-bottom:6px; }
+.oracle-tag-list { display:flex; flex-wrap:wrap; gap:6px; }
+.oracle-tag-chip { display:inline-flex; align-items:center; padding:5px 9px; border-radius:7px; border:1px solid var(--border); background:rgba(100,130,170,.12); font-size:.88rem; }
+.oracle-tag-chip.art { border-color:#386e8e; background:rgba(55,130,180,.14); }
+.oracle-tag-chip.oracle { border-color:#78613a; background:rgba(170,130,55,.14); }
+.legality-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:8px; margin:8px 0 12px; }
+.legality-chip { display:flex; flex-direction:column; gap:3px; padding:8px; border-radius:8px; border:1px solid #333; background:#181818; }
+.legality-chip.legal { border-color:#247a4b; background:rgba(40,145,85,.15); }
+.legality-chip.not_legal { border-color:#7d4040; background:rgba(150,55,55,.12); }
+.legality-chip.banned { border-color:#9d3030; background:rgba(190,50,50,.18); }
+.legality-chip.restricted { border-color:#8a6d25; background:rgba(170,130,35,.14); }
+@media (max-width:700px) {
+  .oracle-detail-layout { grid-template-columns:minmax(0,1fr); }
+  .oracle-detail-image-wrap { position:static; max-width:260px; margin:0 auto; }
+  .oracle-detail-image { max-height:42vh; }
+}
 
 .user-person-form { align-items: flex-end; min-width: 240px; }
 .user-person-form label { min-width: 170px; flex: 1; }
