@@ -453,6 +453,18 @@ body.selection-dragging img { -webkit-user-drag: none; }
 .oracle-detail-content { min-width:0; }
 .oracle-detail-content h3 { margin:16px 0 8px; }
 .oracle-text { white-space:pre-wrap; background:#101010; border:1px solid #303030; border-radius:8px; padding:14px; font:inherit; line-height:1.5; max-height:34vh; overflow:auto; }
+.oracle-rulings-section { margin:16px 0 18px; border:1px solid var(--border); border-radius:9px; background:rgba(100,130,170,.06); overflow:hidden; }
+.oracle-rulings-section > summary { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:11px 13px; cursor:pointer; font-weight:800; list-style:none; }
+.oracle-rulings-section > summary::-webkit-details-marker { display:none; }
+.oracle-rulings-section > summary::after { content:"+"; margin-left:auto; color:var(--muted); font-size:1.15rem; }
+.oracle-rulings-section[open] > summary::after { content:"−"; }
+.oracle-rulings-count { color:var(--muted); font-size:.82rem; font-weight:500; text-align:right; }
+.oracle-rulings-list { display:grid; gap:9px; padding:0 12px 12px; }
+.oracle-ruling { min-width:0; padding:11px 12px; border:1px solid var(--border); border-radius:8px; background:rgba(0,0,0,.12); }
+.oracle-ruling-meta { display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:4px 12px; color:var(--muted); font-size:.82rem; }
+.oracle-ruling-meta strong { color:var(--text); }
+.oracle-ruling-text { margin:7px 0 0; white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.5; }
+.oracle-rulings-warning { padding:3px 2px; }
 .oracle-type-line { font-weight:800; margin-top:8px; }
 .oracle-mana-cost { margin-top:4px; color:#bcdfff; }
 .oracle-tag-section { margin:8px 0 12px; }
@@ -461,8 +473,9 @@ body.selection-dragging img { -webkit-user-drag: none; }
 .oracle-tag-chip { display:inline-flex; align-items:center; padding:5px 9px; border-radius:7px; border:1px solid var(--border); background:rgba(100,130,170,.12); font-size:.88rem; }
 .oracle-tag-chip.art { border-color:#386e8e; background:rgba(55,130,180,.14); }
 .oracle-tag-chip.oracle { border-color:#78613a; background:rgba(170,130,55,.14); }
-.legality-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:8px; margin:8px 0 12px; }
-.legality-chip { display:flex; flex-direction:column; gap:3px; padding:8px; border-radius:8px; border:1px solid #333; background:#181818; }
+.legality-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,110px),1fr)); gap:8px; margin:8px 0 12px; }
+.legality-chip { display:flex; flex-direction:column; gap:3px; min-width:0; padding:8px; border-radius:8px; border:1px solid #333; background:#181818; overflow-wrap:anywhere; }
+.legality-chip strong, .legality-chip span { min-width:0; overflow-wrap:anywhere; }
 .legality-chip.legal { border-color:#247a4b; background:rgba(40,145,85,.15); }
 .legality-chip.not_legal { border-color:#7d4040; background:rgba(150,55,55,.12); }
 .legality-chip.banned { border-color:#9d3030; background:rgba(190,50,50,.18); }
