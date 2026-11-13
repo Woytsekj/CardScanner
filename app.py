@@ -1492,7 +1492,7 @@ def inventory_rows(
                COALESCE(i.location, 'Free') AS location,
                i.deck_id, COALESCE(i.for_vending, 0) AS for_vending,
                cm.type_line, cm.colors_text, cm.mana_value, cm.oracle_text, cm.oracle_id, cm.legalities_json, cm.updated_at AS metadata_updated_at,
-               COALESCE((SELECT GROUP_CONCAT(ca.alias, ' · ') FROM card_aliases ca WHERE ca.scryfall_id = i.scryfall_id), '') AS alternate_names,
+               COALESCE((SELECT GROUP_CONCAT(ca.alias, ' · ') FROM card_aliases ca WHERE ca.scryfall_id = i.scryfall_id), '') AS alternate_names
         FROM inventory i
         {join_sql}
         {price_sort_join}
