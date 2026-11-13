@@ -684,7 +684,7 @@ function renderOracleTagList(container, tags, kind) {
     : '<span class="subtle">No tags available.</span>';
 }
 function formatOracleRulingDate(value) {
-  const match = String(value || '').match(/^(\\d{4})-(\\d{2})-(\\d{2})$/);
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!match) return 'Date unavailable';
   return new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
     .format(new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
