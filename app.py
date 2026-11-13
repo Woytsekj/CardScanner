@@ -844,6 +844,11 @@ def migrate_db() -> None:
         colors_text TEXT, color_identity_json TEXT, mana_value REAL, mana_cost TEXT,
         oracle_text TEXT, oracle_id TEXT, legalities_json TEXT, updated_at TEXT NOT NULL
     )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS card_rulings_cache (
+        scryfall_id TEXT PRIMARY KEY,
+        rulings_json TEXT NOT NULL DEFAULT '[]',
+        fetched_at TEXT NOT NULL
+    )""")
     for _column, ddl in (
         ("oracle_id", "ALTER TABLE card_metadata ADD COLUMN oracle_id TEXT"),
         ("legalities_json", "ALTER TABLE card_metadata ADD COLUMN legalities_json TEXT"),
@@ -5841,6 +5846,106 @@ def admin_refresh_scryfall_bulk():
         return redirect(url_for("admin_page",message=f"Scryfall metadata refreshed: {result.get('found',0)} of {result.get('needed',0)} owned printings updated."))
     except Exception as exc:
         return redirect(url_for("admin_page",message=f"Scryfall bulk refresh failed: {exc}"))
+
+
+@app.get("/api/card-rulings/<scryfall_id>")
+@admin_required
+def api_card_rulings(scryfall_id: str):
+    """Return locally cached Scryfall rulings, refreshing the cache at most every 30 days."""
+    sid = str(scryfall_id or "").strip()
+    if not _looks_like_uuid(sid):
+        return jsonify({"success": False, "error": "Invalid Scryfall card ID."}), 400
+
+    conn = connect_inventory()
+    try:
+        cached_row = conn.execute(
+            "SELECT rulings_json, fetched_at FROM card_rulings_cache WHERE scryfall_id = ?",
+            (sid,),
+        ).fetchone()
+        rulings: list[dict[str, str]] = []
+        fetched_at = ""
+        cache_usable = False
+        cache_stale = True
+
+        if cached_row:
+            fetched_at = str(cached_row["fetched_at"] or "")
+            try:
+                cached_payload = json.loads(cached_row["rulings_json"] or "[]")
+                if isinstance(cached_payload, list):
+                    rulings = [item for item in cached_payload if isinstance(item, dict)]
+                    cache_usable = True
+            except (TypeError, json.JSONDecodeError):
+                cache_usable = False
+
+            try:
+                cached_time = datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
+                if cached_time.tzinfo is None:
+                    cached_time = cached_time.replace(tzinfo=timezone.utc)
+                cache_stale = (
+                    datetime.now(timezone.utc) - cached_time.astimezone(timezone.utc)
+                ) >= timedelta(days=30)
+            except (TypeError, ValueError):
+                cache_stale = True
+
+        refreshed = False
+        if not cache_usable or cache_stale:
+            try:
+                response = requests.get(
+                    f"https://api.scryfall.com/cards/{sid}/rulings",
+                    headers={"User-Agent": SCRYFALL_USER_AGENT, "Accept": "application/json"},
+                    timeout=SCRYFALL_TIMEOUT,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+                    raise ValueError("Scryfall returned an unexpected rulings response.")
+
+                normalized: list[dict[str, str]] = []
+                for item in payload["data"]:
+                    if not isinstance(item, dict):
+                        continue
+                    comment = str(item.get("comment") or "").strip()
+                    if not comment:
+                        continue
+                    normalized.append({
+                        "published_at": str(item.get("published_at") or "").strip()[:10],
+                        "source": str(item.get("source") or "unknown").strip().lower(),
+                        "comment": comment,
+                    })
+                normalized.sort(key=lambda item: item["published_at"], reverse=True)
+
+                fetched_at = datetime.now(timezone.utc).isoformat()
+                conn.execute(
+                    """INSERT INTO card_rulings_cache (scryfall_id, rulings_json, fetched_at)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(scryfall_id) DO UPDATE SET
+                           rulings_json=excluded.rulings_json,
+                           fetched_at=excluded.fetched_at""",
+                    (sid, json.dumps(normalized, ensure_ascii=False), fetched_at),
+                )
+                conn.commit()
+                rulings = normalized
+                cache_usable = True
+                cache_stale = False
+                refreshed = True
+            except Exception as exc:
+                app.logger.warning("Scryfall rulings lookup failed for %s: %s", sid, exc)
+                if not cache_usable:
+                    return jsonify({
+                        "success": False,
+                        "error": "Could not retrieve rulings from Scryfall. Please try again.",
+                    }), 502
+
+        return jsonify({
+            "success": True,
+            "rulings": rulings,
+            "fetched_at": fetched_at,
+            "cached": not refreshed,
+            "stale": cache_stale,
+            "warning": "Showing saved rulings; refreshing from Scryfall failed." if cache_stale else "",
+        })
+    finally:
+        conn.close()
 
 
 @app.get("/api/card-info/<scryfall_id>")
