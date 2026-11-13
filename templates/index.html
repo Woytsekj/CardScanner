@@ -444,6 +444,15 @@
         <div id="oracleTypeLine" class="oracle-type-line"></div>
         <div id="oracleManaCost" class="oracle-mana-cost"></div>
         <pre id="oracleText" class="oracle-text"></pre>
+        <details id="oracleRulingsSection" class="oracle-rulings-section">
+          <summary>
+            <span>Rulings &amp; Rules Notes</span>
+            <span id="oracleRulingsCount" class="oracle-rulings-count">Expand to load</span>
+          </summary>
+          <div id="oracleRulingsList" class="oracle-rulings-list">
+            <div class="subtle">Expand to load this card's rulings.</div>
+          </div>
+        </details>
         <h3>Tags</h3>
         <div class="oracle-tag-section"><strong>Art tags</strong><div id="oracleArtTags" class="oracle-tag-list"></div></div>
         <div class="oracle-tag-section"><strong>Oracle tags</strong><div id="oracleOracleTags" class="oracle-tag-list"></div></div>
@@ -654,6 +663,9 @@ const oracleSubtitle = document.getElementById('oracleSubtitle');
 const oracleTypeLine = document.getElementById('oracleTypeLine');
 const oracleManaCost = document.getElementById('oracleManaCost');
 const oracleTextEl = document.getElementById('oracleText');
+const oracleRulingsSection = document.getElementById('oracleRulingsSection');
+const oracleRulingsCount = document.getElementById('oracleRulingsCount');
+const oracleRulingsList = document.getElementById('oracleRulingsList');
 const oracleLegalities = document.getElementById('oracleLegalities');
 const oracleUpdated = document.getElementById('oracleUpdated');
 const oracleStatus = document.getElementById('oracleStatus');
@@ -662,6 +674,8 @@ const oracleImagePanel = document.getElementById('oracleImagePanel');
 const oracleCardImage = document.getElementById('oracleCardImage');
 const oracleSwitchButton = document.getElementById('oracleSwitchButton');
 let activeOracleImageUrl = '';
+let activeOracleScryfallId = '';
+let loadedOracleRulingsSid = '';
 function escOracle(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function renderOracleTagList(container, tags, kind) {
   const values = Array.isArray(tags) ? tags : [];
@@ -669,7 +683,70 @@ function renderOracleTagList(container, tags, kind) {
     ? values.map(tag => `<span class="oracle-tag-chip ${kind}">${escOracle(tag)}</span>`).join('')
     : '<span class="subtle">No tags available.</span>';
 }
+function formatOracleRulingDate(value) {
+  const match = String(value || '').match(/^(\\d{4})-(\\d{2})-(\\d{2})$/);
+  if (!match) return 'Date unavailable';
+  return new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+    .format(new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+}
+function renderOracleRulings(payload) {
+  const rulings = Array.isArray(payload.rulings) ? payload.rulings : [];
+  oracleRulingsCount.textContent = rulings.length + (rulings.length === 1 ? ' ruling' : ' rulings');
+  if (!rulings.length) {
+    oracleRulingsList.innerHTML = '<div class="subtle">Scryfall currently lists no rulings for this card.</div>';
+  } else {
+    const sourceNames = { wotc: 'Wizards of the Coast', scryfall: 'Scryfall' };
+    oracleRulingsList.innerHTML = rulings.map(ruling => {
+      const sourceKey = String(ruling.source || '').toLowerCase();
+      const source = sourceNames[sourceKey] || (sourceKey ? sourceKey.toUpperCase() : 'Unknown source');
+      return `<article class="oracle-ruling">
+        <div class="oracle-ruling-meta">
+          <strong>${escOracle(formatOracleRulingDate(ruling.published_at))}</strong>
+          <span>${escOracle(source)}</span>
+        </div>
+        <p class="oracle-ruling-text">${escOracle(ruling.comment)}</p>
+      </article>`;
+    }).join('');
+  }
+  if (payload.warning) {
+    oracleRulingsList.insertAdjacentHTML('beforeend',
+      `<div class="subtle oracle-rulings-warning">${escOracle(payload.warning)}</div>`);
+  }
+}
+async function loadOracleRulings(sid) {
+  if (!sid || loadedOracleRulingsSid === sid) return;
+  oracleRulingsCount.textContent = 'Loading…';
+  oracleRulingsList.innerHTML = '<div class="subtle">Loading rulings from Scryfall…</div>';
+  try {
+    const response = await fetch('/api/card-rulings/' + encodeURIComponent(sid));
+    const payload = await response.json().catch(() => ({}));
+    if (activeOracleScryfallId !== sid) return;
+    if (!response.ok || !payload.success) {
+      oracleRulingsCount.textContent = 'Unavailable';
+      oracleRulingsList.innerHTML = `<div class="subtle">${escOracle(payload.error || 'Could not load rulings. Close and reopen this section to retry.')}</div>`;
+      return;
+    }
+    renderOracleRulings(payload);
+    loadedOracleRulingsSid = sid;
+  } catch (_) {
+    if (activeOracleScryfallId !== sid) return;
+    oracleRulingsCount.textContent = 'Unavailable';
+    oracleRulingsList.innerHTML = '<div class="subtle">Could not load rulings. Close and reopen this section to retry.</div>';
+  }
+}
+oracleRulingsSection.addEventListener('toggle', () => {
+  if (oracleRulingsSection.open && activeOracleScryfallId) {
+    void loadOracleRulings(activeOracleScryfallId);
+  }
+});
 async function openOracle(sid, name, imageUrl = '') {
+  activeOracleScryfallId = sid || '';
+  loadedOracleRulingsSid = '';
+  oracleRulingsSection.open = false;
+  oracleRulingsCount.textContent = sid ? 'Expand to load' : 'Unavailable';
+  oracleRulingsList.innerHTML = sid
+    ? '<div class="subtle">Expand to load this card\'s rulings.</div>'
+    : '<div class="subtle">No Scryfall ID is available for this printing.</div>';
   oracleTitle.textContent = name || 'Card Details';
   oracleSubtitle.textContent = 'Loading cached metadata…';
   oracleTypeLine.textContent = ''; oracleManaCost.textContent = ''; oracleTextEl.textContent = '';
