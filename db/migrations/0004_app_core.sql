@@ -143,6 +143,9 @@ CREATE INDEX app_deck_cards_deck_idx
     ON app.deck_cards (deck_id);
 CREATE INDEX app_deck_cards_game_name_idx
     ON app.deck_cards (game_id, lower(btrim(name)));
+CREATE INDEX app_deck_cards_card_idx
+    ON app.deck_cards (game_id, card_id)
+    WHERE card_id IS NOT NULL;
 CREATE INDEX app_deck_cards_scryfall_idx
     ON app.deck_cards (scryfall_id)
     WHERE scryfall_id IS NOT NULL;
@@ -197,6 +200,9 @@ CREATE INDEX app_inventory_game_name_idx
 CREATE INDEX app_inventory_person_idx
     ON app.inventory (game_id, person_id)
     WHERE person_id IS NOT NULL;
+CREATE INDEX app_inventory_card_idx
+    ON app.inventory (game_id, card_id)
+    WHERE card_id IS NOT NULL;
 CREATE INDEX app_inventory_scryfall_idx
     ON app.inventory (scryfall_id)
     WHERE scryfall_id IS NOT NULL;
