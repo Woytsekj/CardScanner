@@ -179,7 +179,7 @@ CREATE TABLE catalog.printing_faces (
         REFERENCES catalog.printings(printing_id, game_id) ON DELETE CASCADE,
     CONSTRAINT printing_faces_image_game_fk
         FOREIGN KEY (image_id, game_id)
-        REFERENCES catalog.images(image_id, game_id) ON DELETE SET NULL,
+        REFERENCES catalog.images(image_id, game_id) ON DELETE SET NULL (image_id),
     CONSTRAINT printing_faces_illustration_game_fk
         FOREIGN KEY (illustration_id, game_id)
         REFERENCES catalog.illustrations(illustration_id, game_id) ON DELETE SET NULL (illustration_id)
