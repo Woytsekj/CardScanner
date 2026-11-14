@@ -67,13 +67,16 @@ Features and behavior may change. See `CHANGES_inventory_overhaul.md`, [`CHANGES
 
    Generate secrets rather than reusing passwords. Use values of at least 32 random characters for `SESSION_SECRET` and `SCANNER_API_KEY`. Never commit `.env`.
 
-4. Prepare the persistent data directory:
+4. Prepare the persistent data and local database directories:
 
    ```bash
    mkdir -p data
+   sudo mkdir -p /var/lib/cardscanner/db
    ```
 
-   If you already have an inventory database, back it up first and place the appropriate database files in `data/`. Common files used by this project include `mtg_inventory.db` and `mtg_art_hashes.db`. Do not replace an existing live database with an empty database or a sample file.
+   Set `DB_HOST_DIR=/var/lib/cardscanner/db` in `.env` (this is also the Compose default). Keep the active `mtg_inventory.db` and `mtg_art_hashes.db` files in this local directory. Scryfall bulk snapshots, TCGCSV JSON files, sync metadata, and backup archives remain under `data/`, which may be an NFS mount. If running containers as a non-root user, make the local database directory writable by the configured `APP_UID:APP_GID`.
+
+   For an existing NFS-backed installation, **do not start the updated services yet**. Follow the existing-install migration steps in the Storage layout section below; the migration utility verifies both databases and never deletes or overwrites the originals.
 
 5. Build and start the services:
 
@@ -92,14 +95,14 @@ Features and behavior may change. See `CHANGES_inventory_overhaul.md`, [`CHANGES
 
 ## Services
 
-Compose defines three services:
+Compose defines four services:
 
 - **web** — Flask application served by Gunicorn.
 - **updater** — periodically checks TCGCSV data and updates prices/history.
 - **backup** — creates SQLite backups on the configured schedule and prunes older archives according to retention settings.
 - **scryfall** — checks Scryfall's `default_cards`, `art_tags`, and `oracle_tags` bulk feeds daily, incrementally builds pHashes for new/changed printing images, and refreshes local tag indexes.
 
-Database files and backups are persisted under `./data/` on the host. The default backup settings keep the newest two archives and schedule backups for 02:00 in `America/New_York`; see `.env.example` to customize them.
+Large application data, Scryfall bulk snapshots, price JSON files, and backup archives remain under `./data/` on the host (which can be an NFS share). Active SQLite databases are mounted separately from `DB_HOST_DIR`, defaulting to `/var/lib/cardscanner/db` on the Docker host's local filesystem. Inside every service, this location is available as `/db` through `DB_DIR`. Keep `DB_HOST_DIR` on local storage: SQLite WAL databases must not be placed on network filesystems. The backup service snapshots the local databases and writes the resulting archives to `./data/backups/` on the NAS. The default backup settings keep the newest two archives and schedule backups for 02:00 in `America/New_York`; see `.env.example` to customize them.
 
 Useful commands:
 
@@ -113,6 +116,45 @@ docker compose down
 ```
 
 `docker compose down` stops and removes containers/networks; it does not remove the bind-mounted `data/` directory. Do not use `docker compose down -v` casually, and always maintain independent backups.
+
+## Storage layout and existing-install migration
+
+CardScanner separates frequently accessed SQLite databases from large data files. `DB_HOST_DIR` is a host path on local storage (default `/var/lib/cardscanner/db`); Compose mounts it as `/db` in the web, updater, Scryfall, and backup services. The NFS-backed `./data/` directory remains the home for Scryfall bulk downloads, price snapshots, sync metadata, and compressed backups.
+
+For an existing installation whose two SQLite files are still in `./data/`, migrate them before starting the updated services:
+
+1. While the old containers are still running, create a fresh backup on the NAS:
+
+   ```bash
+   docker compose exec backup python backup_database.py --once
+   ```
+
+2. Pull the updated code, create `DB_HOST_DIR` on the local disk, and ensure it is writable by the container's configured `APP_UID:APP_GID`. Build the updated images, but do not start/recreate the services yet:
+
+   ```bash
+   sudo mkdir -p /var/lib/cardscanner/db
+   docker compose build
+   docker compose stop web updater scryfall backup
+   ```
+
+3. With all database users stopped, run the guarded copy and verification commands:
+
+   ```bash
+   docker compose run --rm --no-deps web python migrate_storage.py --copy
+   docker compose run --rm --no-deps web python migrate_storage.py --verify
+   ```
+
+   The utility uses SQLite's backup API (including committed WAL contents), validates both source and destination files, refuses to overwrite an existing destination, and leaves the original NFS databases untouched.
+
+4. Start the services and confirm that the collection, decks, card details, and scanner catalog load correctly:
+
+   ```bash
+   docker compose up -d
+   docker compose ps
+   docker compose logs --tail=80 web updater scryfall backup
+   ```
+
+   Keep the original NFS database files until the new deployment has been fully checked and a fresh NAS backup has completed. The migration is reversible: stop the services, point `DB_HOST_DIR` back at a verified local copy or restore the original files, and start again. Never run both database locations as active writers.
 
 ## Scanner client
 
