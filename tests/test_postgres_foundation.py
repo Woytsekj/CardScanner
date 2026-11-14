@@ -82,6 +82,7 @@ class PostgreSQLFoundationTests(unittest.TestCase):
                     expected_tables = {
                         "sets", "cards", "printings", "printing_faces",
                         "illustrations", "images", "image_hashes", "external_ids",
+                        "game_catalog_state",
                     }
                     rows = conn.execute(
                         """
@@ -116,6 +117,14 @@ class PostgreSQLFoundationTests(unittest.TestCase):
                     # An illustration is allowed to exist before a printing/face
                     # references it; this is needed for legacy unresolved IDs.
                     illustration_id = conn.execute(
+                        """
+                        INSERT INTO catalog.illustrations (game_id)
+                        VALUES ('mtg')
+                        RETURNING illustration_id
+                        """
+                    ).fetchone()["illustration_id"]
+
+                    unresolved_illustration_id = conn.execute(
                         """
                         INSERT INTO catalog.illustrations (game_id)
                         VALUES ('mtg')
@@ -196,6 +205,16 @@ class PostgreSQLFoundationTests(unittest.TestCase):
                         """,
                         (f"illustration-{token}", illustration_id),
                     )
+
+                    unresolved_face_count = conn.execute(
+                        """
+                        SELECT count(*) AS n
+                        FROM catalog.printing_faces
+                        WHERE illustration_id = %s
+                        """,
+                        (unresolved_illustration_id,),
+                    ).fetchone()["n"]
+                    self.assertEqual(unresolved_face_count, 0)
 
                     # The provider ID namespace is unique across entity targets.
                     another_printing_id = conn.execute(
