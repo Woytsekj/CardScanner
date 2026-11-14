@@ -1,0 +1,46 @@
+name: PostgreSQL Foundation Tests
+
+on:
+  push:
+    branches: [feature/postgres-multigame-foundation]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-foundation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: cardscanner_test
+          POSTGRES_USER: cardscanner
+          POSTGRES_PASSWORD: ci-postgres-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cardscanner -d cardscanner_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      CARD_SCANNER_POSTGRES_DSN: postgresql://cardscanner:ci-postgres-password@127.0.0.1:5432/cardscanner_test
+      CARD_SCANNER_PG_POOL_MIN: "1"
+      CARD_SCANNER_PG_POOL_MAX: "3"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+      - name: Run PostgreSQL foundation integration tests
+        run: python -m unittest tests.test_postgres_foundation -v
