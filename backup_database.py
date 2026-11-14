@@ -49,6 +49,7 @@ def backup_sqlite(source: Path, destination: Path) -> None:
 
 
 def create_backup() -> Path | None:
+    DB_DIR.mkdir(parents=True, exist_ok=True)
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     existing = [DB_DIR / name for name in DATABASES if (DB_DIR / name).exists()]
     if not existing:
