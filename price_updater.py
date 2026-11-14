@@ -14,11 +14,12 @@ import requests
 BASE_URL = os.environ.get("TCGCSV_BASE_URL", "https://tcgcsv.com")
 CATEGORY_ID = int(os.environ.get("TCGCSV_CATEGORY_ID", "1"))  # Magic: The Gathering
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
+DB_DIR = Path(os.environ.get("DB_DIR", str(DATA_DIR)))
 PRICES_FILE = DATA_DIR / "tcg_prices.json"
 META_FILE = DATA_DIR / "price_sync.json"
 LAST_SEEN_FILE = DATA_DIR / "tcgcsv_last_updated.txt"
-DB_INV = DATA_DIR / "mtg_inventory.db"
-DB_ART = DATA_DIR / "mtg_art_hashes.db"
+DB_INV = DB_DIR / "mtg_inventory.db"
+DB_ART = DB_DIR / "mtg_art_hashes.db"
 USER_AGENT = os.environ.get("TCGCSV_USER_AGENT", "MTGScannerInventory/1.1")
 REQUEST_DELAY = float(os.environ.get("TCGCSV_REQUEST_DELAY", "0.12"))
 CHECK_INTERVAL = int(os.environ.get("TCGCSV_CHECK_INTERVAL", "3600"))

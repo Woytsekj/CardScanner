@@ -36,9 +36,13 @@ from scryfall_catalog import ensure_art_catalog_schema
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("DATA_DIR", BASE_DIR))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+# Keep actively accessed SQLite databases off network filesystems. DB_DIR defaults
+# to DATA_DIR so existing deployments retain their current storage layout.
+DB_DIR = Path(os.environ.get("DB_DIR", str(DATA_DIR)))
+DB_DIR.mkdir(parents=True, exist_ok=True)
 
-DB_INV = DATA_DIR / "mtg_inventory.db"
-DB_ART = DATA_DIR / "mtg_art_hashes.db"
+DB_INV = DB_DIR / "mtg_inventory.db"
+DB_ART = DB_DIR / "mtg_art_hashes.db"
 PRICES_FILE = DATA_DIR / "tcg_prices.json"
 PRICE_META_FILE = DATA_DIR / "price_sync.json"
 SCANNER_API_KEY = os.environ.get("SCANNER_API_KEY", "").strip()

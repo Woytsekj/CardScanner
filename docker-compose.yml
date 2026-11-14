@@ -9,8 +9,10 @@ services:
       - "${WEB_BIND_ADDRESS:-0.0.0.0}:${WEB_PORT:-5000}:5000"
     volumes:
       - ./data:/data
+      - ${DB_HOST_DIR:-/var/lib/cardscanner/db}:/db
     environment:
       DATA_DIR: /data
+      DB_DIR: /db
       REQUIRE_LOGIN: ${REQUIRE_LOGIN:-1}
       PUBLIC_HTTPS: ${PUBLIC_HTTPS:-1}
       PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME:-cards.stinkywar.com}
@@ -46,8 +48,10 @@ services:
     command: ["python", "price_updater.py"]
     volumes:
       - ./data:/data
+      - ${DB_HOST_DIR:-/var/lib/cardscanner/db}:/db
     environment:
       DATA_DIR: /data
+      DB_DIR: /db
       TCGCSV_CATEGORY_ID: "1"
       TCGCSV_USER_AGENT: "MTGScannerInventory/1.0"
       TCGCSV_CHECK_INTERVAL: "3600"
@@ -70,8 +74,10 @@ services:
     command: ["python", "scryfall_updater.py"]
     volumes:
       - ./data:/data
+      - ${DB_HOST_DIR:-/var/lib/cardscanner/db}:/db
     environment:
       DATA_DIR: /data
+      DB_DIR: /db
       SCRYFALL_USER_AGENT: ${SCRYFALL_USER_AGENT:-CardScanner/1.0 (https://github.com/Woytsekj/CardScanner)}
       SCRYFALL_CATALOG_CHECK_INTERVAL: ${SCRYFALL_CATALOG_CHECK_INTERVAL:-86400}
       SCRYFALL_IMAGE_WORKERS: ${SCRYFALL_IMAGE_WORKERS:-4}
@@ -88,8 +94,10 @@ services:
     command: ["python", "backup_database.py"]
     volumes:
       - ./data:/data
+      - ${DB_HOST_DIR:-/var/lib/cardscanner/db}:/db
     environment:
       DATA_DIR: /data
+      DB_DIR: /db
       BACKUP_DIR: /data/backups
       BACKUP_HOUR: ${BACKUP_HOUR:-2}
       BACKUP_MINUTE: ${BACKUP_MINUTE:-0}
