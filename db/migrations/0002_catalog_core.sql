@@ -261,6 +261,25 @@ CREATE INDEX catalog_external_ids_illustration_idx
     ON catalog.external_ids (game_id, illustration_id)
     WHERE illustration_id IS NOT NULL;
 
+
+-- Importers increment this row once per successful, committed catalog refresh
+-- for the affected game. App caches key off revision instead of SQLite mtime/size.
+-- The revision bump must happen in the same transaction as the catalog upsert.
+CREATE TABLE catalog.game_catalog_state (
+    game_id TEXT PRIMARY KEY
+        REFERENCES catalog.games(game_id) ON DELETE RESTRICT,
+    revision BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT game_catalog_state_revision_nonnegative CHECK (revision >= 0)
+);
+
+INSERT INTO catalog.game_catalog_state (game_id)
+SELECT game_id FROM catalog.games
+ON CONFLICT (game_id) DO NOTHING;
+
+COMMENT ON TABLE catalog.game_catalog_state IS
+    'Per-game catalog revision. Increment in the same transaction as a successful catalog refresh to invalidate application caches.';
+
 COMMENT ON TABLE catalog.cards IS
     'Canonical game-level card identities. Provider-specific IDs live in catalog.external_ids.';
 
