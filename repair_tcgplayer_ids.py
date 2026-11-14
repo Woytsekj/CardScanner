@@ -4,7 +4,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 import requests
 
-DB_INV = Path(os.environ.get('DATA_DIR', '/data')) / 'mtg_inventory.db'
+DATA_DIR = Path(os.environ.get('DATA_DIR', '/data'))
+DB_DIR = Path(os.environ.get('DB_DIR', str(DATA_DIR)))
+DB_INV = DB_DIR / 'mtg_inventory.db'
 USER_AGENT = os.environ.get('SCRYFALL_USER_AGENT', 'MTGScannerInventory/1.0 (local inventory)')
 TIMEOUT = float(os.environ.get('SCRYFALL_TIMEOUT', '10'))
 DELAY = max(0.11, float(os.environ.get('SCRYFALL_REQUEST_DELAY', '0.12')))
