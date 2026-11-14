@@ -556,9 +556,9 @@ class PostgreSQLFoundationTests(unittest.TestCase):
                     conn.execute(
                         """
                         INSERT INTO catalog.tag_closure
-                            (game_id, provider_id, ancestor_tag_id,
+                            (game_id, provider_id, tag_type, ancestor_tag_id,
                              descendant_tag_id, depth)
-                        VALUES ('mtg', 'scryfall', %s, %s, 1)
+                        VALUES ('mtg', 'scryfall', 'art', %s, %s, 1)
                         """,
                         (parent_id, child_id),
                     )
@@ -568,9 +568,9 @@ class PostgreSQLFoundationTests(unittest.TestCase):
                             conn.execute(
                                 """
                                 INSERT INTO catalog.tag_closure
-                                    (game_id, provider_id, ancestor_tag_id,
+                                    (game_id, provider_id, tag_type, ancestor_tag_id,
                                      descendant_tag_id, depth)
-                                VALUES ('mtg', 'scryfall', %s, %s, 1)
+                                VALUES ('mtg', 'scryfall', 'art', %s, %s, 1)
                                 """,
                                 (parent_id, pokemon_tag_id),
                             )
@@ -638,6 +638,24 @@ class PostgreSQLFoundationTests(unittest.TestCase):
                             "annotation": "unresolved",
                         },
                     )
+
+                    illustration_id = conn.execute(
+                        """
+                        INSERT INTO catalog.illustrations (game_id)
+                        VALUES ('mtg')
+                        RETURNING illustration_id
+                        """
+                    ).fetchone()["illustration_id"]
+                    with self.assertRaises(ForeignKeyViolation):
+                        with conn.transaction():
+                            conn.execute(
+                                """
+                                INSERT INTO catalog.art_tag_assignments
+                                    (game_id, provider_id, tag_id, illustration_id)
+                                VALUES ('mtg', 'scryfall', %s, %s)
+                                """,
+                                (tag_id, illustration_id),
+                            )
 
                     pokemon_card_id = conn.execute(
                         """
