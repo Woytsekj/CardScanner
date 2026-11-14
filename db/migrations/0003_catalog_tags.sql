@@ -51,8 +51,8 @@ CREATE TABLE catalog.tag_aliases (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT tag_aliases_pk PRIMARY KEY (tag_id, alias),
     CONSTRAINT tag_aliases_tag_scope_fk
-        FOREIGN KEY (tag_id, game_id, provider_id, tag_type)
-        REFERENCES catalog.tags(tag_id, game_id, provider_id, tag_type) ON DELETE CASCADE,
+        FOREIGN KEY (tag_id, game_id, provider_id)
+        REFERENCES catalog.tags(tag_id, game_id, provider_id) ON DELETE CASCADE,
     CONSTRAINT tag_aliases_nonempty CHECK (btrim(alias) <> '')
 );
 
@@ -121,8 +121,8 @@ CREATE TABLE catalog.oracle_tag_assignments (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT oracle_tag_assignments_pk PRIMARY KEY (tag_id, external_oracle_id),
     CONSTRAINT oracle_tag_assignments_tag_scope_fk
-        FOREIGN KEY (tag_id, game_id, provider_id)
-        REFERENCES catalog.tags(tag_id, game_id, provider_id) ON DELETE CASCADE,
+        FOREIGN KEY (tag_id, game_id, provider_id, tag_type)
+        REFERENCES catalog.tags(tag_id, game_id, provider_id, tag_type) ON DELETE CASCADE,
     CONSTRAINT oracle_tag_assignments_card_game_fk
         FOREIGN KEY (card_id, game_id)
         REFERENCES catalog.cards(card_id, game_id) ON DELETE SET NULL (card_id),
