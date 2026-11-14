@@ -15,7 +15,6 @@ BASE_URL = os.environ.get("TCGCSV_BASE_URL", "https://tcgcsv.com")
 CATEGORY_ID = int(os.environ.get("TCGCSV_CATEGORY_ID", "1"))  # Magic: The Gathering
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 DB_DIR = Path(os.environ.get("DB_DIR", str(DATA_DIR)))
-DB_DIR.mkdir(parents=True, exist_ok=True)
 PRICES_FILE = DATA_DIR / "tcg_prices.json"
 META_FILE = DATA_DIR / "price_sync.json"
 LAST_SEEN_FILE = DATA_DIR / "tcgcsv_last_updated.txt"
