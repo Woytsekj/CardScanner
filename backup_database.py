@@ -11,6 +11,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
+DB_DIR = Path(os.environ.get("DB_DIR", str(DATA_DIR)))
 BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", DATA_DIR / "backups"))
 BACKUP_HOUR = max(0, min(23, int(os.environ.get("BACKUP_HOUR", "2"))))
 BACKUP_MINUTE = max(0, min(59, int(os.environ.get("BACKUP_MINUTE", "0"))))
@@ -49,7 +50,7 @@ def backup_sqlite(source: Path, destination: Path) -> None:
 
 def create_backup() -> Path | None:
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    existing = [DATA_DIR / name for name in DATABASES if (DATA_DIR / name).exists()]
+    existing = [DB_DIR / name for name in DATABASES if (DB_DIR / name).exists()]
     if not existing:
         print(f"[BACKUP] No SQLite databases found in {DATA_DIR}; skipping", flush=True)
         return None
@@ -58,7 +59,9 @@ def create_backup() -> Path | None:
     stamp = now.strftime("%Y-%m-%d_%H-%M-%S_%Z")
     archive_path = BACKUP_DIR / f"mtg_database_{stamp}.tar.gz"
 
-    with tempfile.TemporaryDirectory(prefix="mtg-backup-", dir=str(BACKUP_DIR)) as temp_dir:
+    # Build SQLite snapshots on local temporary storage; only the final archive
+    # is written to BACKUP_DIR (which may be an NFS mount).
+    with tempfile.TemporaryDirectory(prefix="cardscanner-backup-", dir=str(DB_DIR)) as temp_dir:
         temp_path = Path(temp_dir)
         copied = []
         for source in existing:
@@ -122,7 +125,7 @@ def run_scheduler(run_once: bool) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Nightly SQLite database backup for MTG Scanner")
+    parser = argparse.ArgumentParser(description="Nightly SQLite database backup for CardScanner")
     parser.add_argument("--once", action="store_true", help="Run one backup immediately and exit")
     args = parser.parse_args()
     run_scheduler(run_once=args.once)
