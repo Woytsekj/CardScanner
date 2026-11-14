@@ -333,6 +333,338 @@ class PostgreSQLFoundationTests(unittest.TestCase):
                 pass
 
 
+    def test_catalog_tags_preserve_unresolved_illustrations(self):
+        """Artwork assignments survive without inventing a printing face."""
+        from uuid import uuid4
+
+        from postgres_db import connection
+
+        token = uuid4().hex
+
+        class _RollbackFixture(Exception):
+            pass
+
+        with connection() as conn:
+            try:
+                with conn.transaction():
+                    expected_tables = {
+                        "tags", "tag_aliases", "tag_closure",
+                        "art_tag_assignments", "oracle_tag_assignments",
+                    }
+                    rows = conn.execute(
+                        """
+                        SELECT table_name
+                        FROM information_schema.tables
+                        WHERE table_schema = 'catalog'
+                          AND table_type = 'BASE TABLE'
+                        """
+                    ).fetchall()
+                    self.assertTrue(
+                        expected_tables.issubset({row["table_name"] for row in rows})
+                    )
+
+                    # The source illustration is unresolved: create its identity
+                    # and external mapping, but deliberately do not create a face.
+                    illustration_id = conn.execute(
+                        """
+                        INSERT INTO catalog.illustrations (game_id)
+                        VALUES ('mtg')
+                        RETURNING illustration_id
+                        """
+                    ).fetchone()["illustration_id"]
+                    source_illustration_id = f"legacy-illustration-{token}"
+                    conn.execute(
+                        """
+                        INSERT INTO catalog.external_ids
+                            (game_id, provider_id, entity_type, external_id_type,
+                             external_id, illustration_id)
+                        VALUES
+                            ('mtg', 'scryfall', 'illustration', 'illustration_id',
+                             %s, %s)
+                        """,
+                        (source_illustration_id, illustration_id),
+                    )
+
+                    tag_id = conn.execute(
+                        """
+                        INSERT INTO catalog.tags
+                            (game_id, provider_id, external_tag_id, tag_type,
+                             slug, label, parent_ids, child_ids)
+                        VALUES
+                            ('mtg', 'scryfall', %s, 'art', %s, %s,
+                             '[]'::JSONB, '[]'::JSONB)
+                        RETURNING tag_id
+                        """,
+                        (f"tag-{token}", f"fixture-art-{token}", f"Fixture Art {token}"),
+                    ).fetchone()["tag_id"]
+
+                    conn.execute(
+                        """
+                        INSERT INTO catalog.art_tag_assignments
+                            (game_id, provider_id, tag_id, illustration_id,
+                             weight, annotation)
+                        VALUES ('mtg', 'scryfall', %s, %s, '0.75', 'legacy fixture')
+                        """,
+                        (tag_id, illustration_id),
+                    )
+
+                    face_count = conn.execute(
+                        """
+                        SELECT count(*) AS n
+                        FROM catalog.printing_faces
+                        WHERE illustration_id = %s
+                        """,
+                        (illustration_id,),
+                    ).fetchone()["n"]
+                    assignment = conn.execute(
+                        """
+                        SELECT t.external_tag_id, a.weight, a.annotation
+                        FROM catalog.art_tag_assignments a
+                        JOIN catalog.tags t USING (tag_id, game_id, provider_id)
+                        WHERE a.illustration_id = %s
+                        """,
+                        (illustration_id,),
+                    ).fetchone()
+
+                    self.assertEqual(face_count, 0)
+                    self.assertEqual(assignment["external_tag_id"], f"tag-{token}")
+                    self.assertEqual(assignment["weight"], "0.75")
+                    self.assertEqual(assignment["annotation"], "legacy fixture")
+
+                    raise _RollbackFixture()
+            except _RollbackFixture:
+                pass
+
+    def test_catalog_tag_aliases_are_case_insensitive_per_tag(self):
+        """Aliases normalize case within one tag but may be shared by tags."""
+        from uuid import uuid4
+
+        from psycopg.errors import UniqueViolation
+
+        from postgres_db import connection
+
+        token = uuid4().hex
+
+        class _RollbackFixture(Exception):
+            pass
+
+        with connection() as conn:
+            try:
+                with conn.transaction():
+                    tag_ids = []
+                    for suffix in ("one", "two"):
+                        tag_ids.append(
+                            conn.execute(
+                                """
+                                INSERT INTO catalog.tags
+                                    (game_id, provider_id, external_tag_id,
+                                     tag_type, slug, label)
+                                VALUES ('mtg', 'scryfall', %s, 'art', %s, %s)
+                                RETURNING tag_id
+                                """,
+                                (
+                                    f"alias-{suffix}-{token}",
+                                    f"alias-{suffix}-{token}",
+                                    f"Alias Fixture {suffix} {token}",
+                                ),
+                            ).fetchone()["tag_id"]
+                        )
+
+                    alias = f"Shared Alias {token}"
+                    conn.execute(
+                        """
+                        INSERT INTO catalog.tag_aliases
+                            (tag_id, game_id, provider_id, alias)
+                        VALUES (%s, 'mtg', 'scryfall', %s)
+                        """,
+                        (tag_ids[0], alias),
+                    )
+
+                    with self.assertRaises(UniqueViolation):
+                        with conn.transaction():
+                            conn.execute(
+                                """
+                                INSERT INTO catalog.tag_aliases
+                                    (tag_id, game_id, provider_id, alias)
+                                VALUES (%s, 'mtg', 'scryfall', %s)
+                                """,
+                                (tag_ids[0], alias.swapcase()),
+                            )
+
+                    # The old SQLite key was (tag_id, alias), not global alias.
+                    conn.execute(
+                        """
+                        INSERT INTO catalog.tag_aliases
+                            (tag_id, game_id, provider_id, alias)
+                        VALUES (%s, 'mtg', 'scryfall', %s)
+                        """,
+                        (tag_ids[1], alias),
+                    )
+
+                    count = conn.execute(
+                        """
+                        SELECT count(*) AS n
+                        FROM catalog.tag_aliases
+                        WHERE lower(btrim(alias)) = lower(btrim(%s))
+                        """,
+                        (alias,),
+                    ).fetchone()["n"]
+                    self.assertEqual(count, 2)
+
+                    raise _RollbackFixture()
+            except _RollbackFixture:
+                pass
+
+    def test_catalog_tag_hierarchy_is_game_and_provider_scoped(self):
+        """Closure relationships cannot cross a game's/provider's tag namespace."""
+        from uuid import uuid4
+
+        from psycopg.errors import ForeignKeyViolation
+
+        from postgres_db import connection
+
+        token = uuid4().hex
+
+        class _RollbackFixture(Exception):
+            pass
+
+        with connection() as conn:
+            try:
+                with conn.transaction():
+                    def insert_tag(game_id, provider_id, suffix):
+                        return conn.execute(
+                            """
+                            INSERT INTO catalog.tags
+                                (game_id, provider_id, external_tag_id,
+                                 tag_type, slug, label)
+                            VALUES (%s, %s, %s, 'art', %s, %s)
+                            RETURNING tag_id
+                            """,
+                            (
+                                game_id,
+                                provider_id,
+                                f"{game_id}-{suffix}-{token}",
+                                f"{game_id}-{suffix}-{token}",
+                                f"{game_id} {suffix} {token}",
+                            ),
+                        ).fetchone()["tag_id"]
+
+                    parent_id = insert_tag("mtg", "scryfall", "parent")
+                    child_id = insert_tag("mtg", "scryfall", "child")
+                    pokemon_tag_id = insert_tag("pokemon", "tcgcsv", "pokemon")
+
+                    conn.execute(
+                        """
+                        INSERT INTO catalog.tag_closure
+                            (game_id, provider_id, ancestor_tag_id,
+                             descendant_tag_id, depth)
+                        VALUES ('mtg', 'scryfall', %s, %s, 1)
+                        """,
+                        (parent_id, child_id),
+                    )
+
+                    with self.assertRaises(ForeignKeyViolation):
+                        with conn.transaction():
+                            conn.execute(
+                                """
+                                INSERT INTO catalog.tag_closure
+                                    (game_id, provider_id, ancestor_tag_id,
+                                     descendant_tag_id, depth)
+                                VALUES ('mtg', 'scryfall', %s, %s, 1)
+                                """,
+                                (parent_id, pokemon_tag_id),
+                            )
+
+                    raise _RollbackFixture()
+            except _RollbackFixture:
+                pass
+
+    def test_oracle_tag_assignments_keep_unresolved_external_ids(self):
+        """Oracle tag assignments retain provider IDs even before card resolution."""
+        from uuid import uuid4
+
+        from psycopg.errors import ForeignKeyViolation
+
+        from postgres_db import connection
+
+        token = uuid4().hex
+
+        class _RollbackFixture(Exception):
+            pass
+
+        with connection() as conn:
+            try:
+                with conn.transaction():
+                    tag_id = conn.execute(
+                        """
+                        INSERT INTO catalog.tags
+                            (game_id, provider_id, external_tag_id, tag_type,
+                             slug, label)
+                        VALUES ('mtg', 'scryfall', %s, 'oracle', %s, %s)
+                        RETURNING tag_id
+                        """,
+                        (
+                            f"oracle-tag-{token}",
+                            f"oracle-fixture-{token}",
+                            f"Oracle Fixture {token}",
+                        ),
+                    ).fetchone()["tag_id"]
+
+                    external_oracle_id = f"unresolved-oracle-{token}"
+                    conn.execute(
+                        """
+                        INSERT INTO catalog.oracle_tag_assignments
+                            (game_id, provider_id, tag_id, external_oracle_id,
+                             weight, annotation)
+                        VALUES ('mtg', 'scryfall', %s, %s, '1.0', 'unresolved')
+                        """,
+                        (tag_id, external_oracle_id),
+                    )
+
+                    unresolved = conn.execute(
+                        """
+                        SELECT external_oracle_id, card_id, weight, annotation
+                        FROM catalog.oracle_tag_assignments
+                        WHERE tag_id = %s AND external_oracle_id = %s
+                        """,
+                        (tag_id, external_oracle_id),
+                    ).fetchone()
+                    self.assertEqual(
+                        unresolved,
+                        {
+                            "external_oracle_id": external_oracle_id,
+                            "card_id": None,
+                            "weight": "1.0",
+                            "annotation": "unresolved",
+                        },
+                    )
+
+                    pokemon_card_id = conn.execute(
+                        """
+                        INSERT INTO catalog.cards (game_id, name)
+                        VALUES ('pokemon', %s)
+                        RETURNING card_id
+                        """,
+                        (f"Wrong Game Card {token}",),
+                    ).fetchone()["card_id"]
+
+                    with self.assertRaises(ForeignKeyViolation):
+                        with conn.transaction():
+                            conn.execute(
+                                """
+                                INSERT INTO catalog.oracle_tag_assignments
+                                    (game_id, provider_id, tag_id,
+                                     external_oracle_id, card_id)
+                                VALUES ('mtg', 'scryfall', %s, %s, %s)
+                                """,
+                                (tag_id, f"wrong-game-{token}", pokemon_card_id),
+                            )
+
+                    raise _RollbackFixture()
+            except _RollbackFixture:
+                pass
+
+
 
 if __name__ == "__main__":
     unittest.main()
