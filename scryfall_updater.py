@@ -27,7 +27,9 @@ from PIL import Image
 from scryfall_catalog import ensure_art_catalog_schema
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
-DB_ART = DATA_DIR / "mtg_art_hashes.db"
+DB_DIR = Path(os.environ.get("DB_DIR", str(DATA_DIR)))
+DB_DIR.mkdir(parents=True, exist_ok=True)
+DB_ART = DB_DIR / "mtg_art_hashes.db"
 META_FILE = DATA_DIR / "scryfall_catalog_sync.json"
 MANIFEST_URL = "https://api.scryfall.com/bulk-data"
 USER_AGENT = os.environ.get(
