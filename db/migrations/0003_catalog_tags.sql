@@ -33,6 +33,7 @@ CREATE TABLE catalog.tags (
     CONSTRAINT tags_parent_ids_array CHECK (jsonb_typeof(parent_ids) = 'array'),
     CONSTRAINT tags_child_ids_array CHECK (jsonb_typeof(child_ids) = 'array'),
     CONSTRAINT tags_id_game_provider_uq UNIQUE (tag_id, game_id, provider_id),
+    CONSTRAINT tags_id_game_provider_type_uq UNIQUE (tag_id, game_id, provider_id, tag_type),
     CONSTRAINT tags_provider_external_uq UNIQUE (game_id, provider_id, external_tag_id)
 );
 
@@ -50,8 +51,8 @@ CREATE TABLE catalog.tag_aliases (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT tag_aliases_pk PRIMARY KEY (tag_id, alias),
     CONSTRAINT tag_aliases_tag_scope_fk
-        FOREIGN KEY (tag_id, game_id, provider_id)
-        REFERENCES catalog.tags(tag_id, game_id, provider_id) ON DELETE CASCADE,
+        FOREIGN KEY (tag_id, game_id, provider_id, tag_type)
+        REFERENCES catalog.tags(tag_id, game_id, provider_id, tag_type) ON DELETE CASCADE,
     CONSTRAINT tag_aliases_nonempty CHECK (btrim(alias) <> '')
 );
 
@@ -65,17 +66,18 @@ CREATE INDEX catalog_tag_aliases_lookup_idx
 CREATE TABLE catalog.tag_closure (
     game_id TEXT NOT NULL,
     provider_id TEXT NOT NULL,
+    tag_type TEXT NOT NULL,
     ancestor_tag_id BIGINT NOT NULL,
     descendant_tag_id BIGINT NOT NULL,
     depth INTEGER NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT tag_closure_pk PRIMARY KEY (ancestor_tag_id, descendant_tag_id),
     CONSTRAINT tag_closure_ancestor_fk
-        FOREIGN KEY (ancestor_tag_id, game_id, provider_id)
-        REFERENCES catalog.tags(tag_id, game_id, provider_id) ON DELETE CASCADE,
+        FOREIGN KEY (ancestor_tag_id, game_id, provider_id, tag_type)
+        REFERENCES catalog.tags(tag_id, game_id, provider_id, tag_type) ON DELETE CASCADE,
     CONSTRAINT tag_closure_descendant_fk
-        FOREIGN KEY (descendant_tag_id, game_id, provider_id)
-        REFERENCES catalog.tags(tag_id, game_id, provider_id) ON DELETE CASCADE,
+        FOREIGN KEY (descendant_tag_id, game_id, provider_id, tag_type)
+        REFERENCES catalog.tags(tag_id, game_id, provider_id, tag_type) ON DELETE CASCADE,
     CONSTRAINT tag_closure_depth_nonnegative CHECK (depth >= 0),
     CONSTRAINT tag_closure_not_self CHECK (ancestor_tag_id <> descendant_tag_id)
 );
@@ -86,6 +88,7 @@ CREATE INDEX catalog_tag_closure_descendant_idx
 CREATE TABLE catalog.art_tag_assignments (
     game_id TEXT NOT NULL,
     provider_id TEXT NOT NULL,
+    tag_type TEXT NOT NULL DEFAULT 'art' CHECK (tag_type = 'art'),
     tag_id BIGINT NOT NULL,
     illustration_id BIGINT NOT NULL,
     weight TEXT,
@@ -93,8 +96,8 @@ CREATE TABLE catalog.art_tag_assignments (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT art_tag_assignments_pk PRIMARY KEY (tag_id, illustration_id),
     CONSTRAINT art_tag_assignments_tag_scope_fk
-        FOREIGN KEY (tag_id, game_id, provider_id)
-        REFERENCES catalog.tags(tag_id, game_id, provider_id) ON DELETE CASCADE,
+        FOREIGN KEY (tag_id, game_id, provider_id, tag_type)
+        REFERENCES catalog.tags(tag_id, game_id, provider_id, tag_type) ON DELETE CASCADE,
     CONSTRAINT art_tag_assignments_illustration_game_fk
         FOREIGN KEY (illustration_id, game_id)
         REFERENCES catalog.illustrations(illustration_id, game_id) ON DELETE CASCADE
@@ -109,6 +112,7 @@ CREATE INDEX catalog_art_tag_assignments_tag_idx
 CREATE TABLE catalog.oracle_tag_assignments (
     game_id TEXT NOT NULL,
     provider_id TEXT NOT NULL,
+    tag_type TEXT NOT NULL DEFAULT 'oracle' CHECK (tag_type = 'oracle'),
     tag_id BIGINT NOT NULL,
     external_oracle_id TEXT NOT NULL,
     card_id BIGINT,
