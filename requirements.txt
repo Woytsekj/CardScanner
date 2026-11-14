@@ -2,6 +2,9 @@ Flask>=3.0,<4
 requests>=2.32,<3
 gunicorn>=23,<24
 
+# PostgreSQL driver and bounded connection pooling (server-side migration work)
+psycopg[binary,pool]>=3.2,<4
+
 # Runtime image processing for scanner recognition
 Pillow>=13.0.0,<14
 opencv-python-headless>=4.10,<5
