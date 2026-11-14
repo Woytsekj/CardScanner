@@ -684,5 +684,202 @@ class PostgreSQLFoundationTests(unittest.TestCase):
 
 
 
+    def test_app_core_tables_and_legacy_compatibility(self):
+        """Application data keeps legacy IDs, labels, and scan idempotency semantics."""
+        from uuid import uuid4
+
+        from psycopg.errors import ForeignKeyViolation, UniqueViolation
+
+        from postgres_db import connection
+
+        token = uuid4().hex
+
+        class _RollbackFixture(Exception):
+            pass
+
+        with connection() as conn:
+            try:
+                with conn.transaction():
+                    expected_tables = {
+                        "people", "users", "login_attempts", "app_state",
+                        "app_migrations", "inventory", "scan_log",
+                        "decklists", "deck_cards",
+                    }
+                    rows = conn.execute(
+                        """
+                        SELECT table_name
+                        FROM information_schema.tables
+                        WHERE table_schema = 'app'
+                          AND table_type = 'BASE TABLE'
+                        """
+                    ).fetchall()
+                    self.assertTrue(
+                        expected_tables.issubset({row["table_name"] for row in rows})
+                    )
+
+                    person_id = conn.execute(
+                        """
+                        INSERT INTO app.people (name)
+                        VALUES (%s)
+                        RETURNING id
+                        """,
+                        (f"Person {token}",),
+                    ).fetchone()["id"]
+
+                    with self.assertRaises(UniqueViolation):
+                        with conn.transaction():
+                            conn.execute(
+                                "INSERT INTO app.people (name) VALUES (%s)",
+                                (f"person {token}".swapcase(),),
+                            )
+
+                    conn.execute(
+                        """
+                        INSERT INTO app.users
+                            (username, password_hash, person_id, is_admin, role)
+                        VALUES (%s, %s, %s, TRUE, 'admin')
+                        """,
+                        (f"user-{token}", "test-password-hash", person_id),
+                    )
+
+                    with self.assertRaises(UniqueViolation):
+                        with conn.transaction():
+                            conn.execute(
+                                """
+                                INSERT INTO app.users
+                                    (username, password_hash, person_id)
+                                VALUES (%s, %s, %s)
+                                """,
+                                (f"second-user-{token}", "test-password-hash", person_id),
+                            )
+
+                    card_id = conn.execute(
+                        """
+                        INSERT INTO catalog.cards (game_id, name)
+                        VALUES ('mtg', %s)
+                        RETURNING card_id
+                        """,
+                        (f"Application Fixture Card {token}",),
+                    ).fetchone()["card_id"]
+                    printing_id = conn.execute(
+                        """
+                        INSERT INTO catalog.printings (game_id, card_id, collector_number)
+                        VALUES ('mtg', %s, 'app-fixture')
+                        RETURNING printing_id
+                        """,
+                        (card_id,),
+                    ).fetchone()["printing_id"]
+
+                    deck_id = conn.execute(
+                        """
+                        INSERT INTO app.decklists
+                            (game_id, name, created_at, updated_at,
+                             person_id, person_name, tags_json)
+                        VALUES ('mtg', %s, now(), now(), %s, %s, '[]'::JSONB)
+                        RETURNING id
+                        """,
+                        (f"Application Fixture Deck {token}", person_id, f"Person {token}"),
+                    ).fetchone()["id"]
+
+                    deck_card_id = conn.execute(
+                        """
+                        INSERT INTO app.deck_cards
+                            (deck_id, game_id, name, quantity, card_id, printing_id)
+                        VALUES (%s, 'mtg', 'Fixture Card', 1, %s, %s)
+                        RETURNING id
+                        """,
+                        (deck_id, card_id, printing_id),
+                    ).fetchone()["id"]
+
+                    inventory_id = conn.execute(
+                        """
+                        INSERT INTO app.inventory
+                            (game_id, card_id, printing_id, name, owner,
+                             person_id, deck_id, location, for_vending)
+                        VALUES ('mtg', %s, %s, 'Fixture Card',
+                                %s, %s, %s, 'Binder', FALSE)
+                        RETURNING id
+                        """,
+                        (card_id, printing_id, f"Person {token}", person_id, deck_id),
+                    ).fetchone()["id"]
+
+                    # A retry marker is intentionally valid even when its old
+                    # inventory row no longer exists.
+                    scan_id = f"scan-{token}"
+                    conn.execute(
+                        """
+                        INSERT INTO app.scan_log (scan_id, game_id, row_id, quantity)
+                        VALUES (%s, 'mtg', 922337203685477, 1)
+                        """,
+                        (scan_id,),
+                    )
+                    saved_scan = conn.execute(
+                        "SELECT row_id, quantity FROM app.scan_log WHERE scan_id = %s",
+                        (scan_id,),
+                    ).fetchone()
+                    self.assertEqual(
+                        saved_scan,
+                        {"row_id": 922337203685477, "quantity": 1},
+                    )
+
+                    pokemon_card_id = conn.execute(
+                        """
+                        INSERT INTO catalog.cards (game_id, name)
+                        VALUES ('pokemon', %s)
+                        RETURNING card_id
+                        """,
+                        (f"Wrong Game Fixture {token}",),
+                    ).fetchone()["card_id"]
+                    with self.assertRaises(ForeignKeyViolation):
+                        with conn.transaction():
+                            conn.execute(
+                                """
+                                INSERT INTO app.inventory
+                                    (game_id, card_id, name)
+                                VALUES ('mtg', %s, 'Cross-game card')
+                                """,
+                                (pokemon_card_id,),
+                            )
+
+                    # Removing a deck cascades its requirements and clears only
+                    # the inventory allocation; the physical copy remains.
+                    conn.execute("DELETE FROM app.decklists WHERE id = %s", (deck_id,))
+                    deck_card_count = conn.execute(
+                        "SELECT count(*) AS n FROM app.deck_cards WHERE id = %s",
+                        (deck_card_id,),
+                    ).fetchone()["n"]
+                    inventory_after_deck_delete = conn.execute(
+                        "SELECT deck_id, location, quantity FROM app.inventory WHERE id = %s",
+                        (inventory_id,),
+                    ).fetchone()
+                    self.assertEqual(deck_card_count, 0)
+                    self.assertEqual(
+                        inventory_after_deck_delete,
+                        {"deck_id": None, "location": "Binder", "quantity": 1},
+                    )
+
+                    # Person deletion unlinks identity but preserves the legacy
+                    # owner/person-name snapshots and the login itself.
+                    conn.execute("DELETE FROM app.people WHERE id = %s", (person_id,))
+                    snapshots = conn.execute(
+                        """
+                        SELECT i.owner, i.person_id AS inventory_person_id,
+                               u.person_id AS user_person_id
+                        FROM app.inventory i
+                        JOIN app.users u ON u.username = %s
+                        WHERE i.id = %s
+                        """,
+                        (f"user-{token}", inventory_id),
+                    ).fetchone()
+                    self.assertEqual(snapshots["owner"], f"Person {token}")
+                    self.assertIsNone(snapshots["inventory_person_id"])
+                    self.assertIsNone(snapshots["user_person_id"])
+
+                    raise _RollbackFixture()
+            except _RollbackFixture:
+                pass
+
+
+
 if __name__ == "__main__":
     unittest.main()
