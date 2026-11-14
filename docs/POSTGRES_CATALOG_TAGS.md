@@ -69,7 +69,8 @@ refresh.
 - Tag external IDs are unique within a game/provider.
 - A tag's game/provider scope is enforced by composite foreign keys.
 - Alias matching is case-insensitive per tag.
-- Closure ancestor and descendant tags must share the declared game/provider.
+- Closure ancestor and descendant tags must share the declared game, provider, and tag type.
+- Artwork assignments can reference only tags whose type is `art`; Oracle assignments can reference only tags whose type is `oracle`.
 - Artwork assignments require an illustration identity in the same game, but
   do not require a printing face to exist.
 - Oracle assignments retain an external Oracle ID and may optionally resolve
