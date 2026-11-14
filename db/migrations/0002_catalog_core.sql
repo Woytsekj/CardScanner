@@ -141,7 +141,7 @@ CREATE TABLE catalog.printings (
         REFERENCES catalog.sets(set_id, game_id) ON DELETE RESTRICT,
     CONSTRAINT printings_image_game_fk
         FOREIGN KEY (image_id, game_id)
-        REFERENCES catalog.images(image_id, game_id) ON DELETE SET NULL,
+        REFERENCES catalog.images(image_id, game_id) ON DELETE SET NULL (image_id),
     CONSTRAINT printings_id_game_uq UNIQUE (printing_id, game_id)
 );
 
@@ -182,7 +182,7 @@ CREATE TABLE catalog.printing_faces (
         REFERENCES catalog.images(image_id, game_id) ON DELETE SET NULL,
     CONSTRAINT printing_faces_illustration_game_fk
         FOREIGN KEY (illustration_id, game_id)
-        REFERENCES catalog.illustrations(illustration_id, game_id) ON DELETE SET NULL
+        REFERENCES catalog.illustrations(illustration_id, game_id) ON DELETE SET NULL (illustration_id)
 );
 
 CREATE INDEX catalog_printing_faces_game_illustration_idx
@@ -242,7 +242,7 @@ CREATE TABLE catalog.external_ids (
         FOREIGN KEY (illustration_id, game_id)
         REFERENCES catalog.illustrations(illustration_id, game_id) ON DELETE CASCADE,
     CONSTRAINT external_ids_provider_entity_uq
-        UNIQUE (game_id, provider_id, entity_type, external_id_type, external_id)
+        UNIQUE (game_id, provider_id, external_id_type, external_id)
 );
 
 CREATE INDEX catalog_external_ids_card_idx
