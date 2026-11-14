@@ -14,6 +14,7 @@ Repository: <https://github.com/Woytsekj/CardScanner>
 - `templates/`, `static/` — web interface and styles.
 - `price_updater.py` — TCGCSV price updates and optional Discord price alerts.
 - `backup_database.py` — scheduled SQLite backups.
+- `migrate_storage.py` — guarded migration of SQLite databases from the data volume to local database storage.
 - `update_scryfall_metadata.py` — refreshes cached card metadata from Scryfall bulk data.
 - `scanner-client/` — standalone desktop scanning application, camera helpers, and installable Android-friendly PWA.
 - `docker-compose.yml` — web app, price updater, and backup services.
