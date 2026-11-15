@@ -881,5 +881,372 @@ class PostgreSQLFoundationTests(unittest.TestCase):
 
 
 
+    def test_provider_metadata_preserves_unresolved_ids_and_legacy_behavior(self):
+        """Provider metadata, mappings, rulings, and aliases retain legacy semantics."""
+        from uuid import uuid4
+
+        from psycopg.errors import ForeignKeyViolation, UniqueViolation
+        from postgres_db import connection
+
+        token = uuid4().hex
+
+        class _RollbackFixture(Exception):
+            pass
+
+        with connection() as conn:
+            try:
+                with conn.transaction():
+                    expected = {
+                        "provider_printing_metadata",
+                        "printing_product_mappings",
+                        "printing_rulings_cache",
+                    }
+                    rows = conn.execute(
+                        """
+                        SELECT table_name
+                        FROM information_schema.tables
+                        WHERE table_schema = 'catalog'
+                          AND table_type = 'BASE TABLE'
+                        """
+                    ).fetchall()
+                    self.assertTrue(
+                        expected.issubset({row["table_name"] for row in rows})
+                    )
+
+                    alias_tables = conn.execute(
+                        """
+                        SELECT table_name
+                        FROM information_schema.tables
+                        WHERE table_schema = 'app'
+                          AND table_name = 'card_aliases'
+                        """
+                    ).fetchall()
+                    self.assertEqual(len(alias_tables), 1)
+
+                    external_id = f"unresolved-scryfall-{token}"
+
+                    # Provider metadata survives without a normalized printing.
+                    conn.execute(
+                        """
+                        INSERT INTO catalog.provider_printing_metadata
+                            (game_id, provider_id, external_printing_id,
+                             colors, color_identity, legalities, updated_at)
+                        VALUES
+                            ('mtg', 'scryfall', %s,
+                             '["U"]'::JSONB, '["U"]'::JSONB,
+                             '{"standard":"legal"}'::JSONB, now())
+                        """,
+                        (external_id,),
+                    )
+
+                    metadata = conn.execute(
+                        """
+                        SELECT printing_id, colors, color_identity, legalities
+                        FROM catalog.provider_printing_metadata
+                        WHERE game_id = 'mtg'
+                          AND provider_id = 'scryfall'
+                          AND external_printing_id = %s
+                        """,
+                        (external_id,),
+                    ).fetchone()
+
+                    self.assertIsNone(metadata["printing_id"])
+                    self.assertEqual(metadata["colors"], ["U"])
+                    self.assertEqual(metadata["color_identity"], ["U"])
+                    self.assertEqual(metadata["legalities"], {"standard": "legal"})
+
+                    # Explicit legacy alias IDs remain insertable.
+                    alias_id = 987654321
+                    alias = f"Alternate Name {token}"
+                    conn.execute(
+                        """
+                        INSERT INTO app.card_aliases
+                            (id, game_id, provider_id, external_printing_id, alias)
+                        VALUES (%s, 'mtg', 'scryfall', %s, %s)
+                        """,
+                        (alias_id, external_id, alias),
+                    )
+
+                    saved_alias = conn.execute(
+                        """
+                        SELECT id, printing_id, alias
+                        FROM app.card_aliases
+                        WHERE id = %s
+                        """,
+                        (alias_id,),
+                    ).fetchone()
+
+                    self.assertEqual(saved_alias["id"], alias_id)
+                    self.assertIsNone(saved_alias["printing_id"])
+                    self.assertEqual(saved_alias["alias"], alias)
+
+                    with self.assertRaises(UniqueViolation):
+                        with conn.transaction():
+                            conn.execute(
+                                """
+                                INSERT INTO app.card_aliases
+                                    (game_id, provider_id, external_printing_id, alias)
+                                VALUES ('mtg', 'scryfall', %s, %s)
+                                """,
+                                (external_id, alias.swapcase()),
+                            )
+
+                    # A mapping without a resolved TCGCSV product remains valid.
+                    conn.execute(
+                        """
+                        INSERT INTO catalog.printing_product_mappings
+                            (game_id, source_provider_id, source_external_printing_id,
+                             target_provider_id, target_external_product_id,
+                             finishes, resolved_at)
+                        VALUES
+                            ('mtg', 'scryfall', 'mapping-' || %s,
+                             'tcgcsv', NULL, '[]'::JSONB, now())
+                        """,
+                        (token,),
+                    )
+
+                    mapping = conn.execute(
+                        """
+                        SELECT target_external_product_id, finishes
+                        FROM catalog.printing_product_mappings
+                        WHERE game_id = 'mtg'
+                          AND source_provider_id = 'scryfall'
+                          AND source_external_printing_id = %s
+                          AND target_provider_id = 'tcgcsv'
+                        """,
+                        (f"mapping-{token}",),
+                    ).fetchone()
+
+                    self.assertIsNone(mapping["target_external_product_id"])
+                    self.assertEqual(mapping["finishes"], [])
+
+                    # Empty rulings responses are legitimate cached responses.
+                    conn.execute(
+                        """
+                        INSERT INTO catalog.printing_rulings_cache
+                            (game_id, provider_id, external_printing_id,
+                             rulings, fetched_at)
+                        VALUES ('mtg', 'scryfall', %s, '[]'::JSONB, now())
+                        """,
+                        (external_id,),
+                    )
+
+                    rulings = conn.execute(
+                        """
+                        SELECT rulings
+                        FROM catalog.printing_rulings_cache
+                        WHERE game_id = 'mtg'
+                          AND provider_id = 'scryfall'
+                          AND external_printing_id = %s
+                        """,
+                        (external_id,),
+                    ).fetchone()
+
+                    self.assertEqual(rulings["rulings"], [])
+
+                    # A printing from another game cannot be attached to MTG metadata.
+                    pokemon_printing_id = conn.execute(
+                        """
+                        INSERT INTO catalog.printings (game_id, collector_number)
+                        VALUES ('pokemon', %s)
+                        RETURNING printing_id
+                        """,
+                        (f"pokemon-{token}",),
+                    ).fetchone()["printing_id"]
+
+                    with self.assertRaises(ForeignKeyViolation):
+                        with conn.transaction():
+                            conn.execute(
+                                """
+                                INSERT INTO catalog.provider_printing_metadata
+                                    (game_id, provider_id, external_printing_id,
+                                     printing_id, updated_at)
+                                VALUES ('mtg', 'scryfall', %s, %s, now())
+                                """,
+                                (f"wrong-game-{token}", pokemon_printing_id),
+                            )
+
+                    raise _RollbackFixture()
+            except _RollbackFixture:
+                pass
+
+
+    def test_price_history_and_alerts_preserve_product_scope_and_legacy_values(self):
+        """Price snapshots and alert records preserve provider and legacy semantics."""
+        from uuid import uuid4
+
+        from psycopg.errors import ForeignKeyViolation, UniqueViolation
+        from postgres_db import connection
+
+        token = uuid4().hex
+
+        class _RollbackFixture(Exception):
+            pass
+
+        with connection() as conn:
+            try:
+                with conn.transaction():
+                    catalog_tables = conn.execute(
+                        """
+                        SELECT table_name
+                        FROM information_schema.tables
+                        WHERE table_schema = 'catalog'
+                          AND table_name = 'product_price_history'
+                        """
+                    ).fetchall()
+                    app_tables = conn.execute(
+                        """
+                        SELECT table_name
+                        FROM information_schema.tables
+                        WHERE table_schema = 'app'
+                          AND table_name = 'price_alert_log'
+                        """
+                    ).fetchall()
+
+                    self.assertEqual(len(catalog_tables), 1)
+                    self.assertEqual(len(app_tables), 1)
+
+                    product_id = f"legacy-product-{token}"
+                    history_id = 2303701
+
+                    # Preserve a high legacy ID and independently nullable prices.
+                    conn.execute(
+                        """
+                        INSERT INTO catalog.product_price_history
+                            (id, game_id, provider_id, external_product_id,
+                             captured_at, source_updated, normal_price, foil_price)
+                        VALUES
+                            (%s, 'mtg', 'tcgcsv', %s, now(), '2026-11-11T20:05:27+0000',
+                             NULL, 12.34)
+                        """,
+                        (history_id, product_id),
+                    )
+
+                    history = conn.execute(
+                        """
+                        SELECT id, normal_price, foil_price
+                        FROM catalog.product_price_history
+                        WHERE game_id = 'mtg'
+                          AND provider_id = 'tcgcsv'
+                          AND external_product_id = %s
+                        """,
+                        (product_id,),
+                    ).fetchone()
+
+                    self.assertEqual(history["id"], history_id)
+                    self.assertIsNone(history["normal_price"])
+                    self.assertEqual(history["foil_price"], 12.34)
+
+                    # The source-update timestamp is the deduplication key.
+                    with self.assertRaises(UniqueViolation):
+                        with conn.transaction():
+                            conn.execute(
+                                """
+                                INSERT INTO catalog.product_price_history
+                                    (game_id, provider_id, external_product_id,
+                                     captured_at, source_updated,
+                                     normal_price, foil_price)
+                                VALUES
+                                    ('mtg', 'tcgcsv', %s, now(), '2026-11-11T20:05:27+0000',
+                                     1.00, 2.00)
+                                """,
+                                (product_id,),
+                            )
+
+
+                    # Equivalent instants with different TEXT representations
+                    # remain distinct under the original SQLite uniqueness rule.
+                    conn.execute(
+                        """
+                        INSERT INTO catalog.product_price_history
+                            (game_id, provider_id, external_product_id,
+                             captured_at, source_updated, normal_price, foil_price)
+                        VALUES
+                            ('mtg', 'tcgcsv', %s, now(),
+                             '2026-11-11T20:05:27+00:00', 1.00, 2.00)
+                        """,
+                        (product_id,),
+                    )
+
+                    source_text_count = conn.execute(
+                        """
+                        SELECT count(*) AS n
+                        FROM catalog.product_price_history
+                        WHERE external_product_id = %s
+                        """,
+                        (product_id,),
+                    ).fetchone()["n"]
+
+                    self.assertEqual(source_text_count, 2)
+
+                    # SQLite permits both prices to be NULL; don't invent a constraint.
+                    conn.execute(
+                        """
+                        INSERT INTO catalog.product_price_history
+                            (game_id, provider_id, external_product_id,
+                             captured_at, source_updated,
+                             normal_price, foil_price)
+                        VALUES
+                            ('mtg', 'tcgcsv', %s, now(), '2026-11-11T20:05:27+0000', NULL, NULL)
+                        """,
+                        (f"both-null-{token}",),
+                    )
+
+                    # Alert IDs and finish-specific values remain independently stored.
+                    alert_id = 12345
+                    conn.execute(
+                        """
+                        INSERT INTO app.price_alert_log
+                            (id, game_id, provider_id, external_product_id,
+                             finish, alerted_at, old_price, new_price,
+                             percent_change, owned_quantity, owned_value_gain)
+                        VALUES
+                            (%s, 'mtg', 'tcgcsv', %s, 'foil', now(),
+                             10.00, 12.00, 20.0, 3, 6.00)
+                        """,
+                        (alert_id, product_id),
+                    )
+
+                    alert = conn.execute(
+                        """
+                        SELECT id, finish, old_price, new_price,
+                               percent_change, owned_quantity, owned_value_gain
+                        FROM app.price_alert_log
+                        WHERE id = %s
+                        """,
+                        (alert_id,),
+                    ).fetchone()
+
+                    self.assertEqual(
+                        alert,
+                        {
+                            "id": alert_id,
+                            "finish": "foil",
+                            "old_price": 10.0,
+                            "new_price": 12.0,
+                            "percent_change": 20.0,
+                            "owned_quantity": 3,
+                            "owned_value_gain": 6.0,
+                        },
+                    )
+
+                    # Scryfall is not registered as a provider for Pokémon.
+                    with self.assertRaises(ForeignKeyViolation):
+                        with conn.transaction():
+                            conn.execute(
+                                """
+                                INSERT INTO catalog.product_price_history
+                                    (game_id, provider_id, external_product_id,
+                                     captured_at, source_updated)
+                                VALUES ('pokemon', 'scryfall', %s, now(), '2026-11-11T20:05:27+0000')
+                                """,
+                                (f"invalid-provider-{token}",),
+                            )
+
+                    raise _RollbackFixture()
+            except _RollbackFixture:
+                pass
+
+
 if __name__ == "__main__":
     unittest.main()

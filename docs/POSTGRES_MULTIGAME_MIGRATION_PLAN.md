@@ -1,6 +1,6 @@
 # PostgreSQL and Multi-Game Migration Plan
 
-Status: design baseline; no production changes authorized or performed by this document.
+Status: development schema implemented and verified through migration 0007. Schema-only development work; no production import, deployment, or cutover has been authorized or performed.
 
 ## Goals
 
@@ -24,12 +24,38 @@ Use stable internal slugs, not provider category IDs, as application identities:
 
 Category IDs are provider-specific configuration, not primary keys or game IDs. The updater must discover/validate categories from TCGCSV's categories response and must not assume that a category ID will never change. A missing or renamed category must disable that game's TCGCSV sync with a clear health/status error rather than silently syncing the wrong category.
 
+## Verified development schema checkpoint (2026-11-14)
+
+The isolated development database has migrations 0001–0007 applied:
+
+| Migration | Schema scope |
+| --- | --- |
+| `0001_foundation.sql` | Game, provider, and game/provider registry |
+| `0002_catalog_core.sql` | Sets, cards, printings, faces, images, hashes, and external identifiers |
+| `0003_catalog_tags.sql` | Tags, aliases, tag closure, and artwork/oracle tag assignments |
+| `0004_app_core.sql` | People, users, inventory, decks, scan log, and application state |
+| `0005_provider_metadata.sql` | Provider printing metadata, aliases, product mappings, and rulings cache |
+| `0006_price_history.sql` | Normalized product price history and price-alert records |
+| `0007_tcgcsv_catalog.sql` | Provider groups, products, and exact-subtype price observations |
+
+The foundation and TCGCSV integration suites passed all 13 tests against
+`cardscanner_dev`. The category-scope constraint ties each provider group to
+the category configured for its game/provider. The nine tables introduced by
+migrations 0005–0007 were verified to exist and contain zero rows.
+
+This is a development schema checkpoint, not a data-migration milestone.
+Production SQLite remains authoritative. No production rows have been
+imported, no production Compose configuration has been changed, and no
+PostgreSQL-backed production application has been enabled. Importer design,
+source-to-target validation, application integration, backup/restore testing,
+and controlled cutover remain future work.
+
 ## Architecture decisions
 
 ### PostgreSQL deployment
 
 - One PostgreSQL database named `cardscanner`.
-- Separate PostgreSQL schemas: `app` for users, inventory, decks, scan history, price history and application state; `catalog` for games, providers, sets, cards, printings, faces, provider identifiers, images and recognition hashes.
+- Separate PostgreSQL schemas: `app` for users, inventory, decks, scan history, price alerts and application state; `catalog` for games, providers, sets, cards, printings, printing faces, provider identifiers, provider metadata, price history, provider product catalogs, price observations, images and recognition hashes.
 - Psycopg 3 for database access. Avoid a wholesale ORM rewrite.
 - A small centralized database module owns connections, transactions, row handling and bounded pooling.
 - Create pools after Gunicorn worker fork; never share live connections across forked workers.
@@ -47,7 +73,7 @@ Use normalized identities with provider-specific identifiers:
 - `catalog.sets`: game-owned expansions/groups; retain source/provider set IDs as external identifiers.
 - `catalog.cards`: game-level card identity where the provider can establish one.
 - `catalog.printings`: a specific set/collector-number/language/finish/art printing. A printing belongs to one game and one card identity where known.
-- `catalog.card_faces`: face/side metadata for multi-face or double-sided cards.
+- `catalog.printing_faces`: ordered face/side metadata for multi-face or double-sided printings.
 - `catalog.external_ids`: provider-scoped identifiers for cards, printings, sets and products. Do not treat Scryfall IDs or TCGplayer product IDs as universal IDs.
 - `catalog.images` and `catalog.image_hashes`: image references and recognition hashes tied to the relevant printing/face and source.
 - Provider-specific metadata may use JSONB where it is genuinely provider-specific; fields used for joins, constraints, matching, filtering or sorting should be normal columns.
@@ -71,8 +97,8 @@ TCGCSV product IDs are provider IDs. Store them in provider-scoped external-ID m
 - game and printing/product mapping;
 - provider and provider product ID;
 - source subtype/variant (for example Normal, Foil, Holofoil, Reverse Holofoil);
-- observed price fields actually supplied by TCGCSV (market, low, mid, high as available);
-- source update timestamp and ingestion timestamp.
+- observed price fields actually supplied by TCGCSV (market, low, mid, high, direct low), each independently nullable;
+- exact source-update timestamp text and ingestion timestamp. Preserve the source text without normalization when it is used for provider deduplication.
 
 Do not collapse different TCGCSV subtype names into one price. Map subtype names to normalized finish/variant values only when the mapping is known; retain the original source value regardless.
 

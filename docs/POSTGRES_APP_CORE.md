@@ -48,15 +48,41 @@ or drop an otherwise valid legacy row.
   original inventory row was later removed.
 - Composite game-scoped foreign keys prevent an MTG inventory/deck reference
   from being attached to a Pokémon, One Piece, or Riftbound catalog identity.
-- Legacy `price` remains text in the inventory table. Current TCGCSV pricing
-  and price history are separate concerns and are not migrated by this file.
+- Legacy `inventory.price` remains text. Later migrations add
+  `catalog.product_price_history` for normalized price history and
+  `catalog.provider_price_observations` for exact provider subtypes; neither
+  changes the legacy inventory price field or imports production price data.
 
-## Deliberately out of scope
+## Later schema additions (migrations 0005–0007)
 
-The following remain separate migration work and are not created here:
-`card_metadata`, `card_rulings_cache`, `card_aliases`,
-`card_price_mapping`, `price_history`, and `price_alert_log`.
-The separate artwork database tables are already represented in the
+Migration 0004 itself does not create the following legacy SQLite tables.
+Their PostgreSQL schema equivalents were added by subsequent migrations:
+
+| Legacy SQLite table | PostgreSQL table | Migration |
+| --- | --- | --- |
+| `card_metadata` | `catalog.provider_printing_metadata` | 0005 |
+| `card_aliases` | `app.card_aliases` | 0005 |
+| `card_price_mapping` | `catalog.printing_product_mappings` | 0005 |
+| `card_rulings_cache` | `catalog.printing_rulings_cache` | 0005 |
+| `price_history` | `catalog.product_price_history` | 0006 |
+| `price_alert_log` | `app.price_alert_log` | 0006 |
+
+These tables preserve provider-scoped identifiers and legacy source values.
+Unresolved printing/product relationships can remain unresolved rather than
+being fabricated during import.
+
+Migration 0007 adds generic TCGCSV provider catalog structures:
+
+- `catalog.provider_product_groups` stores provider groups with game,
+  provider, and configured category scope.
+- `catalog.provider_products` stores provider product metadata and retains
+  game-specific `extended_data` without imposing a shared card schema.
+- `catalog.provider_price_observations` stores exact provider subtype names
+  and all five TCGCSV price fields independently.
+
+The 0005–0007 migrations are schema-only. Their application to development
+PostgreSQL did not import production SQLite rows or replace the production
+databases. The separate artwork database tables remain represented in the
 `catalog` migrations 0002 and 0003.
 
 ## Import prerequisites

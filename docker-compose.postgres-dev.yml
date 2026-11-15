@@ -17,6 +17,17 @@ services:
       timeout: 3s
       retries: 20
     restart: unless-stopped
+    networks:
+       - postgres_dev
 
 volumes:
   cardscanner_pg_dev_data:
+
+networks:
+  postgres_dev:
+    name: cardscanner-postgres-dev_net
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.250.0.0/24
+          gateway: 10.250.0.1

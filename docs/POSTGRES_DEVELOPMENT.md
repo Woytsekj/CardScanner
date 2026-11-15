@@ -32,10 +32,21 @@ Use a virtual environment, then:
 
 ```bash
 python -m pip install -r requirements.txt
-python -m unittest tests.test_postgres_foundation -v
+export CARD_SCANNER_POSTGRES_DSN="$(sed -n 's/^CARD_SCANNER_POSTGRES_DSN=//p' .env.postgres)"
+python -m unittest tests.test_postgres_foundation tests.test_postgres_tcgcsv -v
 ```
 
-The test applies the versioned SQL migration and checks the four internal game slugs, the TCGCSV category mapping, and migration idempotency.
+The integration suites apply the ordered versioned migrations to the
+database selected by `CARD_SCANNER_POSTGRES_DSN`. The foundation tests cover
+game/provider registration, catalog and application constraints, metadata,
+price history, and migration idempotency. The TCGCSV tests cover provider
+groups, products, category scope, exact subtype observations, and source
+timestamp preservation. Test fixtures are rolled back.
+
+At the 2026-11-14 development checkpoint, all 13 tests passed with migrations
+0001–0007 applied. This validates the development schema and its tested
+constraints; it does not validate a production data importer or application
+cutover.
 
 The expected initial TCGCSV category IDs are verified against the live categories endpoint at the time of this design:
 - MTG: 1
