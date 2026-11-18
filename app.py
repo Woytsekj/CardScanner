@@ -812,6 +812,18 @@ def security_gate():
             "catalog_search",
             "catalog_suggest",
             "search_suggest",
+            "api_people",
+            "api_scanner_options",
+            "scanner_desktop_download",
+            "scanner_mobile_index",
+            "scanner_mobile_asset",
+            "api_scanner_mobile_options",
+            "api_scanner_mobile_price",
+            "api_health",
+            "api_version",
+            "api_price_by_card",
+            "api_price",
+            "deck_missing_csv",
         } and request.method == "GET":
             return None
 
@@ -846,6 +858,11 @@ def security_gate():
             "delete_deck_card": "POST",
             "edit_deck_card": "POST",
             "import_csv": "POST",
+            "api_scan": "POST",
+            "api_scan_batch": "POST",
+            "api_scanner_mobile_scan": "POST",
+            "test_discord": "POST",
+            "refresh_prices": "POST",
         }
         if request.endpoint in write_methods:
             if request.method == write_methods[request.endpoint]:
@@ -2072,6 +2089,26 @@ def _scanner_client_data_manifest() -> dict[str, Any]:
 
 
 def insert_or_increment_scan(payload: dict[str, Any]) -> dict[str, Any]:
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_scanner import insert_or_increment_scan as save_postgres_scan
+
+        conn = connect_app_database()
+        try:
+            result = save_postgres_scan(
+                conn,
+                payload,
+                parse_quantity=parse_qty,
+                normalize_finish=normalize_finish,
+            )
+            conn.commit()
+            return result
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     scryfall_id = str(payload.get("scryfall_id") or "").strip()
     name = str(payload.get("name") or "").strip()
     if not scryfall_id or not name:
@@ -4137,6 +4174,16 @@ def export_manabox_csv():
 def api_people():
     if not SCANNER_API_KEY or not check_api_key():
         return jsonify({"success": False, "error": "Invalid scanner API key"}), 401
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_scanner import fetch_active_people
+
+        conn = connect_app_database()
+        try:
+            return jsonify({"success": True, "people": fetch_active_people(conn)})
+        finally:
+            conn.close()
+
     conn = connect_inventory()
     ensure_people_and_auth(conn)
     people = active_people(conn)
@@ -4173,6 +4220,11 @@ def _scanner_person_options(conn: sqlite3.Connection, people_rows=None) -> list[
 
 
 def _scanner_location_options(conn: sqlite3.Connection, owner: str | None = None) -> list[dict[str, str]]:
+    if DATABASE_BACKEND == "postgres":
+        from postgres_scanner import fetch_location_options
+
+        return fetch_location_options(conn, owner)
+
     # Physical locations are plain labels in the current inventory schema (there is
     # no location table/foreign key). Return observed names, with a stable ID equal
     # to the name so clients can carry the choice without guessing numeric IDs.
@@ -4196,6 +4248,16 @@ def api_scanner_options():
     """Compatibility options route for the trusted desktop scanner API key."""
     if not SCANNER_API_KEY or not check_api_key():
         return jsonify({"success": False, "error": "Invalid scanner API key"}), 401
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_scanner import fetch_scanner_options
+
+        conn = connect_app_database()
+        try:
+            return jsonify({"success": True, **fetch_scanner_options(conn)})
+        finally:
+            conn.close()
+
     conn = connect_inventory()
     try:
         ensure_people_and_auth(conn)
@@ -4222,6 +4284,13 @@ def _scanner_user_is_admin(user) -> bool:
 
 
 def _scanner_mobile_authorized_people(conn: sqlite3.Connection, user) -> list[dict[str, Any]]:
+    if DATABASE_BACKEND == "postgres":
+        from postgres_scanner import fetch_mobile_authorized_people
+
+        return fetch_mobile_authorized_people(
+            conn, user, is_admin=_scanner_user_is_admin(user)
+        )
+
     ensure_people_and_auth(conn)
     if _scanner_user_is_admin(user):
         rows = conn.execute(
@@ -4382,8 +4451,15 @@ def api_scanner_mobile_options():
         return jsonify({"success": False, "error": "Login required"}), 401
     if str(user["role"] or "").lower() == "vendor" and not _scanner_user_is_admin(user):
         return jsonify({"success": False, "error": "Vendor accounts cannot scan cards."}), 403
-    conn = connect_inventory()
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+
+        conn = connect_app_database()
+    else:
+        conn = connect_inventory()
     try:
+        if DATABASE_BACKEND != "postgres":
+            ensure_people_and_auth(conn)
         people = _scanner_mobile_authorized_people(conn, user)
         if not people and not _scanner_user_is_admin(user):
             return jsonify({"success": False, "error": "This account is not linked to an active person. Ask the CardScanner administrator to map your account to a person."}), 403
@@ -5076,17 +5152,28 @@ def api_scanner_mobile_price(scryfall_id: str):
     # resolve_scryfall_mapping() here: that helper can make a live Scryfall request
     # when a mapping is missing, which would create network traffic while scanning.
     sid = str(scryfall_id or "").strip()
-    conn = connect_inventory()
-    try:
-        ensure_card_mapping_table(conn)
-        cached = conn.execute(
-            "SELECT tcgplayer_id FROM card_price_mapping WHERE scryfall_id=?", (sid,)
-        ).fetchone()
-        tcg_id = _normalize_tcgplayer_id(cached[0]) if cached else None
-    finally:
-        conn.close()
-    if not tcg_id:
-        tcg_id = _art_db_tcgplayer_id(sid)
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_scanner import resolve_printing_price_mapping
+
+        conn = connect_app_database()
+        try:
+            mapping = resolve_printing_price_mapping(conn, sid)
+            tcg_id = _normalize_tcgplayer_id(mapping.get("tcgplayer_id"))
+        finally:
+            conn.close()
+    else:
+        conn = connect_inventory()
+        try:
+            ensure_card_mapping_table(conn)
+            cached = conn.execute(
+                "SELECT tcgplayer_id FROM card_price_mapping WHERE scryfall_id=?", (sid,)
+            ).fetchone()
+            tcg_id = _normalize_tcgplayer_id(cached[0]) if cached else None
+        finally:
+            conn.close()
+        if not tcg_id:
+            tcg_id = _art_db_tcgplayer_id(sid)
     prices = get_tcg_prices().get(str(tcg_id), {"normal": None, "foil": None}) if tcg_id else {"normal": None, "foil": None}
     return jsonify({"success": True, "scryfall_id": sid, "tcgplayer_id": tcg_id,
                     "normal": prices.get("normal"), "foil": prices.get("foil"),
@@ -5111,9 +5198,14 @@ def api_scanner_mobile_scan():
     except (TypeError, ValueError):
         return jsonify({"success": False, "error": "Select a person/collection before saving."}), 400
 
-    conn = connect_inventory()
-    try:
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+
+        conn = connect_app_database()
+    else:
+        conn = connect_inventory()
         ensure_people_and_auth(conn)
+    try:
         people = _scanner_mobile_authorized_people(conn, user)
         selected = next((p for p in people if int(p["id"]) == person_id), None)
         if selected is None:
@@ -5167,11 +5259,21 @@ def api_price_by_card(scryfall_id: str):
         return jsonify({"success": False, "error": "SCANNER_API_KEY is not configured on the server"}), 503
     if not check_api_key():
         return jsonify({"success": False, "error": "Invalid scanner API key"}), 401
-    conn = connect_inventory()
-    try:
-        mapping = resolve_scryfall_mapping(scryfall_id, conn)
-    finally:
-        conn.close()
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_scanner import resolve_printing_price_mapping
+
+        conn = connect_app_database()
+        try:
+            mapping = resolve_printing_price_mapping(conn, scryfall_id)
+        finally:
+            conn.close()
+    else:
+        conn = connect_inventory()
+        try:
+            mapping = resolve_scryfall_mapping(scryfall_id, conn)
+        finally:
+            conn.close()
     tcg_id = mapping.get("tcgplayer_id")
     prices = get_tcg_prices().get(str(tcg_id), {"normal": None, "foil": None}) if tcg_id else {"normal": None, "foil": None}
     meta = get_price_meta()
@@ -5208,19 +5310,43 @@ def api_price(tcg_id: str):
 
     # If the live snapshot has no entry but history exists, return the newest
     # historical point so the scanner can still display a known price.
-    if normal is None and foil is None and DB_INV.exists():
+    if normal is None and foil is None:
         try:
-            conn = connect_inventory()
-            row = conn.execute(
-                "SELECT normal_price, foil_price FROM price_history WHERE tcgplayer_id = ? ORDER BY captured_at DESC LIMIT 1",
-                (key,),
-            ).fetchone()
-            conn.close()
+            if DATABASE_BACKEND == "postgres":
+                from postgres_app_db import connect_app_database
+
+                conn = connect_app_database()
+                try:
+                    row = conn.execute(
+                        """
+                        SELECT normal_price, foil_price
+                        FROM catalog.product_price_history
+                        WHERE game_id = 'mtg'
+                          AND provider_id = 'tcgcsv'
+                          AND external_product_id = ?
+                        ORDER BY captured_at DESC, id DESC
+                        LIMIT 1
+                        """,
+                        (key,),
+                    ).fetchone()
+                finally:
+                    conn.close()
+            elif DB_INV.exists():
+                conn = connect_inventory()
+                try:
+                    row = conn.execute(
+                        "SELECT normal_price, foil_price FROM price_history WHERE tcgplayer_id = ? ORDER BY captured_at DESC LIMIT 1",
+                        (key,),
+                    ).fetchone()
+                finally:
+                    conn.close()
+            else:
+                row = None
             if row:
                 normal = row[0]
                 foil = row[1]
-        except sqlite3.Error:
-            pass
+        except Exception:
+            app.logger.exception("Historical price fallback failed for %s", key)
 
     return jsonify({
         "success": True,
@@ -6847,9 +6973,21 @@ def move_inventory_to_deck(deck_id: int):
 
 @app.get("/decks/<int:deck_id>/missing.csv")
 def deck_missing_csv(deck_id:int):
-    conn=connect_inventory()
-    deck=conn.execute("SELECT person_name FROM decklists WHERE id=?",(deck_id,)).fetchone()
-    conn.close()
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+
+        conn = connect_app_database()
+        try:
+            deck = conn.execute(
+                "SELECT person_name FROM app.decklists WHERE id=? AND game_id='mtg'",
+                (deck_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+    else:
+        conn=connect_inventory()
+        deck=conn.execute("SELECT person_name FROM decklists WHERE id=?",(deck_id,)).fetchone()
+        conn.close()
     if not deck:
         return redirect(url_for("decks_page",message="Deck not found."))
     owner=str(deck["person_name"] or "Jonathan").strip()
