@@ -278,6 +278,9 @@ class PostgreSQLScannerPersistenceTests(unittest.TestCase):
         conn = connect_app_database(expected_database="cardscanner_dev")
         try:
             self._add_catalog_printing(conn)
+            # The mobile cache helper opens its own connection, so fixture data
+            # must be committed before checking that cross-connection read path.
+            conn.commit()
             revision, names = fetch_catalog_card_names(conn)
             self.assertGreaterEqual(revision, 1)
             self.assertIn(self.catalog_name, names)
