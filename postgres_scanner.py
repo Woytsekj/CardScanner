@@ -21,9 +21,12 @@ def fetch_location_options(conn, owner: str | None = None) -> list[dict[str, str
     if owner:
         rows = conn.execute(
             """
-            SELECT DISTINCT COALESCE(location, 'Free') AS name
-            FROM app.inventory
-            WHERE game_id = 'mtg' AND owner = ?
+            SELECT name
+            FROM (
+                SELECT DISTINCT COALESCE(location, 'Free') AS name
+                FROM app.inventory
+                WHERE game_id = 'mtg' AND owner = ?
+            ) AS locations
             ORDER BY LOWER(name), name
             """,
             (owner,),
@@ -31,9 +34,12 @@ def fetch_location_options(conn, owner: str | None = None) -> list[dict[str, str
     else:
         rows = conn.execute(
             """
-            SELECT DISTINCT COALESCE(location, 'Free') AS name
-            FROM app.inventory
-            WHERE game_id = 'mtg'
+            SELECT name
+            FROM (
+                SELECT DISTINCT COALESCE(location, 'Free') AS name
+                FROM app.inventory
+                WHERE game_id = 'mtg'
+            ) AS locations
             ORDER BY LOWER(name), name
             """
         ).fetchall()
@@ -348,6 +354,24 @@ def insert_or_increment_scan(
                     "duplicate": True,
                 }
             raise RuntimeError("Scan idempotency record exists without a saved result")
+
+    # Match SQLite's BEGIN IMMEDIATE behavior for simultaneous first scans:
+    # serialize scans that target the same owner/printing/finish/location/flag,
+    # including when no inventory row exists yet to lock with FOR UPDATE.
+    inventory_lock_key = "\0".join(
+        (
+            "mtg",
+            scryfall_id,
+            owner.casefold(),
+            finish.casefold(),
+            location.casefold(),
+            "1" if for_vending else "0",
+        )
+    )
+    conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))",
+        (inventory_lock_key,),
+    )
 
     existing = conn.execute(
         """

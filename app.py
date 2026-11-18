@@ -861,7 +861,6 @@ def security_gate():
             "api_scan": "POST",
             "api_scan_batch": "POST",
             "api_scanner_mobile_scan": "POST",
-            "test_discord": "POST",
             "refresh_prices": "POST",
         }
         if request.endpoint in write_methods:
