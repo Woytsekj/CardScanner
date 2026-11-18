@@ -4886,8 +4886,16 @@ def _scanner_mobile_catalog_search(name: str, set_code: str = "", collector_numb
 
         conn = connect_app_database()
         try:
+            normalized_set = re.sub(
+                r"[^a-z0-9-]", "", str(set_code or "").strip().lower()
+            )[:12]
+            normalized_collector = (
+                _scanner_mobile_normalize_collector_number(str(collector_number))
+                if collector_number
+                else ""
+            )
             rows = fetch_mobile_catalog_search_results(
-                conn, name, set_code, collector_number, limit=limit
+                conn, name, normalized_set, normalized_collector, limit=limit
             )
         finally:
             conn.close()
