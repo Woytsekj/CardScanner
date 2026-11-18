@@ -21,9 +21,12 @@ def fetch_location_options(conn, owner: str | None = None) -> list[dict[str, str
     if owner:
         rows = conn.execute(
             """
-            SELECT DISTINCT COALESCE(location, 'Free') AS name
-            FROM app.inventory
-            WHERE game_id = 'mtg' AND owner = ?
+            SELECT name
+            FROM (
+                SELECT DISTINCT COALESCE(location, 'Free') AS name
+                FROM app.inventory
+                WHERE game_id = 'mtg' AND owner = ?
+            ) AS locations
             ORDER BY LOWER(name), name
             """,
             (owner,),
@@ -31,9 +34,12 @@ def fetch_location_options(conn, owner: str | None = None) -> list[dict[str, str
     else:
         rows = conn.execute(
             """
-            SELECT DISTINCT COALESCE(location, 'Free') AS name
-            FROM app.inventory
-            WHERE game_id = 'mtg'
+            SELECT name
+            FROM (
+                SELECT DISTINCT COALESCE(location, 'Free') AS name
+                FROM app.inventory
+                WHERE game_id = 'mtg'
+            ) AS locations
             ORDER BY LOWER(name), name
             """
         ).fetchall()
@@ -349,6 +355,23 @@ def insert_or_increment_scan(
                 }
             raise RuntimeError("Scan idempotency record exists without a saved result")
 
+    # Serialize matching scans even when the first scan has no existing
+    # inventory row to lock. A non-NUL separator keeps the key valid PostgreSQL text.
+    inventory_lock_key = "\x1f".join(
+        (
+            "mtg",
+            scryfall_id,
+            owner.casefold(),
+            finish.casefold(),
+            location.casefold(),
+            "1" if for_vending else "0",
+        )
+    )
+    conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))",
+        (inventory_lock_key,),
+    )
+
     existing = conn.execute(
         """
         SELECT id, quantity
@@ -426,3 +449,191 @@ def insert_or_increment_scan(
         "location": location,
         "is_vending": for_vending,
     }
+
+def fetch_catalog_revision(conn) -> int:
+    row = conn.execute(
+        """
+        SELECT revision
+        FROM catalog.game_catalog_state
+        WHERE game_id = 'mtg'
+        """
+    ).fetchone()
+    return int(row["revision"] or 0) if row else 0
+
+
+def fetch_catalog_card_names(conn) -> tuple[int, list[str]]:
+    """Return the MTG card-name dictionary and its catalog revision."""
+    revision = fetch_catalog_revision(conn)
+    rows = conn.execute(
+        """
+        SELECT name
+        FROM (
+            SELECT DISTINCT BTRIM(c.name) AS name
+            FROM catalog.cards AS c
+            WHERE c.game_id = 'mtg'
+              AND BTRIM(c.name) <> ''
+
+            UNION
+
+            SELECT DISTINCT BTRIM(p.metadata->>'name') AS name
+            FROM catalog.printings AS p
+            WHERE p.game_id = 'mtg'
+              AND p.card_id IS NULL
+              AND BTRIM(COALESCE(p.metadata->>'name', '')) <> ''
+        ) AS names
+        ORDER BY LOWER(name), name
+        """
+    ).fetchall()
+    return revision, [str(row["name"]) for row in rows]
+
+
+def fetch_catalog_set_codes(conn) -> tuple[int, set[str]]:
+    """Return known MTG set codes and their catalog revision."""
+    revision = fetch_catalog_revision(conn)
+    rows = conn.execute(
+        """
+        SELECT set_code
+        FROM catalog.sets
+        WHERE game_id = 'mtg'
+          AND set_code IS NOT NULL
+          AND BTRIM(set_code) <> ''
+        ORDER BY LOWER(set_code), set_code
+        """
+    ).fetchall()
+    return revision, {str(row["set_code"]).strip().lower() for row in rows}
+
+
+def fetch_mobile_catalog_search_results(
+    conn,
+    name: str,
+    set_code: str = "",
+    collector_number: str = "",
+    limit: int = 40,
+) -> list[dict]:
+    """Search normalized MTG printings for the mobile scanner, without network calls."""
+    name = str(name or "").strip()[:120]
+    set_code = str(set_code or "").strip().lower()[:12]
+    collector_number = str(collector_number or "").strip()[:40]
+    limit = max(1, min(int(limit), 40))
+
+    if name and (len(name) < 2 or not any(len(token) >= 2 for token in name.split())):
+        return []
+    if not name and not (set_code and collector_number):
+        return []
+
+    predicates = [
+        "e.game_id = 'mtg'",
+        "e.provider_id = 'scryfall'",
+        "e.entity_type = 'printing'",
+        "e.external_id_type = 'scryfall_id'",
+    ]
+    filter_params = []
+
+    if name:
+        predicates.append(
+            "STRPOS(LOWER(COALESCE(c.name, p.metadata->>'name', '')), LOWER(?)) > 0"
+        )
+        filter_params.append(name)
+    if set_code:
+        predicates.append("LOWER(COALESCE(s.set_code, '')) = ?")
+        filter_params.append(set_code)
+    if collector_number:
+        normalized_collector = collector_number
+        if "/" in normalized_collector:
+            normalized_collector = normalized_collector.split("/", 1)[0]
+        normalized_collector = normalized_collector.lstrip("0") or "0"
+        predicates.append(
+            "LOWER(BTRIM(COALESCE(p.collector_number, ''))) IN (?, ?)"
+        )
+        filter_params.extend([
+            collector_number.lower(),
+            normalized_collector.lower(),
+        ])
+
+    if name:
+        rank_sql = """
+            CASE
+                WHEN LOWER(COALESCE(c.name, p.metadata->>'name', '')) = LOWER(?) THEN 0
+                WHEN STRPOS(
+                    LOWER(COALESCE(c.name, p.metadata->>'name', '')),
+                    LOWER(?)
+                ) = 1 THEN 1
+                ELSE 2
+            END
+        """
+        rank_params = [name, name]
+    else:
+        rank_sql = "0"
+        rank_params = []
+
+    # SELECT-list expressions occur before WHERE expressions in SQL, so the
+    # ranking placeholders must be bound before the filters.
+    params = rank_params + filter_params + [limit]
+
+    rows = conn.execute(
+        f"""
+        SELECT
+            e.external_id AS scryfall_id,
+            COALESCE(c.name, p.metadata->>'name') AS name,
+            s.set_code,
+            p.rarity,
+            COALESCE(
+                NULLIF(m.target_external_product_id, ''),
+                NULLIF(p.metadata->>'tcgplayer_id', '')
+            ) AS tcgplayer_id,
+            p.collector_number,
+            s.name AS set_name,
+            COALESCE(
+                m.finishes,
+                p.metadata->'finishes',
+                '[]'::jsonb
+            ) AS finishes,
+            {rank_sql} AS match_rank
+        FROM catalog.external_ids AS e
+        JOIN catalog.printings AS p
+          ON p.printing_id = e.printing_id
+         AND p.game_id = e.game_id
+        LEFT JOIN catalog.cards AS c
+          ON c.card_id = p.card_id
+         AND c.game_id = p.game_id
+        LEFT JOIN catalog.sets AS s
+          ON s.set_id = p.set_id
+         AND s.game_id = p.game_id
+        LEFT JOIN catalog.printing_product_mappings AS m
+          ON m.game_id = e.game_id
+         AND m.printing_id = p.printing_id
+         AND m.source_provider_id = 'scryfall'
+         AND m.source_external_printing_id = e.external_id
+         AND m.target_provider_id = 'tcgcsv'
+        WHERE {' AND '.join(predicates)}
+        ORDER BY
+            match_rank,
+            LOWER(COALESCE(c.name, p.metadata->>'name', '')),
+            LOWER(COALESCE(s.set_code, '')),
+            LOWER(COALESCE(p.collector_number, '')),
+            e.external_id
+        LIMIT ?
+        """,
+        tuple(params),
+    ).fetchall()
+
+    results = []
+    for row in rows:
+        finishes = row["finishes"]
+        if not isinstance(finishes, list):
+            finishes = []
+        product_id = row["tcgplayer_id"]
+        results.append({
+            "scryfall_id": str(row["scryfall_id"] or ""),
+            "name": row["name"],
+            "set_code": str(row["set_code"] or "").lower(),
+            "rarity": row["rarity"],
+            "tcgplayer_id": (
+                str(product_id).strip() if product_id is not None else None
+            ),
+            "collector_number": row["collector_number"],
+            "set_name": row["set_name"],
+            "finishes": [str(value).lower() for value in finishes],
+        })
+    return results
+
