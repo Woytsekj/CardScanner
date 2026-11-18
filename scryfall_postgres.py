@@ -2106,6 +2106,7 @@ def fill_missing_hashes(
     limit: int | None = None,
     workers: int | None = None,
     batch_size: int = 128,
+    image_ids: list[int] | tuple[int, ...] | None = None,
 ) -> dict[str, int]:
     """Generate missing pHashes with bounded database and worker batches.
 
@@ -2113,6 +2114,14 @@ def fill_missing_hashes(
     Downloads execute concurrently; PostgreSQL writes stay on the caller's
     thread and connection. The caller owns the transaction and commit.
     """
+    selected_image_ids = None
+    if image_ids is not None:
+        selected_image_ids = tuple(sorted({int(value) for value in image_ids}))
+        if any(value <= 0 for value in selected_image_ids):
+            raise ValueError("image_ids must contain positive database IDs")
+        if not selected_image_ids:
+            return {"attempted": 0, "updated": 0, "failed": 0}
+
     if limit is not None:
         limit = max(0, int(limit))
         if limit == 0:
@@ -2150,16 +2159,25 @@ def fill_missing_hashes(
         LIMIT %s
     """
 
+    if selected_image_ids is not None:
+        query = query.replace(
+            "          AND i.image_id > %s",
+            "          AND i.image_id > %s\n          AND i.image_id = ANY(%s::bigint[])",
+            1,
+        )
+
     with ThreadPoolExecutor(max_workers=worker_count) as pool:
         while limit is None or attempted < limit:
             fetch_size = batch_size
             if limit is not None:
                 fetch_size = min(fetch_size, limit - attempted)
 
-            rows = conn.execute(
-                query,
-                (GAME_ID, PROVIDER_ID, last_image_id, fetch_size),
-            ).fetchall()
+            query_params = (GAME_ID, PROVIDER_ID, last_image_id)
+            if selected_image_ids is not None:
+                query_params += (list(selected_image_ids),)
+            query_params += (fetch_size,)
+
+            rows = conn.execute(query, query_params).fetchall()
 
             if not rows:
                 break

@@ -838,7 +838,9 @@ class PostgreSQLScryfallTests(unittest.TestCase):
                 "hash_image",
                 return_value=(image_uri, "0123456789abcdef", None),
             ) as hash_mock:
-                stats = importer.fill_missing_hashes(conn, workers=1)
+                stats = importer.fill_missing_hashes(
+                    conn, workers=1, image_ids=[image_id]
+                )
 
             self.assertEqual(
                 stats, {"attempted": 1, "updated": 1, "failed": 0}
@@ -856,7 +858,9 @@ class PostgreSQLScryfallTests(unittest.TestCase):
             )
 
             with mock.patch.object(importer, "hash_image") as second_mock:
-                second_stats = importer.fill_missing_hashes(conn, workers=1)
+                second_stats = importer.fill_missing_hashes(
+                    conn, workers=1, image_ids=[image_id]
+                )
 
             self.assertEqual(
                 second_stats, {"attempted": 0, "updated": 0, "failed": 0}
@@ -928,13 +932,16 @@ class PostgreSQLScryfallTests(unittest.TestCase):
         ]
 
         def exercise(conn):
+            image_ids = []
             for uri in image_uris:
-                conn.execute("""
+                image_row = conn.execute("""
                     INSERT INTO catalog.images (
                         game_id, provider_id, image_uri, image_role
                     )
                     VALUES ('mtg', 'scryfall', %s, 'card_face')
-                """, (uri,))
+                    RETURNING image_id
+                """, (uri,)).fetchone()
+                image_ids.append(int(image_row["image_id"]))
 
             def fake_hash(uri):
                 return uri, f"hash-{image_uris.index(uri):016x}", None
@@ -943,7 +950,8 @@ class PostgreSQLScryfallTests(unittest.TestCase):
                 importer, "hash_image", side_effect=fake_hash
             ) as hash_mock:
                 first = importer.fill_missing_hashes(
-                    conn, limit=2, workers=2, batch_size=1
+                    conn, limit=2, workers=2, batch_size=1,
+                    image_ids=image_ids,
                 )
                 self.assertEqual(
                     first, {"attempted": 2, "updated": 2, "failed": 0}
@@ -953,7 +961,8 @@ class PostgreSQLScryfallTests(unittest.TestCase):
                 # A new invocation must find the remaining image, even
                 # though the previous invocation stopped at its limit.
                 second = importer.fill_missing_hashes(
-                    conn, workers=2, batch_size=1
+                    conn, workers=2, batch_size=1,
+                    image_ids=image_ids,
                 )
                 self.assertEqual(
                     second, {"attempted": 1, "updated": 1, "failed": 0}

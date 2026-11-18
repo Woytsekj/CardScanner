@@ -19,13 +19,15 @@
     <details class="site-nav-menu" id="siteNavMenu">
       <summary class="site-nav-toggle" aria-label="Open site navigation"><span aria-hidden="true">☰</span><span>Menu</span></summary>
       <nav class="actions" id="siteNavActions" aria-label="Site navigation">
+      {% if not postgres_mode %}
       <a class="button" href="{{ url_for('scanner_mobile_index') }}" title="Scan cards with your phone camera">Mobile Scanner</a>
       <a class="button secondary" href="{{ url_for('scanner_desktop_download') }}" title="Download the Linux desktop scanner source bundle">Download Desktop Scanner</a>
+      {% endif %}
       <a class="button secondary" href="{{ url_for('decks_page') }}">Decks</a>
       <a class="button secondary" href="{{ url_for('vending_view') }}">Vending</a>
+      {% if admin_user %}
       <a class="button secondary" href="{{ url_for('export_csv') }}">Export CSV</a>
       <a class="button secondary" href="{{ url_for('export_manabox_csv', owner=selected_owner) }}" title="CSV you can import into the ManaBox app{% if selected_owner %} ({{ selected_owner }} only){% endif %}">Export ManaBox</a>
-      {% if admin_user %}
       <a class="button secondary" href="{{ url_for('admin_page') }}">Admin</a>
       <button class="button" type="button" onclick="openImport()">Import CSV</button>
       <form method="post" action="{{ url_for('logout') }}" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Log out</button></form>

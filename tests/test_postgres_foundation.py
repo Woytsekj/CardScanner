@@ -1107,7 +1107,7 @@ class PostgreSQLFoundationTests(unittest.TestCase):
                     self.assertEqual(len(app_tables), 1)
 
                     product_id = f"legacy-product-{token}"
-                    history_id = 2303701
+                    history_id = 4_000_000_000_000_000_000 + int(token[:15], 16)
 
                     # Preserve a high legacy ID and independently nullable prices.
                     conn.execute(
@@ -1193,7 +1193,7 @@ class PostgreSQLFoundationTests(unittest.TestCase):
                     )
 
                     # Alert IDs and finish-specific values remain independently stored.
-                    alert_id = 12345
+                    alert_id = 2_000_000_000_000_000_000 + int(token[15:30], 16)
                     conn.execute(
                         """
                         INSERT INTO app.price_alert_log

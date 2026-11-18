@@ -20,7 +20,7 @@
   <label>Labels to make<select id="repeatSelect"><option value="one" {% if repeat_mode=='one' %}selected{% endif %}>One per selected card row</option><option value="qty" {% if repeat_mode=='qty' %}selected{% endif %}>One per physical copy (uses Qty)</option></select></label>
   <label>Start at label<input id="startInput" type="number" min="1" max="{{ 30 if template=='5160' else 6 }}" value="{{ start_label }}" style="width:80px"></label>
   <span class="summary">Selected {{ selected_count }} · Printing {{ printed_label_count }} label(s)</span>
-  {% if skipped %}<span class="danger-note">Some selected cards are no longer in Free storage and were skipped.</span>{% endif %}
+  {% if skipped %}<span class="danger-note">Some selected cards are no longer available for vending and were skipped.</span>{% endif %}
 </div>
 <div class="print-note">For best alignment use 100% / Actual size, Letter paper, no browser margins or headers/footers, and do not use “Fit to page.” Avery 5160 is 1 × 2-5/8 inches with 30 labels per sheet; Avery 5164 is 3-1/3 × 4 inches with 6 per sheet.</div>
 <div class="page-wrap">

@@ -72,6 +72,8 @@ def run_migrations(migrations_dir: str | Path | None = None) -> list[str]:
     directory = Path(migrations_dir) if migrations_dir else Path(__file__).parent / "db" / "migrations"
     applied_now: list[str] = []
     with connection() as conn:
+        # Serialize migration runners before even creating the tracking table.
+        conn.execute("SELECT pg_advisory_xact_lock(731942810552)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS public.cardscanner_schema_migrations (
@@ -80,8 +82,6 @@ def run_migrations(migrations_dir: str | Path | None = None) -> list[str]:
             )
             """
         )
-        # Serialize migration runners across web workers and updater processes.
-        conn.execute("SELECT pg_advisory_xact_lock(731942810552)")
         applied = {
             row["version"]
             for row in conn.execute(
