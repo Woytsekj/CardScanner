@@ -450,3 +450,179 @@ def insert_or_increment_scan(
         "location": location,
         "is_vending": for_vending,
     }
+
+def fetch_catalog_revision(conn) -> int:
+    row = conn.execute(
+        """
+        SELECT revision
+        FROM catalog.game_catalog_state
+        WHERE game_id = 'mtg'
+        """
+    ).fetchone()
+    return int(row["revision"] or 0) if row else 0
+
+
+def fetch_catalog_card_names(conn) -> tuple[int, list[str]]:
+    """Return the MTG card-name dictionary and its catalog revision."""
+    revision = fetch_catalog_revision(conn)
+    rows = conn.execute(
+        """
+        SELECT name
+        FROM (
+            SELECT DISTINCT BTRIM(c.name) AS name
+            FROM catalog.cards AS c
+            WHERE c.game_id = 'mtg'
+              AND BTRIM(c.name) <> ''
+
+            UNION
+
+            SELECT DISTINCT BTRIM(p.metadata->>'name') AS name
+            FROM catalog.printings AS p
+            WHERE p.game_id = 'mtg'
+              AND p.card_id IS NULL
+              AND BTRIM(COALESCE(p.metadata->>'name', '')) <> ''
+        ) AS names
+        ORDER BY LOWER(name), name
+        """
+    ).fetchall()
+    return revision, [str(row["name"]) for row in rows]
+
+
+def fetch_catalog_set_codes(conn) -> tuple[int, set[str]]:
+    """Return known MTG set codes and their catalog revision."""
+    revision = fetch_catalog_revision(conn)
+    rows = conn.execute(
+        """
+        SELECT set_code
+        FROM catalog.sets
+        WHERE game_id = 'mtg'
+          AND set_code IS NOT NULL
+          AND BTRIM(set_code) <> ''
+        ORDER BY LOWER(set_code), set_code
+        """
+    ).fetchall()
+    return revision, {str(row["set_code"]).strip().lower() for row in rows}
+
+
+def fetch_mobile_catalog_search_results(
+    conn,
+    name: str,
+    set_code: str = "",
+    collector_number: str = "",
+    limit: int = 40,
+) -> list[dict]:
+    """Search normalized MTG printings for the mobile scanner, without network calls."""
+    name = str(name or "").strip()[:120]
+    set_code = str(set_code or "").strip().lower()[:12]
+    collector_number = str(collector_number or "").strip()[:40]
+    limit = max(1, min(int(limit), 40))
+
+    if name and (len(name) < 2 or not any(len(token) >= 2 for token in name.split())):
+        return []
+    if not name and not (set_code and collector_number):
+        return []
+
+    where = [
+        "e.game_id = 'mtg'",
+        "e.provider_id = 'scryfall'",
+        "e.entity_type = 'printing'",
+        "e.external_id_type = 'scryfall_id'",
+    ]
+    params = []
+    if name:
+        where.append(
+            "STRPOS(LOWER(COALESCE(c.name, p.metadata->>'name', '')), LOWER(?)) > 0"
+        )
+        params.append(name)
+    if set_code:
+        where.append("LOWER(COALESCE(s.set_code, '')) = ?")
+        params.append(set_code)
+    if collector_number:
+        normalized = collector_number
+        if "/" in normalized:
+            normalized = normalized.split("/", 1)[0]
+        normalized = normalized.lstrip("0") or "0"
+        where.append(
+            "LOWER(BTRIM(COALESCE(p.collector_number, ''))) IN (?, ?)"
+        )
+        params.extend([collector_number.lower(), normalized.lower()])
+
+    rank_sql = (
+        """
+        CASE
+            WHEN LOWER(COALESCE(c.name, p.metadata->>'name', '')) = LOWER(?) THEN 0
+            WHEN STRPOS(LOWER(COALESCE(c.name, p.metadata->>'name', '')), LOWER(?)) = 1 THEN 1
+            ELSE 2
+        END
+        """
+        if name
+        else "0"
+    )
+    if name:
+        params.extend([name, name])
+
+    params.append(limit)
+    rows = conn.execute(
+        f"""
+        SELECT
+            e.external_id AS scryfall_id,
+            COALESCE(c.name, p.metadata->>'name') AS name,
+            s.set_code,
+            p.rarity,
+            COALESCE(
+                NULLIF(m.target_external_product_id, ''),
+                NULLIF(p.metadata->>'tcgplayer_id', '')
+            ) AS tcgplayer_id,
+            p.collector_number,
+            s.name AS set_name,
+            COALESCE(
+                m.finishes,
+                p.metadata->'finishes',
+                '[]'::jsonb
+            ) AS finishes,
+            {rank_sql} AS match_rank
+        FROM catalog.external_ids AS e
+        JOIN catalog.printings AS p
+          ON p.printing_id = e.printing_id
+         AND p.game_id = e.game_id
+        LEFT JOIN catalog.cards AS c
+          ON c.card_id = p.card_id
+         AND c.game_id = p.game_id
+        LEFT JOIN catalog.sets AS s
+          ON s.set_id = p.set_id
+         AND s.game_id = p.game_id
+        LEFT JOIN catalog.printing_product_mappings AS m
+          ON m.game_id = e.game_id
+         AND m.printing_id = p.printing_id
+         AND m.source_provider_id = 'scryfall'
+         AND m.source_external_printing_id = e.external_id
+         AND m.target_provider_id = 'tcgcsv'
+        WHERE {' AND '.join(where)}
+        ORDER BY
+            match_rank,
+            LOWER(COALESCE(c.name, p.metadata->>'name', '')),
+            LOWER(COALESCE(s.set_code, '')),
+            LOWER(COALESCE(p.collector_number, '')),
+            e.external_id
+        LIMIT ?
+        """,
+        tuple(params),
+    ).fetchall()
+
+    results = []
+    for row in rows:
+        finishes = row["finishes"]
+        if not isinstance(finishes, list):
+            finishes = []
+        results.append({
+            "scryfall_id": str(row["scryfall_id"] or ""),
+            "name": row["name"],
+            "set_code": str(row["set_code"] or "").lower(),
+            "rarity": row["rarity"],
+            "tcgplayer_id": str(row["tcgplayer_id"]).strip() if row["tcgplayer_id"] is not None else None,
+            "collector_number": row["collector_number"],
+            "set_name": row["set_name"],
+            "finishes": [str(value).lower() for value in finishes],
+        })
+    return results
+

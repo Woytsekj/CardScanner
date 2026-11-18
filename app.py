@@ -818,6 +818,7 @@ def security_gate():
             "scanner_mobile_index",
             "scanner_mobile_asset",
             "api_scanner_mobile_options",
+            "api_scanner_mobile_search",
             "api_scanner_mobile_price",
             "api_health",
             "api_version",
@@ -861,6 +862,7 @@ def security_gate():
             "api_scan": "POST",
             "api_scan_batch": "POST",
             "api_scanner_mobile_scan": "POST",
+            "api_scanner_mobile_recognize": "POST",
             "refresh_prices": "POST",
         }
         if request.endpoint in write_methods:
@@ -4498,12 +4500,30 @@ def _scanner_mobile_parse_footer_metadata(metadata_text: str) -> dict[str, str |
     """
     result: dict[str, str | None] = {"set_code": None, "collector_number": None}
     raw = str(metadata_text or "")[:500]
-    if not raw or not DB_ART.is_file():
+    if not raw:
         return result
 
     global _SCANNER_MOBILE_SET_CODES_CACHE_KEY, _SCANNER_MOBILE_SET_CODES_CACHE
-    try:
-        stat = DB_ART.stat()
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_scanner import fetch_catalog_set_codes
+
+        conn = connect_app_database()
+        try:
+            revision, codes = fetch_catalog_set_codes(conn)
+        finally:
+            conn.close()
+        cache_key = ("postgres", revision)
+        if cache_key == _SCANNER_MOBILE_SET_CODES_CACHE_KEY and _SCANNER_MOBILE_SET_CODES_CACHE:
+            codes = _SCANNER_MOBILE_SET_CODES_CACHE
+        else:
+            _SCANNER_MOBILE_SET_CODES_CACHE_KEY = cache_key
+            _SCANNER_MOBILE_SET_CODES_CACHE = codes
+    else:
+        if not DB_ART.is_file():
+            return result
+        try:
+            stat = DB_ART.stat()
         cache_key = (str(DB_ART.resolve()), stat.st_mtime_ns, stat.st_size)
         if cache_key == _SCANNER_MOBILE_SET_CODES_CACHE_KEY and _SCANNER_MOBILE_SET_CODES_CACHE:
             codes = _SCANNER_MOBILE_SET_CODES_CACHE
@@ -4517,8 +4537,8 @@ def _scanner_mobile_parse_footer_metadata(metadata_text: str) -> dict[str, str |
                 con.close()
             _SCANNER_MOBILE_SET_CODES_CACHE_KEY = cache_key
             _SCANNER_MOBILE_SET_CODES_CACHE = codes
-    except (sqlite3.Error, OSError):
-        return result
+        except (sqlite3.Error, OSError):
+            return result
 
     # Current cards print e.g. ``C 0065`` on one row and ``FRA • EN`` below it.
     # Older/bundled OCR engines sometimes flatten the two rows into one string;
@@ -4647,6 +4667,22 @@ def _scanner_mobile_easyocr_footer_text(ocr_rows: Any, image_width: int, image_h
 def _scanner_mobile_cached_card_names() -> list[str]:
     """Distinct local card names for fuzzy OCR correction, cached until DB changes."""
     global _SCANNER_MOBILE_NAMES_CACHE_KEY, _SCANNER_MOBILE_NAMES_CACHE
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_scanner import fetch_catalog_card_names
+
+        conn = connect_app_database()
+        try:
+            revision, names = fetch_catalog_card_names(conn)
+        finally:
+            conn.close()
+        cache_key = ("postgres", revision)
+        if cache_key == _SCANNER_MOBILE_NAMES_CACHE_KEY and _SCANNER_MOBILE_NAMES_CACHE:
+            return _SCANNER_MOBILE_NAMES_CACHE
+        _SCANNER_MOBILE_NAMES_CACHE_KEY = cache_key
+        _SCANNER_MOBILE_NAMES_CACHE = names
+        return names
+
     if not DB_ART.is_file():
         return []
     try:
@@ -4839,11 +4875,50 @@ def _scanner_mobile_get_easyocr_reader():
 
 
 def _scanner_mobile_catalog_search(name: str, set_code: str = "", collector_number: str = "", limit: int = 40) -> list[dict[str, Any]]:
-    """Search the local art/catalog SQLite DB; intentionally never calls Scryfall.
+    """Search the local art/catalog database; intentionally never calls Scryfall.
 
     An empty name is allowed only when both set and collector number are known,
     enabling the footer OCR to recover a printing even when title OCR is poor.
     """
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_scanner import fetch_mobile_catalog_search_results
+
+        conn = connect_app_database()
+        try:
+            rows = fetch_mobile_catalog_search_results(
+                conn, name, set_code, collector_number, limit=limit
+            )
+        finally:
+            conn.close()
+
+        price_snapshot = get_tcg_prices()
+        results = []
+        for row in rows:
+            sid = str(row["scryfall_id"] or "").strip()
+            tcg_id = _normalize_tcgplayer_id(row["tcgplayer_id"])
+            price = price_snapshot.get(str(tcg_id), {}) if tcg_id else {}
+            results.append({
+                "id": sid,
+                "scryfall_id": sid,
+                "name": row["name"],
+                "set": row["set_code"],
+                "set_code": row["set_code"],
+                "rarity": row["rarity"],
+                "tcgplayer_id": tcg_id,
+                "collector_number": row["collector_number"],
+                "set_name": row["set_name"],
+                "finishes": row["finishes"],
+                "prices": {"usd": price.get("normal"), "usd_foil": price.get("foil")},
+                "price_source": (
+                    "local_tcgcsv"
+                    if price.get("normal") is not None or price.get("foil") is not None
+                    else "local_catalog"
+                ),
+                "image_url": scryfall_image_url(sid),
+            })
+        return results
+
     if not DB_ART.is_file():
         raise FileNotFoundError(f"Local card catalog is unavailable at {DB_ART}.")
     name = str(name or "").strip()[:120]
