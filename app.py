@@ -4524,19 +4524,19 @@ def _scanner_mobile_parse_footer_metadata(metadata_text: str) -> dict[str, str |
             return result
         try:
             stat = DB_ART.stat()
-        cache_key = (str(DB_ART.resolve()), stat.st_mtime_ns, stat.st_size)
-        if cache_key == _SCANNER_MOBILE_SET_CODES_CACHE_KEY and _SCANNER_MOBILE_SET_CODES_CACHE:
-            codes = _SCANNER_MOBILE_SET_CODES_CACHE
-        else:
-            con = sqlite3.connect(DB_ART)
-            try:
-                codes = {str(row[0] or "").strip().lower() for row in con.execute(
-                    "SELECT DISTINCT LOWER(TRIM(set_code)) FROM card_art WHERE COALESCE(set_code,'') <> ''"
-                ).fetchall()}
-            finally:
-                con.close()
-            _SCANNER_MOBILE_SET_CODES_CACHE_KEY = cache_key
-            _SCANNER_MOBILE_SET_CODES_CACHE = codes
+            cache_key = (str(DB_ART.resolve()), stat.st_mtime_ns, stat.st_size)
+            if cache_key == _SCANNER_MOBILE_SET_CODES_CACHE_KEY and _SCANNER_MOBILE_SET_CODES_CACHE:
+                codes = _SCANNER_MOBILE_SET_CODES_CACHE
+            else:
+                con = sqlite3.connect(DB_ART)
+                try:
+                    codes = {str(row[0] or "").strip().lower() for row in con.execute(
+                        "SELECT DISTINCT LOWER(TRIM(set_code)) FROM card_art WHERE COALESCE(set_code,'') <> ''"
+                    ).fetchall()}
+                finally:
+                    con.close()
+                _SCANNER_MOBILE_SET_CODES_CACHE_KEY = cache_key
+                _SCANNER_MOBILE_SET_CODES_CACHE = codes
         except (sqlite3.Error, OSError):
             return result
 

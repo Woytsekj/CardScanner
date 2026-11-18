@@ -558,10 +558,8 @@ def fetch_mobile_catalog_search_results(
         if name
         else "0"
     )
-    if name:
-        params.extend([name, name])
-
-    params.append(limit)
+    rank_params = [name, name] if name else []
+    params = rank_params + params + [limit]
     rows = conn.execute(
         f"""
         SELECT
