@@ -874,6 +874,8 @@ def security_gate():
             "api_scanner_mobile_recognize": "POST",
             "refresh_prices": "POST",
             "test_discord": "POST",
+            "admin_refresh_scryfall_bulk": "POST",
+            "enrich_metadata": "POST",
         }
         if request.endpoint in write_methods:
             if request.method == write_methods[request.endpoint]:
@@ -7392,7 +7394,10 @@ def deck_missing_csv(deck_id:int):
     return send_file(io.BytesIO(out.getvalue().encode()),mimetype="text/csv",as_attachment=True,download_name=f"deck_{deck_id}_missing.csv")
 
 
-def refresh_scryfall_metadata(scryfall_id: str, conn: sqlite3.Connection) -> bool:
+def refresh_scryfall_metadata(
+    scryfall_id: str,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
     sid = str(scryfall_id or "").strip()
     if not _looks_like_uuid(sid):
         return False
@@ -7406,6 +7411,28 @@ def refresh_scryfall_metadata(scryfall_id: str, conn: sqlite3.Connection) -> boo
         data = response.json()
         if not isinstance(data, dict):
             return False
+
+        if DATABASE_BACKEND == "postgres":
+            from postgres_app_db import connect_app_database
+            from postgres_scryfall_metadata import save_provider_printing_metadata
+
+            own_conn = conn is None
+            pg_conn = connect_app_database() if own_conn else conn
+            try:
+                save_provider_printing_metadata(pg_conn, sid, data)
+                if own_conn:
+                    pg_conn.commit()
+                return True
+            except Exception:
+                if own_conn:
+                    pg_conn.rollback()
+                raise
+            finally:
+                if own_conn:
+                    pg_conn.close()
+
+        if conn is None:
+            raise ValueError("A SQLite inventory connection is required for metadata refresh.")
         _upsert_card_metadata(conn, sid, data)
         tcg_id = _normalize_tcgplayer_id(data.get("tcgplayer_id"))
         finishes = data.get("finishes") if isinstance(data.get("finishes"), list) else []
@@ -7418,7 +7445,6 @@ def refresh_scryfall_metadata(scryfall_id: str, conn: sqlite3.Connection) -> boo
     except Exception as exc:
         app.logger.warning("Metadata refresh failed for %s: %s", sid, exc)
         return False
-
 
 def get_scryfall_bulk_meta() -> dict[str, Any]:
     if not SCRYFALL_BULK_META_FILE.exists(): return {}
@@ -7443,50 +7469,160 @@ def get_scryfall_bulk_manifest() -> dict[str, Any]:
     raise RuntimeError("Scryfall bulk-data manifest did not contain default_cards.")
 
 
-def refresh_scryfall_bulk_metadata(force: bool=False) -> dict[str,Any]:
-    manifest=get_scryfall_bulk_manifest(); remote_version=str(manifest.get("updated_at") or "").strip()
-    cached=get_scryfall_bulk_meta()
-    if not force and remote_version and cached.get("updated_at")==remote_version:
-        return {"success":True,"skipped":True,"updated":0,"needed":0,"found":0,"updated_at":remote_version}
-    conn=connect_inventory()
-    needed={str(r[0]).strip() for r in conn.execute("SELECT DISTINCT scryfall_id FROM inventory WHERE scryfall_id IS NOT NULL AND TRIM(scryfall_id)<>''").fetchall()}
-    conn.close()
-    if not needed: return {"success":True,"skipped":False,"updated":0,"needed":0,"found":0,"updated_at":remote_version}
-    uri=manifest.get("jsonl_download_uri") or manifest.get("download_uri")
-    if not uri: raise RuntimeError("Scryfall bulk manifest has no download URI for default_cards.")
-    temp=DATA_DIR/"scryfall_default_cards.tmp"
-    found=0
-    try:
-        with requests.get(uri,headers={"User-Agent":SCRYFALL_USER_AGENT,"Accept":"application/json"},timeout=SCRYFALL_BULK_TIMEOUT,stream=True) as response:
-            response.raise_for_status()
-            with temp.open("wb") as fh:
-                for chunk in response.iter_content(1024*1024):
-                    if chunk: fh.write(chunk)
-        import gzip
-        opener=gzip.open if temp.open("rb").read(2)==b"\x1f\x8b" else open
-        conn=connect_inventory()
-        with opener(temp,"rt",encoding="utf-8") as fh:
-            for raw in fh:
-                line=raw.strip()
-                if not line or line in {"[","]",","}: continue
-                if line.endswith(","): line=line[:-1]
-                try: card=json.loads(line)
-                except json.JSONDecodeError: continue
-                if not isinstance(card,dict): continue
-                sid=str(card.get("id") or "").strip()
-                if sid not in needed: continue
-                _upsert_card_metadata(conn,sid,card)
-                tcg_id=_normalize_tcgplayer_id(card.get("tcgplayer_id")); finishes=card.get("finishes") if isinstance(card.get("finishes"),list) else []
-                conn.execute("INSERT OR REPLACE INTO card_price_mapping(scryfall_id,tcgplayer_id,finishes_json,card_name,set_code,collector_number,resolved_at) VALUES(?,?,?,?,?,?,?)",(sid,tcg_id,json.dumps(finishes,separators=(",",":")),card.get("name"),card.get("set"),card.get("collector_number"),datetime.now(timezone.utc).isoformat()))
-                found+=1
-                if found>=len(needed): break
-        conn.commit(); conn.close()
-        SCRYFALL_BULK_META_FILE.write_text(json.dumps({"updated_at":remote_version,"synced_at":datetime.now(timezone.utc).isoformat(),"needed":len(needed),"found":found,"bulk_name":manifest.get("name")},indent=2),encoding="utf-8")
-        return {"success":True,"skipped":False,"updated":found,"needed":len(needed),"found":found,"updated_at":remote_version}
-    finally:
-        try: temp.unlink()
-        except FileNotFoundError: pass
+def refresh_scryfall_bulk_metadata(force: bool = False) -> dict[str, Any]:
+    manifest = get_scryfall_bulk_manifest()
+    remote_version = str(manifest.get("updated_at") or "").strip()
+    cached = get_scryfall_bulk_meta()
+    if not force and remote_version and cached.get("updated_at") == remote_version:
+        return {
+            "success": True, "skipped": True, "updated": 0,
+            "needed": 0, "found": 0, "updated_at": remote_version,
+        }
 
+    postgres_mode = DATABASE_BACKEND == "postgres"
+    if postgres_mode:
+        from postgres_app_db import connect_app_database
+        from postgres_scryfall_metadata import fetch_owned_scryfall_ids
+
+        conn = connect_app_database()
+        try:
+            needed = set(fetch_owned_scryfall_ids(conn))
+        finally:
+            conn.close()
+    else:
+        conn = connect_inventory()
+        try:
+            needed = {
+                str(row[0]).strip()
+                for row in conn.execute(
+                    "SELECT DISTINCT scryfall_id FROM inventory "
+                    "WHERE scryfall_id IS NOT NULL AND TRIM(scryfall_id)<>''"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+    if not needed:
+        return {
+            "success": True, "skipped": False, "updated": 0,
+            "needed": 0, "found": 0, "updated_at": remote_version,
+        }
+
+    uri = manifest.get("jsonl_download_uri") or manifest.get("download_uri")
+    if not uri:
+        raise RuntimeError("Scryfall bulk manifest has no download URI for default_cards.")
+
+    import gzip
+    import tempfile
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    temp_handle = tempfile.NamedTemporaryFile(
+        prefix="scryfall-default-cards-",
+        suffix=".jsonl.gz",
+        dir=DATA_DIR,
+        delete=False,
+    )
+    temp_path = Path(temp_handle.name)
+    found = 0
+    pg_conn = None
+    sqlite_conn = None
+    try:
+        with temp_handle:
+            with requests.get(
+                uri,
+                headers={"User-Agent": SCRYFALL_USER_AGENT, "Accept": "application/json"},
+                timeout=SCRYFALL_BULK_TIMEOUT,
+                stream=True,
+            ) as response:
+                response.raise_for_status()
+                for chunk in response.iter_content(1024 * 1024):
+                    if chunk:
+                        temp_handle.write(chunk)
+
+        with temp_path.open("rb") as probe:
+            is_gzip = probe.read(2) == bytes((31, 139))
+        opener = gzip.open if is_gzip else open
+
+        if postgres_mode:
+            from postgres_app_db import connect_app_database
+            from postgres_scryfall_metadata import save_provider_printing_metadata
+
+            pg_conn = connect_app_database()
+        else:
+            sqlite_conn = connect_inventory()
+
+        with opener(temp_path, "rt", encoding="utf-8") as source:
+            for raw in source:
+                line = raw.strip()
+                if not line or line in {"[", "]", ","}:
+                    continue
+                if line.endswith(","):
+                    line = line[:-1]
+                try:
+                    card = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(card, dict):
+                    continue
+                sid = str(card.get("id") or "").strip()
+                if sid not in needed:
+                    continue
+
+                if postgres_mode:
+                    save_provider_printing_metadata(pg_conn, sid, card)
+                else:
+                    _upsert_card_metadata(sqlite_conn, sid, card)
+                    tcg_id = _normalize_tcgplayer_id(card.get("tcgplayer_id"))
+                    finishes = card.get("finishes") if isinstance(card.get("finishes"), list) else []
+                    sqlite_conn.execute(
+                        "INSERT OR REPLACE INTO card_price_mapping"
+                        "(scryfall_id,tcgplayer_id,finishes_json,card_name,set_code,collector_number,resolved_at) "
+                        "VALUES(?,?,?,?,?,?,?)",
+                        (
+                            sid, tcg_id, json.dumps(finishes, separators=(",", ":")),
+                            card.get("name"), card.get("set"), card.get("collector_number"),
+                            datetime.now(timezone.utc).isoformat(),
+                        ),
+                    )
+
+                found += 1
+                if found >= len(needed):
+                    break
+
+        if postgres_mode:
+            pg_conn.commit()
+        else:
+            sqlite_conn.commit()
+
+        sync_meta = {
+            "updated_at": remote_version,
+            "synced_at": datetime.now(timezone.utc).isoformat(),
+            "needed": len(needed),
+            "found": found,
+            "bulk_name": manifest.get("name"),
+        }
+        SCRYFALL_BULK_META_FILE.write_text(
+            json.dumps(sync_meta, indent=2), encoding="utf-8"
+        )
+        return {
+            "success": True, "skipped": False, "updated": found,
+            "needed": len(needed), "found": found, "updated_at": remote_version,
+        }
+    except Exception:
+        if pg_conn is not None:
+            pg_conn.rollback()
+        if sqlite_conn is not None:
+            sqlite_conn.rollback()
+        raise
+    finally:
+        if pg_conn is not None:
+            pg_conn.close()
+        if sqlite_conn is not None:
+            sqlite_conn.close()
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
 
 @app.post("/admin/refresh_scryfall_bulk")
 @admin_required
@@ -7718,24 +7854,49 @@ def api_card_info(scryfall_id: str):
 @admin_required
 def enrich_metadata():
     try:
-        limit=max(1,min(1000,int(request.form.get("limit") or 500)))
-    except (TypeError,ValueError):
-        limit=500
-    conn=connect_inventory()
-    ids=[r[0] for r in conn.execute(
-        "SELECT DISTINCT scryfall_id FROM inventory WHERE scryfall_id IS NOT NULL AND scryfall_id != '' AND scryfall_id NOT IN (SELECT scryfall_id FROM card_metadata) LIMIT ?",
-        (limit,),
-    ).fetchall()]
-    conn.close()
-    ok=0
-    for sid in ids:
-        c=connect_inventory()
-        if refresh_scryfall_metadata(sid, c):
-            ok += 1
-        c.close()
-        time.sleep(0.12)
-    return redirect(url_for("admin_page",message=f"Metadata enrichment finished: {ok} of {len(ids)} cards updated."))
+        limit = max(1, min(1000, int(request.form.get("limit") or 500)))
+    except (TypeError, ValueError):
+        limit = 500
 
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_scryfall_metadata import fetch_missing_scryfall_ids
+
+        conn = connect_app_database()
+        try:
+            ids = fetch_missing_scryfall_ids(conn, limit)
+        finally:
+            conn.close()
+
+        ok = 0
+        for sid in ids:
+            if refresh_scryfall_metadata(sid):
+                ok += 1
+            time.sleep(0.12)
+    else:
+        conn = connect_inventory()
+        ids = [
+            row[0] for row in conn.execute(
+                "SELECT DISTINCT scryfall_id FROM inventory "
+                "WHERE scryfall_id IS NOT NULL AND scryfall_id != '' "
+                "AND scryfall_id NOT IN (SELECT scryfall_id FROM card_metadata) "
+                "LIMIT ?",
+                (limit,),
+            ).fetchall()
+        ]
+        conn.close()
+        ok = 0
+        for sid in ids:
+            item_conn = connect_inventory()
+            if refresh_scryfall_metadata(sid, item_conn):
+                ok += 1
+            item_conn.close()
+            time.sleep(0.12)
+
+    return redirect(url_for(
+        "admin_page",
+        message=f"Metadata enrichment finished: {ok} of {len(ids)} cards updated.",
+    ))
 
 @app.post("/decks/<int:deck_id>/delete")
 @admin_required
