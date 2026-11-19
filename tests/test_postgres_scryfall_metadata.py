@@ -400,6 +400,28 @@ class PostgreSQLScryfallMetadataTests(unittest.TestCase):
         self.assertEqual(mapping["target_external_product_id"], "246801")
 
     def test_bulk_refresh_rolls_back_when_jsonl_contains_invalid_record(self):
+        # Keep at least one unmatched owned printing after the valid first
+        # record so a small clean CI catalog cannot stop parsing before the
+        # deliberately malformed second JSONL line.
+        extra_scryfall_id = f"pg-scryfall-invalid-extra-{self.token}"
+        conn = connect_app_database(expected_database="cardscanner_dev")
+        try:
+            conn.execute(
+                """
+                INSERT INTO app.inventory (
+                    game_id, scryfall_id, name, quantity, owner, finish, location
+                )
+                VALUES ('mtg', ?, 'Invalid JSONL rollback companion', 1, ?, 'normal', 'Free')
+                """,
+                (extra_scryfall_id, f"PG Scryfall Card {self.token}"),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
         payload = self.card_payload()
         raw = (json.dumps(payload) + "\n" + "not-valid-json\n").encode("utf-8")
         compressed = gzip.compress(raw)
@@ -428,11 +450,22 @@ class PostgreSQLScryfallMetadataTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 302)
-        self.assertIn("Scryfall bulk refresh failed", self.message(response))
-        metadata, mapping = self.fetch_saved_metadata()
-        self.assertIsNone(metadata)
-        self.assertIsNone(mapping)
-        self.assertFalse(self.bulk_meta_path.exists())
+        try:
+            self.assertIn("Scryfall bulk refresh failed", self.message(response))
+            metadata, mapping = self.fetch_saved_metadata()
+            self.assertIsNone(metadata)
+            self.assertIsNone(mapping)
+            self.assertFalse(self.bulk_meta_path.exists())
+        finally:
+            conn = connect_app_database(expected_database="cardscanner_dev")
+            try:
+                conn.execute(
+                    "DELETE FROM app.inventory WHERE scryfall_id = ?",
+                    (extra_scryfall_id,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
     def test_individual_enrichment_fetches_only_missing_owned_metadata(self):
         payload = self.card_payload()
