@@ -215,7 +215,7 @@ class PostgreSQLDeckImportHTTPTests(unittest.TestCase):
             data={
                 "csrf_token": self.csrf,
                 "deck_name": f"{self.prefix} Text Deck",
-                "deck_text": "1 Sol Ring\n1 Arcane Signet\n\n#Ramp\n1 Cultivate",
+                "deck_text": f"1 Sol Ring\\n1 Arcane Signet\\n1 {self.prefix} Catalog Card\\n\\n#Ramp\\n1 Cultivate",
                 "deck_tags": "Casual, Upgrading",
                 "deck_person": self.owner,
             },
@@ -249,7 +249,12 @@ class PostgreSQLDeckImportHTTPTests(unittest.TestCase):
                 """,
                 (deck["id"],),
             ).fetchall()
-            self.assertEqual(len(cards), 3)
+            self.assertEqual(len(cards), 4)
+            catalog_card = next(
+                row for row in cards if row["name"] == f"{self.prefix} Catalog Card"
+            )
+            self.assertEqual(int(catalog_card["card_id"]), self.card_id)
+            self.assertEqual(int(catalog_card["printing_id"]), self.printing_id)
             cultivate = next(row for row in cards if row["name"] == "Cultivate")
             self.assertEqual(cultivate["category"], "Mainboard")
             self.assertEqual(cultivate["role_tags_json"], ["Ramp"])
