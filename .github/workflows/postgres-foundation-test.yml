@@ -18,18 +18,22 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_DB: cardscanner_test
+          POSTGRES_DB: cardscanner_dev
           POSTGRES_USER: cardscanner
           POSTGRES_PASSWORD: ci-postgres-password
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U cardscanner -d cardscanner_test"
+          --health-cmd "pg_isready -U cardscanner -d cardscanner_dev"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
     env:
-      CARD_SCANNER_POSTGRES_DSN: postgresql://cardscanner:ci-postgres-password@127.0.0.1:5432/cardscanner_test
+      CARD_SCANNER_POSTGRES_DSN: postgresql://cardscanner:ci-postgres-password@127.0.0.1:5432/cardscanner_dev
+      CARD_SCANNER_POSTGRES_EXPECTED_DATABASE: cardscanner_dev
+      CARD_SCANNER_DATABASE_BACKEND: postgres
+      SESSION_SECRET: ci-postgres-session-secret-only-for-tests-0123456789
+      SCANNER_API_KEY: ci-postgres-scanner-api-key-only-for-tests-0123456789
       CARD_SCANNER_PG_POOL_MIN: "1"
       CARD_SCANNER_PG_POOL_MAX: "3"
     steps:
