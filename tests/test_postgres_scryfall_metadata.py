@@ -68,7 +68,7 @@ class PostgreSQLScryfallMetadataTests(unittest.TestCase):
         self.token = uuid4().hex
         # Sort before the existing development inventory so the focused
         # missing-metadata query (which intentionally caps at 1,000) includes it.
-        self.scryfall_id = f"00000000-0000-0000-0000-{self.token[-12:]}"
+        self.scryfall_id = f"00000000-0000-4000-8000-{self.token[-12:]}"
         self.username = f"pg-scryfall-admin-{self.token}"
         self.csrf = f"csrf-scryfall-{self.token}"
         self.card_name = f"PG Scryfall Card {self.token}"
