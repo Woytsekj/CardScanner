@@ -2185,7 +2185,7 @@ def _scanner_client_data_manifest() -> dict[str, Any]:
         files["mtg_art_hashes.db"] = art_entry
     except FileNotFoundError as exc:
         files["mtg_art_hashes.db"] = {"available": False, "reason": str(exc)}
-    except (OSError, sqlite3.Error, RuntimeError) as exc:
+    except Exception as exc:
         app.logger.exception("Could not prepare desktop art-hash download")
         files["mtg_art_hashes.db"] = {"available": False, "reason": str(exc)}
 
@@ -4471,7 +4471,7 @@ def api_scanner_client_data_download(file_name: str):
             source_path, _info = _scanner_client_art_snapshot()
         except FileNotFoundError as exc:
             return jsonify({"success": False, "error": str(exc)}), 404
-        except (OSError, sqlite3.Error, RuntimeError) as exc:
+        except Exception as exc:
             app.logger.exception("Could not prepare desktop art-hash download")
             return jsonify({"success": False, "error": f"Could not prepare art-hash database: {exc}"}), 503
     elif file_name == "tcg_prices.json":
