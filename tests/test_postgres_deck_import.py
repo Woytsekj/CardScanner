@@ -395,6 +395,34 @@ class PostgreSQLDeckImportHTTPTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_database_error_rolls_back_deck_and_requirements(self):
+        csv_data = (
+            "Name,Quantity\n"
+            "Rollback Test Card,999999999999999999999999999999\n"
+        ).encode("utf-8")
+        response = self.client.post(
+            "/decks/import",
+            data={
+                "csrf_token": self.csrf,
+                "deck_name": f"{self.prefix} Rollback Deck",
+                "deck_file": (io.BytesIO(csv_data), "rollback.csv"),
+                "deck_person": self.owner,
+            },
+            content_type="multipart/form-data",
+            base_url="http://localhost",
+        )
+        self.assertEqual(response.status_code, 302)
+
+        conn = connect_app_database(expected_database="cardscanner_dev")
+        try:
+            deck_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM app.decklists WHERE name = ?",
+                (f"{self.prefix} Rollback Deck",),
+            ).fetchone()["count"]
+            self.assertEqual(int(deck_count), 0)
+        finally:
+            conn.close()
+
     def test_import_requires_admin_and_csrf(self):
         guest = self.app_module.app.test_client()
         response = guest.post(
