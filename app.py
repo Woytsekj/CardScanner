@@ -820,6 +820,8 @@ def security_gate():
             "api_scanner_mobile_options",
             "api_scanner_mobile_search",
             "api_scanner_mobile_price",
+            "api_scanner_client_data_manifest",
+            "api_scanner_client_data_download",
             "api_health",
             "api_version",
             "api_price_by_card",
@@ -871,6 +873,7 @@ def security_gate():
             "api_scanner_mobile_scan": "POST",
             "api_scanner_mobile_recognize": "POST",
             "refresh_prices": "POST",
+            "test_discord": "POST",
         }
         if request.endpoint in write_methods:
             if request.method == write_methods[request.endpoint]:
