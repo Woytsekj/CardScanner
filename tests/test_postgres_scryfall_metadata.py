@@ -366,6 +366,16 @@ class PostgreSQLScryfallMetadataTests(unittest.TestCase):
         self.assertIsNotNone(metadata)
         self.assertEqual(mapping["target_external_product_id"], "246801")
 
+        card_info = self.client.get(
+            f"/api/card-info/{self.scryfall_id}",
+            base_url="http://localhost",
+        )
+        self.assertEqual(card_info.status_code, 200, card_info.get_data(as_text=True))
+        card_payload = card_info.get_json()["card"]
+        self.assertEqual(card_payload["name"], self.card_name)
+        self.assertEqual(card_payload["colors"], "G")
+        self.assertEqual(card_payload["legalities"]["commander"], "legal")
+
         with (
             patch.object(self.app_module.requests, "get") as no_second_fetch,
             patch.object(self.app_module.time, "sleep", return_value=None),
