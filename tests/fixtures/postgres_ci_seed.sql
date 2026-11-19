@@ -363,10 +363,10 @@ BEGIN
     INSERT INTO app.users (
         username, password_hash, is_admin, role, is_superadmin, active
     )
-    SELECT 'Stinkywar', 'ci-fixture-unused-password-hash', TRUE,
+    SELECT 'ci-superadmin', 'ci-fixture-unused-password-hash', TRUE,
            'superadmin', TRUE, TRUE
     WHERE NOT EXISTS (
-        SELECT 1 FROM app.users WHERE lower(btrim(username)) = 'stinkywar'
+        SELECT 1 FROM app.users WHERE lower(btrim(username)) = 'ci-superadmin'
     );
 END
 $seed$;
