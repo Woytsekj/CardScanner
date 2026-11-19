@@ -146,6 +146,7 @@ def import_deck(
                 "quantity": quantity,
                 "role_tags": _tag_list(card.get("role_tags") or []),
             },
+            allow_name_only=True,
         )
         finish = normalize_finish(card.get("finish"))
         role_tags = _tag_list(card.get("role_tags") or [])
