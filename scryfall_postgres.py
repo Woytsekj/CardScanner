@@ -2233,6 +2233,18 @@ def fill_missing_hashes(
                 f"(updated {updated:,}, failed {failed:,})"
             )
 
+    # The legacy desktop SQLite export includes pHashes. Bump the same
+    # revision token used by that export cache once per successful hash batch.
+    if updated:
+        conn.execute(
+            """
+            UPDATE catalog.game_catalog_state
+            SET revision = revision + 1, updated_at = now()
+            WHERE game_id = %s
+            """,
+            (GAME_ID,),
+        )
+
     return {
         "attempted": attempted,
         "updated": updated,
