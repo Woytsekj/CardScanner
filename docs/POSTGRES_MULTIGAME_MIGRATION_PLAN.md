@@ -9,7 +9,7 @@ Status: development schema implemented and verified through migration 0007. Sche
 - Keep the desktop scanner's local SQLite workflow and the existing MTG SQLite catalog download contract working during the transition.
 - Use TCGCSV as the default price-data source for every supported game/category it provides, without introducing a paid pricing API dependency.
 - Keep catalog providers, image/recognition providers, and pricing providers independent.
-- Keep PostgreSQL's data directory on Bertha's local filesystem; keep large source downloads and PostgreSQL backup archives on the existing NAS data share.
+- Keep PostgreSQL's data directory on host-local persistent storage; keep large source downloads and PostgreSQL backup archives in a separate data/backup location.
 
 ## Initial game registry
 
@@ -60,8 +60,8 @@ and controlled cutover remain future work.
 - A small centralized database module owns connections, transactions, row handling and bounded pooling.
 - Create pools after Gunicorn worker fork; never share live connections across forked workers.
 - Versioned, ordered schema migrations. Migrations must be repeatable-safe and record applied versions.
-- PostgreSQL data files live on Bertha local storage (for example `/var/lib/cardscanner/postgres`), never on NFS.
-- Preserve the current NAS data directory for bulk source files, price snapshots during transition, sync metadata, and backup archives.
+- PostgreSQL data files live on host-local persistent storage, not on a network filesystem.
+- Preserve the existing bulk-data location for source files, price snapshots during transition, sync metadata, and backup archives.
 
 ### Multi-game catalog model
 
@@ -135,7 +135,7 @@ Do not assume TCGCSV provides SKU-level condition pricing. Its product/price dat
 ### Phase 0 — safety and baseline (current)
 
 - Work on a dedicated feature branch from the audited `main` baseline.
-- Do not change production, the Bertha Compose deployment, local database files, secrets, staged production-specific changes, stashes or backup files.
+- Do not change production deployment configuration, local database files, secrets, staged production-specific changes, stashes or backup files.
 - Keep production's current SQLite database and backup archives untouched.
 - Confirm the branch baseline and review the complete source before implementing schema changes.
 
