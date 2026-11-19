@@ -6416,6 +6416,60 @@ def decks_import():
             raise ValueError("No cards were found in the decklist.")
         deck_tags = _clean_tag_list(imported_tags + _clean_tag_list(request.form.get("deck_tags") or ""))
         deck_person = str(request.form.get("deck_person") or "").strip()[:100]
+
+        if DATABASE_BACKEND == "postgres":
+            from postgres_app_db import connect_app_database
+            from postgres_decks import fetch_active_people
+            from postgres_deck_import import import_deck
+
+            conn = connect_app_database(expected_database="cardscanner_dev")
+            try:
+                people = set(fetch_active_people(conn))
+                if deck_person and deck_person not in people:
+                    raise ValueError(
+                        f"Deck for person '{deck_person}' is not an active person."
+                    )
+                if not deck_person:
+                    user = current_user()
+                    mapped = str(user["person_name"] or "").strip() if user else ""
+                    deck_person = (
+                        mapped if mapped in people
+                        else ("Jonathan" if "Jonathan" in people else (owner if owner in people else ""))
+                    )
+                if not deck_person:
+                    raise ValueError(
+                        "A deck owner is required. Add or activate a person named Jonathan first."
+                    )
+
+                deck_db_id = import_deck(
+                    conn,
+                    name=deck_name,
+                    source=source,
+                    source_url=source_url or None,
+                    cards=cards,
+                    deck_tags=deck_tags,
+                    person_name=deck_person,
+                    add_inventory=add_inventory,
+                    inventory_owner=owner,
+                    location=location or "Free",
+                    store_free=store_free,
+                    price_snapshot=get_tcg_prices() if add_inventory else {},
+                    normalize_finish=normalize_finish,
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+            return redirect(url_for(
+                "deck_view",
+                deck_id=deck_db_id,
+                owner=deck_person or owner,
+                message=f"Imported {deck_name} with {len(deck_tags)} deck tag(s).",
+            ))
+
         conn = connect_inventory()
         people = set(active_people(conn))
         conn.close()
