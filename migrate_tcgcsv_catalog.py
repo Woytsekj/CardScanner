@@ -138,10 +138,30 @@ def request_json(session: requests.Session, url: str, *, allow_empty_404: bool =
             body = response.json()
         except ValueError as exc:
             raise RuntimeError(f"Unparseable 404 response from {url}") from exc
-        results = body.get("results", []) if isinstance(body, dict) else None
-        if results not in (None, []):
-            raise RuntimeError(f"404 response unexpectedly contains results: {url}")
-        # TCGCSV documents 404 for a group's empty product collection.
+
+        if not isinstance(body, dict):
+            raise RuntimeError(f"Unexpected non-object 404 response from {url}")
+
+        errors = body.get("errors")
+        results = body.get("results")
+        documented_empty_result = (
+            isinstance(errors, list)
+            and bool(errors)
+            and all(
+                isinstance(error, str)
+                and "no products found" in error.casefold()
+                for error in errors
+            )
+            and results in (None, [])
+            and body.get("success") is not True
+        )
+        if not documented_empty_result:
+            raise RuntimeError(
+                f"Unexpected TCGCSV 404 response for {url}: "
+                f"errors={errors!r}, results={results!r}"
+            )
+
+        # TCGCSV documents an error/404 for a group's empty product collection.
         return {"success": True, "errors": [], "results": [], "totalItems": 0}
     response.raise_for_status()
     try:
