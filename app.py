@@ -5579,6 +5579,28 @@ def api_price_history(tcg_id: str):
     })
 
 
+def send_discord_message(payload: dict[str, Any]) -> tuple[bool, str]:
+    """Post one JSON message to the configured Discord webhook."""
+    webhook_url = DISCORD_WEBHOOK_URL
+    if not webhook_url:
+        return False, "DISCORD_WEBHOOK_URL is not configured."
+
+    try:
+        response = requests.post(
+            webhook_url,
+            json=payload,
+            headers={"User-Agent": "CardScanner/1.0"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        return True, ""
+    except requests.RequestException as exc:
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+        if status_code is not None:
+            return False, f"Discord webhook returned HTTP {int(status_code)}."
+        return False, "Could not reach the Discord webhook."
+
+
 @app.post("/admin/test_discord")
 @admin_required
 def test_discord():
