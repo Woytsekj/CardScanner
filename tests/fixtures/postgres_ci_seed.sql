@@ -157,6 +157,42 @@ BEGIN
     )
     ON CONFLICT DO NOTHING;
 
+    UPDATE catalog.cards
+    SET metadata = COALESCE(metadata, '{}'::JSONB)
+                  || jsonb_build_object('oracle_id', v_oracle_id)
+    WHERE game_id = 'mtg' AND card_id = v_avacyn_card;
+
+    -- A second synthetic printing gives the fuzzy deck-comparison test two
+    -- Scryfall printings with the same canonical Oracle identity.
+    SELECT printing_id INTO v_avacyn_printing
+    FROM catalog.external_ids
+    WHERE game_id = 'mtg' AND provider_id = 'scryfall'
+      AND entity_type = 'printing' AND external_id_type = 'scryfall_id'
+      AND external_id = 'c3a8156a-09d9-4410-8891-bac1d4abc911'
+    LIMIT 1;
+    IF v_avacyn_printing IS NULL THEN
+        INSERT INTO catalog.printings (
+            game_id, card_id, set_id, collector_number, rarity,
+            available_finishes, metadata
+        )
+        VALUES (
+            'mtg', v_avacyn_card, v_soi_set, '5b', 'mythic',
+            ARRAY['nonfoil','foil']::TEXT[],
+            '{"name":"Archangel Avacyn // Avacyn, the Purifier"}'::JSONB
+        )
+        RETURNING printing_id INTO v_avacyn_printing;
+
+        INSERT INTO catalog.external_ids (
+            game_id, provider_id, entity_type, external_id_type,
+            external_id, printing_id
+        )
+        VALUES (
+            'mtg', 'scryfall', 'printing', 'scryfall_id',
+            'c3a8156a-09d9-4410-8891-bac1d4abc911', v_avacyn_printing
+        )
+        ON CONFLICT DO NOTHING;
+    END IF;
+
     SELECT illustration_id INTO v_avacyn_illustration_front
     FROM catalog.illustrations
     WHERE game_id = 'mtg'
