@@ -6498,6 +6498,7 @@ def update_deck_settings(deck_id: int):
         from postgres_deck_lifecycle import update_deck_settings as pg_update_deck_settings
 
         conn = connect_app_database()
+        status = "error"
         try:
             status = pg_update_deck_settings(
                 conn, deck_id, name=name, tags=tags, person_name=person_name
