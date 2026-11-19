@@ -7512,8 +7512,11 @@ def refresh_scryfall_bulk_metadata(force: bool = False) -> dict[str, Any]:
     if not uri:
         raise RuntimeError("Scryfall bulk manifest has no download URI for default_cards.")
 
-    import gzip
     import tempfile
+    from scryfall_updater import iter_bulk_records
+
+    if not str(uri).startswith("https://"):
+        raise RuntimeError("Scryfall bulk-data download URI must use HTTPS.")
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     temp_handle = tempfile.NamedTemporaryFile(
@@ -7539,9 +7542,8 @@ def refresh_scryfall_bulk_metadata(force: bool = False) -> dict[str, Any]:
                     if chunk:
                         temp_handle.write(chunk)
 
-        with temp_path.open("rb") as probe:
-            is_gzip = probe.read(2) == bytes((31, 139))
-        opener = gzip.open if is_gzip else open
+        if temp_path.stat().st_size < 2:
+            raise RuntimeError("Scryfall Default Cards bulk download was empty.")
 
         if postgres_mode:
             from postgres_app_db import connect_app_database
@@ -7551,43 +7553,31 @@ def refresh_scryfall_bulk_metadata(force: bool = False) -> dict[str, Any]:
         else:
             sqlite_conn = connect_inventory()
 
-        with opener(temp_path, "rt", encoding="utf-8") as source:
-            for raw in source:
-                line = raw.strip()
-                if not line or line in {"[", "]", ","}:
-                    continue
-                if line.endswith(","):
-                    line = line[:-1]
-                try:
-                    card = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(card, dict):
-                    continue
-                sid = str(card.get("id") or "").strip()
-                if sid not in needed:
-                    continue
+        for card in iter_bulk_records(temp_path):
+            sid = str(card.get("id") or "").strip()
+            if sid not in needed:
+                continue
 
-                if postgres_mode:
-                    save_provider_printing_metadata(pg_conn, sid, card)
-                else:
-                    _upsert_card_metadata(sqlite_conn, sid, card)
-                    tcg_id = _normalize_tcgplayer_id(card.get("tcgplayer_id"))
-                    finishes = card.get("finishes") if isinstance(card.get("finishes"), list) else []
-                    sqlite_conn.execute(
-                        "INSERT OR REPLACE INTO card_price_mapping"
-                        "(scryfall_id,tcgplayer_id,finishes_json,card_name,set_code,collector_number,resolved_at) "
-                        "VALUES(?,?,?,?,?,?,?)",
-                        (
-                            sid, tcg_id, json.dumps(finishes, separators=(",", ":")),
-                            card.get("name"), card.get("set"), card.get("collector_number"),
-                            datetime.now(timezone.utc).isoformat(),
-                        ),
-                    )
+            if postgres_mode:
+                save_provider_printing_metadata(pg_conn, sid, card)
+            else:
+                _upsert_card_metadata(sqlite_conn, sid, card)
+                tcg_id = _normalize_tcgplayer_id(card.get("tcgplayer_id"))
+                finishes = card.get("finishes") if isinstance(card.get("finishes"), list) else []
+                sqlite_conn.execute(
+                    "INSERT OR REPLACE INTO card_price_mapping"
+                    "(scryfall_id,tcgplayer_id,finishes_json,card_name,set_code,collector_number,resolved_at) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    (
+                        sid, tcg_id, json.dumps(finishes, separators=(",", ":")),
+                        card.get("name"), card.get("set"), card.get("collector_number"),
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
 
-                found += 1
-                if found >= len(needed):
-                    break
+            found += 1
+            if found >= len(needed):
+                break
 
         if postgres_mode:
             pg_conn.commit()
