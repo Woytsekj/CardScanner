@@ -859,6 +859,11 @@ def security_gate():
             "add_deck_card": "POST",
             "delete_deck_card": "POST",
             "edit_deck_card": "POST",
+            "update_deck_settings": "POST",
+            "update_deck_cover": "POST",
+            "assign_free_to_deck": "POST",
+            "move_inventory_to_deck": "POST",
+            "delete_deck": "POST",
             "import_csv": "POST",
             "api_scan": "POST",
             "api_scan_batch": "POST",
@@ -6488,6 +6493,33 @@ def update_deck_settings(deck_id: int):
         return redirect(url_for("deck_view", deck_id=deck_id, message="Deck name cannot be empty."))
     tags = _clean_tag_list(request.form.get("deck_tags") or "")
     person_name = str(request.form.get("person_name") or "").strip()[:100]
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_deck_lifecycle import update_deck_settings as pg_update_deck_settings
+
+        conn = connect_app_database()
+        try:
+            status = pg_update_deck_settings(
+                conn, deck_id, name=name, tags=tags, person_name=person_name
+            )
+            if status == "updated":
+                conn.commit()
+                message = "Deck settings saved."
+            else:
+                conn.rollback()
+                message = (
+                    "Every deck must have exactly one active owner."
+                    if status == "invalid_owner"
+                    else "Deck not found."
+                )
+        except Exception as exc:
+            conn.rollback()
+            app.logger.exception("PostgreSQL deck settings update failed")
+            message = f"Could not save deck settings: {exc}"
+        finally:
+            conn.close()
+        return redirect(url_for("deck_view" if status != "deck_not_found" else "decks_page",
+                                deck_id=deck_id, message=message))
     conn = connect_inventory()
     if not conn.execute("SELECT 1 FROM decklists WHERE id=?", (deck_id,)).fetchone():
         conn.close()
@@ -6539,6 +6571,91 @@ def _valid_cover_upload(upload) -> tuple[bytes, str]:
 @admin_required
 def update_deck_cover(deck_id: int):
     mode = str(request.form.get("cover_mode") or "none").strip().lower()
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+
+        conn = connect_app_database()
+        new_filename = None
+        old_filename = None
+        try:
+            deck = conn.execute(
+                """
+                SELECT cover_filename
+                FROM app.decklists
+                WHERE id = ? AND game_id = 'mtg'
+                FOR UPDATE
+                """,
+                (deck_id,),
+            ).fetchone()
+            if not deck:
+                conn.rollback()
+                return redirect(url_for("decks_page", message="Deck not found."))
+            old_filename = deck["cover_filename"]
+            if mode == "keep":
+                conn.rollback()
+                return redirect(url_for("deck_view", deck_id=deck_id, message="Current cover kept."))
+
+            new_filename = None
+            cover_scryfall_id = None
+            cover_printing_id = None
+            if mode == "upload":
+                raw, ext = _valid_cover_upload(request.files.get("cover_image"))
+                new_filename = f"{uuid4().hex}.{ext}"
+                (deck_cover_directory() / new_filename).write_bytes(raw)
+            elif mode == "card":
+                cover_scryfall_id = str(
+                    request.form.get("cover_scryfall_id") or ""
+                ).strip()
+                row = conn.execute(
+                    """
+                    SELECT e.printing_id
+                    FROM app.deck_cards AS dc
+                    LEFT JOIN catalog.external_ids AS e
+                      ON e.game_id = dc.game_id
+                     AND e.provider_id = 'scryfall'
+                     AND e.entity_type = 'printing'
+                     AND e.external_id_type = 'scryfall_id'
+                     AND e.external_id = dc.scryfall_id
+                    WHERE dc.deck_id = ?
+                      AND dc.game_id = 'mtg'
+                      AND dc.scryfall_id = ?
+                    LIMIT 1
+                    """,
+                    (deck_id, cover_scryfall_id),
+                ).fetchone()
+                if not cover_scryfall_id or not row:
+                    raise ValueError("Choose a card printing that is actually in this deck.")
+                cover_printing_id = row["printing_id"]
+            elif mode != "none":
+                raise ValueError("Choose uploaded image, card image, or no cover.")
+
+            conn.execute(
+                """
+                UPDATE app.decklists
+                SET cover_filename = ?, cover_scryfall_id = ?,
+                    cover_printing_id = ?, updated_at = now()
+                WHERE id = ? AND game_id = 'mtg'
+                """,
+                (new_filename, cover_scryfall_id, cover_printing_id, deck_id),
+            )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            if new_filename:
+                try:
+                    (deck_cover_directory() / new_filename).unlink()
+                except OSError:
+                    pass
+            app.logger.warning("PostgreSQL deck cover update failed: %s", exc)
+            return redirect(url_for("deck_view", deck_id=deck_id,
+                                    message=f"Could not update deck cover: {exc}"))
+        finally:
+            conn.close()
+
+        if old_filename and old_filename != new_filename:
+            _remove_deck_cover_file(old_filename)
+        return redirect(url_for("deck_view", deck_id=deck_id, message="Deck cover updated."))
+
     conn = connect_inventory()
     deck = conn.execute("SELECT cover_filename FROM decklists WHERE id=?", (deck_id,)).fetchone()
     if not deck:
@@ -6910,6 +7027,47 @@ def _deck_available_free_rows(conn: sqlite3.Connection, deck_card: sqlite3.Row, 
 @admin_required
 def assign_free_to_deck(deck_id:int):
     fuzzy=str(request.form.get("fuzzy") or "0").strip().lower() in {"1","true","yes","on"}
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_deck_lifecycle import assign_free_to_deck as pg_assign_free_to_deck
+
+        conn = connect_app_database()
+        owner = ""
+        try:
+            result = pg_assign_free_to_deck(conn, deck_id, fuzzy=fuzzy)
+            if result["status"] == "assigned":
+                conn.commit()
+                owner = result["owner"]
+                moved = int(result["moved"])
+                requested = int(result["requested"])
+                message = (
+                    f"Assigned {moved} card(s) from the unassigned pool to this deck. "
+                    "Physical storage locations were preserved."
+                )
+                if moved < requested:
+                    message += (
+                        f" {requested - moved} still need unassigned copies "
+                        "matching the deck."
+                    )
+            else:
+                conn.rollback()
+                message = (
+                    "Deck not found."
+                    if result["status"] == "deck_not_found"
+                    else "This deck needs an active owner before cards can be assigned."
+                )
+        except Exception as exc:
+            conn.rollback()
+            app.logger.exception("PostgreSQL free-pool deck allocation failed")
+            message = f"Could not assign cards: {exc}"
+        finally:
+            conn.close()
+        return redirect(url_for(
+            "deck_view" if owner or message != "Deck not found." else "decks_page",
+            deck_id=deck_id, owner=owner, fuzzy="1" if fuzzy else "0",
+            message=message,
+        ))
+
     conn=connect_inventory()
     deck=conn.execute("SELECT * FROM decklists WHERE id=?",(deck_id,)).fetchone()
     if not deck:
@@ -6992,6 +7150,49 @@ def move_inventory_to_deck(deck_id: int):
     except (TypeError, ValueError):
         return redirect(url_for("deck_view", deck_id=deck_id, message="Choose a valid inventory copy and quantity."))
     fuzzy = str(request.form.get("fuzzy") or "0").strip().lower() in {"1", "true", "yes", "on"}
+
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_deck_lifecycle import move_inventory_to_deck as pg_move_inventory_to_deck
+
+        conn = connect_app_database()
+        try:
+            result = pg_move_inventory_to_deck(
+                conn, deck_id, inventory_id, quantity, fuzzy=fuzzy
+            )
+            if result["status"] == "moved":
+                conn.commit()
+                message = (
+                    f"Moved {result['quantity']} {result['card_name']} copy/copies "
+                    f"into {result['deck_name']}. The previous decklist requirement "
+                    f"remains; {result['previous_deck_name']} will now show the copy "
+                    "as allocated elsewhere."
+                )
+                if result["printing_updated"]:
+                    message += " The deck entry artwork/printing was updated to the copy you selected."
+                if result["any_printing"]:
+                    message += " Its generic basic-land requirement still accepts any art/printing."
+            else:
+                conn.rollback()
+                messages = {
+                    "not_found": "The deck or inventory copy no longer exists.",
+                    "wrong_owner": "Cards owned by another person cannot be moved into this deck automatically.",
+                    "already_assigned": "That copy is already assigned to this deck.",
+                    "insufficient_quantity": f"Only {result.get('available', 0)} copy/copies remain in that inventory row.",
+                    "no_matching_requirement": "That inventory copy does not match a card required by this deck.",
+                    "invalid_quantity": "Choose a valid inventory copy and quantity.",
+                }
+                message = messages.get(result["status"], "Could not move card.")
+        except Exception as exc:
+            conn.rollback()
+            app.logger.exception("PostgreSQL inventory-to-deck move failed")
+            message = f"Could not move card: {exc}"
+        finally:
+            conn.close()
+        return redirect(url_for(
+            "deck_view", deck_id=deck_id,
+            fuzzy="1" if fuzzy else "0", message=message
+        ))
 
     conn = connect_inventory()
     try:
@@ -7458,6 +7659,32 @@ def enrich_metadata():
 @app.post("/decks/<int:deck_id>/delete")
 @admin_required
 def delete_deck(deck_id: int):
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_deck_lifecycle import delete_deck as pg_delete_deck
+
+        conn = connect_app_database()
+        try:
+            result = pg_delete_deck(conn, deck_id)
+            if result["status"] == "deleted":
+                conn.commit()
+                if result.get("cover_filename"):
+                    _remove_deck_cover_file(result["cover_filename"])
+                moved_qty = int(result["moved_quantity"])
+                message = (
+                    f"Deck deleted. Unassigned {moved_qty} inventory copies; "
+                    "physical storage locations were preserved."
+                )
+                return redirect(url_for("decks_page", message=message))
+            conn.rollback()
+            return redirect(url_for("decks_page", message="Deck not found."))
+        except Exception as exc:
+            conn.rollback()
+            app.logger.exception("PostgreSQL deck deletion failed")
+            return redirect(url_for("decks_page", message=f"Could not delete deck: {exc}"))
+        finally:
+            conn.close()
+
     conn = connect_inventory()
     try:
         conn.execute("BEGIN IMMEDIATE")
