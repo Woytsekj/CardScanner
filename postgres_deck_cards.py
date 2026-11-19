@@ -131,8 +131,17 @@ def _catalog_printings_by_name(
     return conn.execute(sql, params).fetchall()
 
 
-def _resolve_card_fields(conn, values: dict) -> dict:
-    """Resolve a unique exact printing while preserving unresolved identifiers."""
+def _resolve_card_fields(
+    conn,
+    values: dict,
+    *,
+    allow_name_only: bool = False,
+) -> dict:
+    """Resolve a unique exact printing while preserving unresolved identifiers.
+
+    Name-only resolution is opt-in for bulk deck imports, matching the legacy
+    importer without making interactive deck-card edits unexpectedly ambiguous.
+    """
     name = values["name"]
     raw_id = str(values.get("scryfall_id") or "").strip() or None
     valid_id = _valid_scryfall_id(raw_id)
@@ -149,7 +158,7 @@ def _resolve_card_fields(conn, values: dict) -> dict:
     # Match the legacy resolver fallback: when an ID was supplied but could
     # not be resolved, try a unique name/set/collector match. Do not perform
     # name-only resolution when the request supplied no printing identifier.
-    if resolved is None and (raw_id or set_code or collector):
+    if resolved is None and (raw_id or set_code or collector or allow_name_only):
         candidates = _catalog_printings_by_name(
             conn,
             name=name,
