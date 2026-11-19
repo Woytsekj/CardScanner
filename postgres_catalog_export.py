@@ -96,41 +96,41 @@ _CARD_ART_SQL = """
 SELECT
     printing_external.external_id AS scryfall_id,
     CASE
-        WHEN printing.metadata ? 'name' THEN printing.metadata ->> 'name'
+        WHEN jsonb_exists(printing.metadata, 'name') THEN printing.metadata ->> 'name'
         ELSE COALESCE(provider_metadata.name, card.name, face.name)
     END AS name,
     CASE
-        WHEN printing.metadata ? 'set_code' THEN printing.metadata ->> 'set_code'
-        WHEN printing.metadata ? 'set' THEN printing.metadata ->> 'set'
+        WHEN jsonb_exists(printing.metadata, 'set_code') THEN printing.metadata ->> 'set_code'
+        WHEN jsonb_exists(printing.metadata, 'set') THEN printing.metadata ->> 'set'
         ELSE card_set.set_code
     END AS set_code,
     CASE
-        WHEN printing.metadata ? 'set_name' THEN printing.metadata ->> 'set_name'
+        WHEN jsonb_exists(printing.metadata, 'set_name') THEN printing.metadata ->> 'set_name'
         ELSE card_set.name
     END AS set_name,
     CASE
-        WHEN printing.metadata ? 'rarity' THEN printing.metadata ->> 'rarity'
+        WHEN jsonb_exists(printing.metadata, 'rarity') THEN printing.metadata ->> 'rarity'
         ELSE printing.rarity
     END AS rarity,
     CASE
-        WHEN printing.metadata ? 'tcgplayer_id' THEN printing.metadata ->> 'tcgplayer_id'
+        WHEN jsonb_exists(printing.metadata, 'tcgplayer_id') THEN printing.metadata ->> 'tcgplayer_id'
         ELSE product_mapping.target_external_product_id
     END AS tcgplayer_id,
     CASE
-        WHEN printing.metadata ? 'collector_number' THEN printing.metadata ->> 'collector_number'
+        WHEN jsonb_exists(printing.metadata, 'collector_number') THEN printing.metadata ->> 'collector_number'
         ELSE printing.collector_number
     END AS collector_number,
     COALESCE(image_hash.hash_value, printing.metadata ->> 'phash') AS phash,
     CASE
-        WHEN printing.metadata ? 'oracle_id' THEN printing.metadata ->> 'oracle_id'
+        WHEN jsonb_exists(printing.metadata, 'oracle_id') THEN printing.metadata ->> 'oracle_id'
         ELSE COALESCE(provider_metadata.external_oracle_id, face.metadata ->> 'oracle_id')
     END AS oracle_id,
     CASE
-        WHEN printing.metadata ? 'illustration_id' THEN printing.metadata ->> 'illustration_id'
+        WHEN jsonb_exists(printing.metadata, 'illustration_id') THEN printing.metadata ->> 'illustration_id'
         ELSE face_illustration.external_id
     END AS illustration_id,
     CASE
-        WHEN printing.metadata ? 'image_uri' THEN printing.metadata ->> 'image_uri'
+        WHEN jsonb_exists(printing.metadata, 'image_uri') THEN printing.metadata ->> 'image_uri'
         ELSE COALESCE(
             printing_image.image_uri,
             face_image.image_uri,
@@ -138,7 +138,7 @@ SELECT
         )
     END AS image_uri,
     CASE
-        WHEN printing.metadata ? 'last_seen_build' THEN printing.metadata ->> 'last_seen_build'
+        WHEN jsonb_exists(printing.metadata, 'last_seen_build') THEN printing.metadata ->> 'last_seen_build'
         ELSE COALESCE(provider_metadata.updated_at::text, printing.updated_at::text)
     END AS last_seen_build
 FROM catalog.printings AS printing
@@ -193,15 +193,15 @@ SELECT
     printing_external.external_id AS scryfall_id,
     face.face_index,
     CASE
-        WHEN face.metadata ? 'oracle_id' THEN face.metadata ->> 'oracle_id'
+        WHEN jsonb_exists(face.metadata, 'oracle_id') THEN face.metadata ->> 'oracle_id'
         ELSE provider_metadata.external_oracle_id
     END AS oracle_id,
     CASE
-        WHEN face.metadata ? 'illustration_id' THEN face.metadata ->> 'illustration_id'
+        WHEN jsonb_exists(face.metadata, 'illustration_id') THEN face.metadata ->> 'illustration_id'
         ELSE illustration.external_id
     END AS illustration_id,
     CASE
-        WHEN face.metadata ? 'image_uri' THEN face.metadata ->> 'image_uri'
+        WHEN jsonb_exists(face.metadata, 'image_uri') THEN face.metadata ->> 'image_uri'
         ELSE COALESCE(
             face_image.image_uri,
             face.metadata #>> '{image_uris,normal}'
