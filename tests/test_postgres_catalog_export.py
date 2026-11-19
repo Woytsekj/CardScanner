@@ -8,6 +8,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from uuid import uuid4
 
 from postgres_db import close_pool, connection, open_pool, run_migrations
@@ -277,6 +278,52 @@ class PostgreSQLCatalogExportTests(unittest.TestCase):
                 )
             finally:
                 db.close()
+
+            # Verify the existing desktop-client manifest/download contract
+            # chooses the PostgreSQL-generated artifact when PG mode is active.
+            import app as app_module
+
+            snapshot_info = {
+                "row_count": info["card_art"],
+                "phash_count": info["phash"],
+                "source_modified_at": str(info["source_updated_at"]),
+                "catalog_revision": info["catalog_revision"],
+            }
+            api_key = "postgres-export-test-api-key"
+            with (
+                mock.patch.object(app_module, "DATABASE_BACKEND", "postgres"),
+                mock.patch.object(app_module, "SCANNER_API_KEY", api_key),
+                mock.patch.object(
+                    app_module,
+                    "_scanner_client_postgres_art_snapshot",
+                    return_value=(output_path, snapshot_info),
+                ),
+            ):
+                client = app_module.app.test_client()
+                headers = {"X-Scanner-API-Key": api_key}
+                manifest_response = client.get(
+                    "/api/scanner/client-data/manifest",
+                    headers=headers,
+                    base_url="http://localhost",
+                )
+                self.assertEqual(
+                    manifest_response.status_code,
+                    200,
+                    manifest_response.get_data(as_text=True),
+                )
+                manifest = manifest_response.get_json()
+                art_manifest = manifest["files"]["mtg_art_hashes.db"]
+                self.assertTrue(art_manifest["available"])
+                self.assertEqual(art_manifest["row_count"], info["card_art"])
+                self.assertEqual(art_manifest["phash_count"], info["phash"])
+
+                download_response = client.get(
+                    "/api/scanner/client-data/mtg_art_hashes.db",
+                    headers=headers,
+                    base_url="http://localhost",
+                )
+                self.assertEqual(download_response.status_code, 200)
+                self.assertEqual(download_response.data, output_path.read_bytes())
 
         self.rollback_fixture(exercise)
 
