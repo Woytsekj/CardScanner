@@ -66,7 +66,9 @@ class PostgreSQLScryfallMetadataTests(unittest.TestCase):
 
     def setUp(self):
         self.token = uuid4().hex
-        self.scryfall_id = str(uuid4())
+        # Sort before the existing development inventory so the focused
+        # missing-metadata query (which intentionally caps at 1,000) includes it.
+        self.scryfall_id = f"00000000-0000-0000-0000-{self.token[-12:]}"
         self.username = f"pg-scryfall-admin-{self.token}"
         self.csrf = f"csrf-scryfall-{self.token}"
         self.card_name = f"PG Scryfall Card {self.token}"
@@ -177,6 +179,13 @@ class PostgreSQLScryfallMetadataTests(unittest.TestCase):
             "message", [""]
         )[0]
 
+    def current_owned_scryfall_ids(self):
+        conn = connect_app_database(expected_database="cardscanner_dev")
+        try:
+            return fetch_owned_scryfall_ids(conn)
+        finally:
+            conn.close()
+
     def fetch_saved_metadata(self):
         conn = connect_app_database(expected_database="cardscanner_dev")
         try:
@@ -211,8 +220,10 @@ class PostgreSQLScryfallMetadataTests(unittest.TestCase):
     def test_provider_metadata_and_price_mapping_upsert_without_catalog_printing(self):
         conn = connect_app_database(expected_database="cardscanner_dev")
         try:
-            self.assertEqual(fetch_owned_scryfall_ids(conn), [self.scryfall_id])
-            self.assertEqual(fetch_missing_scryfall_ids(conn, 10), [self.scryfall_id])
+            owned_ids = fetch_owned_scryfall_ids(conn)
+            self.assertIn(self.scryfall_id, owned_ids)
+            missing_ids = fetch_missing_scryfall_ids(conn, 1000)
+            self.assertIn(self.scryfall_id, missing_ids)
 
             payload = self.card_payload()
             save_provider_printing_metadata(conn, self.scryfall_id, payload)
@@ -267,7 +278,10 @@ class PostgreSQLScryfallMetadataTests(unittest.TestCase):
                 (self.scryfall_id,),
             ).fetchall()
             self.assertEqual([row["alias"] for row in aliases], ["Carta de prueba"])
-            self.assertEqual(fetch_missing_scryfall_ids(conn, 10), [])
+            self.assertNotIn(
+                self.scryfall_id,
+                fetch_missing_scryfall_ids(conn, 1000),
+            )
 
             # Re-import updates the metadata and mapping without duplicating rows.
             changed = self.card_payload(name="Updated Test Card")
@@ -331,7 +345,11 @@ class PostgreSQLScryfallMetadataTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 302)
-        self.assertIn("1 of 1 owned printings updated", self.message(response))
+        expected_needed = len(self.current_owned_scryfall_ids())
+        self.assertIn(
+            f"1 of {expected_needed} owned printings updated",
+            self.message(response),
+        )
         self.assertEqual(get.call_count, 2)
 
         metadata, mapping = self.fetch_saved_metadata()
@@ -340,7 +358,7 @@ class PostgreSQLScryfallMetadataTests(unittest.TestCase):
         self.assertEqual(mapping["target_external_product_id"], "246801")
         saved_meta = json.loads(self.bulk_meta_path.read_text(encoding="utf-8"))
         self.assertEqual(saved_meta["found"], 1)
-        self.assertEqual(saved_meta["needed"], 1)
+        self.assertEqual(saved_meta["needed"], expected_needed)
         self.assertEqual(saved_meta["updated_at"], "2026-11-18T12:00:00Z")
 
     def test_bulk_refresh_accepts_legacy_json_array_exports(self):
@@ -371,7 +389,11 @@ class PostgreSQLScryfallMetadataTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 302)
-        self.assertIn("1 of 1 owned printings updated", self.message(response))
+        expected_needed = len(self.current_owned_scryfall_ids())
+        self.assertIn(
+            f"1 of {expected_needed} owned printings updated",
+            self.message(response),
+        )
         metadata, mapping = self.fetch_saved_metadata()
         self.assertIsNotNone(metadata)
         self.assertEqual(metadata["name"], self.card_name)
