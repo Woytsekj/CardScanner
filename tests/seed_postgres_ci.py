@@ -27,17 +27,22 @@ def main() -> None:
 
     open_pool()
     try:
-        run_migrations()
-        sql_path = Path(__file__).parent / "fixtures" / "postgres_ci_seed.sql"
-        sql = sql_path.read_text(encoding="utf-8")
+        # Verify the actual connection target before applying even the schema
+        # migrations; an environment variable alone is not a safety boundary.
         with connection() as conn:
             row = conn.execute(
                 "SELECT current_database() AS database"
             ).fetchone()
-            if row["database"] != expected:
-                raise RuntimeError(
-                    f"Refusing to seed {row['database']!r}; expected {expected!r}."
-                )
+        if row["database"] != expected:
+            raise RuntimeError(
+                f"Refusing to migrate or seed {row['database']!r}; "
+                f"expected {expected!r}."
+            )
+
+        run_migrations()
+        sql_path = Path(__file__).parent / "fixtures" / "postgres_ci_seed.sql"
+        sql = sql_path.read_text(encoding="utf-8")
+        with connection() as conn:
             conn.execute(sql, prepare=False)
     finally:
         close_pool()
