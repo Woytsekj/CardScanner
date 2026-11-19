@@ -93,7 +93,8 @@ class PostgreSQLExternalIntegrationRouteTests(unittest.TestCase):
         self._reset_art_snapshot_cache()
 
     def _create_art_catalog(self):
-        with sqlite3.connect(self.art_path) as conn:
+        conn = sqlite3.connect(self.art_path)
+        try:
             conn.execute(
                 """
                 CREATE TABLE card_art (
@@ -125,6 +126,9 @@ class PostgreSQLExternalIntegrationRouteTests(unittest.TestCase):
                     "1",
                 ),
             )
+            conn.commit()
+        finally:
+            conn.close()
 
     def _reset_art_snapshot_cache(self):
         self.app_module._SCANNER_CLIENT_ART_SNAPSHOT_SIGNATURE = None
@@ -199,6 +203,7 @@ class PostgreSQLExternalIntegrationRouteTests(unittest.TestCase):
             headers=self.scanner_headers(),
             base_url="http://localhost",
         )
+        self.addCleanup(response.close)
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data, self.price_payload)
@@ -214,8 +219,11 @@ class PostgreSQLExternalIntegrationRouteTests(unittest.TestCase):
             headers=self.scanner_headers(),
             base_url="http://localhost",
         )
+        self.addCleanup(response.close)
 
-        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        # This is a binary SQLite download; do not decode it as UTF-8 for
+        # an assertion message when the endpoint returns an error.
+        self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.headers.get("X-Scanner-File-SHA256"),
             hashlib.sha256(response.data).hexdigest(),
@@ -223,7 +231,8 @@ class PostgreSQLExternalIntegrationRouteTests(unittest.TestCase):
 
         downloaded = self.data_dir / "downloaded-art.db"
         downloaded.write_bytes(response.data)
-        with sqlite3.connect(downloaded) as conn:
+        conn = sqlite3.connect(downloaded)
+        try:
             self.assertEqual(
                 conn.execute("PRAGMA integrity_check").fetchone()[0],
                 "ok",
@@ -231,6 +240,8 @@ class PostgreSQLExternalIntegrationRouteTests(unittest.TestCase):
             row = conn.execute(
                 "SELECT name, phash FROM card_art"
             ).fetchone()
+        finally:
+            conn.close()
         self.assertEqual(row, ("Integration Test Card", "0123456789abcdef"))
 
     def test_scanner_download_rejects_unknown_file_names(self):
