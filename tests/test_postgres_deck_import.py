@@ -215,7 +215,7 @@ class PostgreSQLDeckImportHTTPTests(unittest.TestCase):
             data={
                 "csrf_token": self.csrf,
                 "deck_name": f"{self.prefix} Text Deck",
-                "deck_text": f"1 Sol Ring\\n1 Arcane Signet\\n1 {self.prefix} Catalog Card\\n\\n#Ramp\\n1 Cultivate",
+                "deck_text": f"1 Sol Ring\n1 Arcane Signet\n1 {self.prefix} Catalog Card\n\n#Ramp\n1 Cultivate",
                 "deck_tags": "Casual, Upgrading",
                 "deck_person": self.owner,
             },
