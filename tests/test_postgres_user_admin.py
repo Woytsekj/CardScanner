@@ -206,7 +206,10 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
         self.assertIn("Admin password</h2>", html)
         self.assertIn('action="/admin/password"', html)
         self.assertNotIn("Price History &amp; Discord Alerts", html)
-        self.assertNotIn("Download / Refresh Scryfall Bulk Metadata", html)
+        self.assertIn("Scryfall card metadata", html)
+        self.assertIn("Download / Refresh Scryfall Bulk Metadata", html)
+        self.assertIn('action="/admin/enrich_metadata"', html)
+        self.assertIn('action="/admin/refresh_scryfall_bulk"', html)
         self.assertNotIn("Back to inventory", html)
 
     def test_create_user_hashes_password_and_assigns_active_person(self):
