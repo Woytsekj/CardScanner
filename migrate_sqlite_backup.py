@@ -19,7 +19,8 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 
 
-SOURCE = Path.home() / "cardscanner-pg-migration-source-2026-11-13"
+SOURCE = Path.home() / "cardscanner-pg-migration-source-2026-11-19"
+REHEARSAL_DATABASE = "cardscanner_migration_rehearsal"
 GAME = "mtg"
 SCRYFALL = "scryfall"
 TCGCSV = "tcgcsv"
@@ -38,6 +39,12 @@ TARGET_TABLES = [
     "catalog.product_price_history",
     "catalog.provider_printing_metadata", "catalog.sets",
     "catalog.tag_aliases", "catalog.tag_closure", "catalog.tags",
+]
+
+EMPTY_DESTINATION_TABLES = TARGET_TABLES + [
+    "catalog.provider_product_groups",
+    "catalog.provider_products",
+    "catalog.provider_price_observations",
 ]
 
 IDENTITY_COLUMNS = [
@@ -101,8 +108,18 @@ def json_value(value, field, expected_type, default=None):
     return result
 
 
+def sqlite_table_exists(db, table):
+    return db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone() is not None
+
+
 def rulings_cache_records(inv, printing_ids):
-    """Yield provider-scoped PostgreSQL rows from the legacy SQLite rulings cache."""
+    """Yield provider-scoped rows when the legacy rulings cache exists."""
+    if not sqlite_table_exists(inv, "card_rulings_cache"):
+        return
+
     for row in sqlite_rows(
         inv,
         "SELECT scryfall_id, rulings_json, fetched_at "
@@ -199,7 +216,6 @@ def validate_sources(inv, art):
     required = {
         "mtg_inventory.db": [
             "app_migrations", "app_state", "card_aliases", "card_metadata",
-            "card_rulings_cache",
             "card_price_mapping", "deck_cards", "decklists", "inventory",
             "login_attempts", "people", "price_alert_log", "price_history",
             "scan_log", "users",
@@ -318,23 +334,26 @@ def validate_sources(inv, art):
         """),
     ]
 
-    checks.append(
-        (
-            inv,
-            "invalid cached card rulings",
-            """
-                SELECT COUNT(*) FROM card_rulings_cache
-                WHERE scryfall_id IS NULL OR trim(scryfall_id)=''
-                   OR rulings_json IS NULL
-                   OR CASE
-                        WHEN json_valid(rulings_json)
-                        THEN json_type(rulings_json) <> 'array'
-                        ELSE 1
-                      END
-                   OR fetched_at IS NULL OR trim(fetched_at)=''
-            """,
+    if sqlite_table_exists(inv, "card_rulings_cache"):
+        checks.append(
+            (
+                inv,
+                "invalid cached card rulings",
+                """
+                    SELECT COUNT(*) FROM card_rulings_cache
+                    WHERE scryfall_id IS NULL OR trim(scryfall_id)=''
+                       OR rulings_json IS NULL
+                       OR CASE
+                            WHEN json_valid(rulings_json)
+                            THEN json_type(rulings_json) <> 'array'
+                            ELSE 1
+                          END
+                       OR fetched_at IS NULL OR trim(fetched_at)=''
+                """,
+            )
         )
-    )
+    else:
+        print("Legacy SQLite source has no card_rulings_cache; importing 0 cached rulings.")
 
     for db, label, query in checks:
         failures = db.execute(query).fetchone()[0]
@@ -1150,12 +1169,25 @@ def migrate(pg, inv, art):
 
 
 def main():
+    global SOURCE
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--source-dir", required=True, type=Path,
+        help="Directory containing the read-only SQLite migration snapshots.",
+    )
+    parser.add_argument(
+        "--target-database", required=True,
+        choices=(REHEARSAL_DATABASE,),
+        help="Must name the dedicated empty migration rehearsal database.",
+    )
     parser.add_argument(
         "--apply", action="store_true",
         help="Commit the migration. Default behavior is dry-run and rollback.",
     )
     args = parser.parse_args()
+    SOURCE = args.source_dir.expanduser().resolve()
+    if not SOURCE.is_dir():
+        raise FileNotFoundError(f"SQLite source directory does not exist: {SOURCE}")
 
     dsn = os.environ.get("CARD_SCANNER_POSTGRES_DSN", "").strip()
     if not dsn:
@@ -1164,9 +1196,10 @@ def main():
     parsed = urlparse(dsn)
     if (
         parsed.hostname, parsed.port, parsed.path.lstrip("/")
-    ) != ("127.0.0.1", 5433, "cardscanner_dev"):
+    ) != ("127.0.0.1", 5433, args.target_database):
         raise RuntimeError(
-            "Refusing to run: DSN must target 127.0.0.1:5433/cardscanner_dev"
+            "Refusing to run: DSN must target "
+            f"127.0.0.1:5433/{args.target_database}"
         )
 
     inv = source_db("mtg_inventory.db")
@@ -1184,7 +1217,7 @@ def main():
             SELECT current_database(), current_user
         """).fetchone()
 
-        if target[0] != "cardscanner_dev":
+        if target[0] != args.target_database:
             raise RuntimeError(f"Unexpected database: {target[0]}")
 
         for provider in (SCRYFALL, TCGCSV):
@@ -1199,13 +1232,13 @@ def main():
         print("PostgreSQL target:", target[0], "as", target[1])
 
         print("\nChecking destination tables are empty...")
-        for table in TARGET_TABLES:
+        for table in EMPTY_DESTINATION_TABLES:
             count = pg_count(pg, table)
             if count:
                 raise RuntimeError(
                     f"Refusing to mix data: {table} already contains {count:,} rows"
                 )
-        print("All migration destination tables are empty.")
+        print("All migration and TCGCSV provider destination tables are empty.")
 
         imported = migrate(pg, inv, art)
 
