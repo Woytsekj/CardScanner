@@ -304,6 +304,14 @@ def record_postgres_history_and_alerts(
             if normal is None and foil is None:
                 continue
 
+            # Capture the prior prices before inserting this snapshot. Otherwise
+            # the current observation could become its own comparison baseline.
+            previous_prices = {
+                finish: latest_history_price(conn, tcg_id, finish, cutoff_alert)
+                for finish in ("normal", "foil")
+                if (normal if finish == "normal" else foil) is not None
+            }
+
             if insert_price_snapshot(
                 conn, tcg_id, source_updated, captured_at, normal, foil
             ):
@@ -312,7 +320,7 @@ def record_postgres_history_and_alerts(
             for finish, current in (("normal", normal), ("foil", foil)):
                 if current is None:
                     continue
-                old = latest_history_price(conn, tcg_id, finish, cutoff_alert)
+                old = previous_prices.get(finish)
                 if (
                     not PRICE_ALERT_ENABLED
                     or not DISCORD_WEBHOOK_URL
