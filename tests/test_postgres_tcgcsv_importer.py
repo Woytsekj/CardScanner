@@ -269,6 +269,35 @@ class TCGCSVCatalogSnapshotTests(unittest.TestCase):
         self.assertEqual(product[12].obj[0]["name"], "Rarity")
         self.assertEqual(product[13].obj["productId"], 900)
 
+    def test_empty_product_group_may_omit_total_items(self):
+        groups = validate_groups(self.make_groups(), "1")
+        products = self.make_products_by_group()
+        del products["11"]["totalItems"]
+
+        validated, empty = validate_products_by_group(
+            products,
+            groups,
+            "1",
+        )
+
+        self.assertEqual(len(validated), 1)
+        self.assertEqual(empty, ["11"])
+
+    def test_nonempty_product_group_must_include_total_items(self):
+        groups = validate_groups(self.make_groups(), "1")
+        products = self.make_products_by_group()
+        del products["10"]["totalItems"]
+
+        with self.assertRaisesRegex(RuntimeError, "missing totalItems"):
+            validate_products_by_group(products, groups, "1")
+
+    def test_group_catalog_must_include_total_items(self):
+        groups_payload = self.make_groups()
+        del groups_payload["totalItems"]
+
+        with self.assertRaisesRegex(RuntimeError, "missing totalItems"):
+            validate_groups(groups_payload, "1")
+
     def test_products_must_cover_every_group(self):
         groups = validate_groups(self.make_groups(), "1")
         products = self.make_products_by_group()
