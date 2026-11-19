@@ -1933,6 +1933,112 @@ def _scanner_client_file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _scanner_client_postgres_art_snapshot() -> tuple[Path, dict[str, Any]]:
+    """Build/cache the legacy MTG SQLite artifact from one PostgreSQL snapshot."""
+    global _SCANNER_CLIENT_ART_SNAPSHOT_SIGNATURE
+    global _SCANNER_CLIENT_ART_SNAPSHOT_PATH, _SCANNER_CLIENT_ART_SNAPSHOT_INFO
+
+    from postgres_app_db import connect_app_database
+    from postgres_catalog_export import export_mtg_legacy_art_catalog
+
+    with _SCANNER_CLIENT_ART_SNAPSHOT_LOCK:
+        conn = connect_app_database()
+        try:
+            # All seven legacy tables must reflect the same committed catalog
+            # revision, even if a background Scryfall sync runs concurrently.
+            conn.execute(
+                "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
+            )
+            state = conn.execute(
+                """
+                SELECT revision, updated_at
+                FROM catalog.game_catalog_state
+                WHERE game_id = 'mtg'
+                """
+            ).fetchone()
+            if not state:
+                raise RuntimeError(
+                    "The PostgreSQL MTG catalog state is not initialized."
+                )
+
+            revision = int(state["revision"])
+            updated_at = state["updated_at"]
+            modified_at = (
+                updated_at.isoformat()
+                if hasattr(updated_at, "isoformat")
+                else str(updated_at)
+            )
+            signature = ("postgres", revision, modified_at)
+            cached_path = _SCANNER_CLIENT_ART_SNAPSHOT_PATH
+            if (
+                signature == _SCANNER_CLIENT_ART_SNAPSHOT_SIGNATURE
+                and cached_path is not None
+                and cached_path.is_file()
+            ):
+                return cached_path, dict(_SCANNER_CLIENT_ART_SNAPSHOT_INFO)
+
+            cache_dir = DATA_DIR / ".scanner-client-data"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            snapshot_path = cache_dir / (
+                f"mtg_art_hashes-postgres-rev-{revision}.db"
+            )
+
+            if not snapshot_path.is_file():
+                info = export_mtg_legacy_art_catalog(conn, snapshot_path)
+                if int(info["catalog_revision"]) != revision:
+                    raise RuntimeError(
+                        "The PostgreSQL catalog revision changed during export."
+                    )
+            else:
+                snapshot_db = sqlite3.connect(
+                    f"{snapshot_path.resolve().as_uri()}?mode=ro",
+                    uri=True,
+                    timeout=30,
+                )
+                try:
+                    integrity = snapshot_db.execute(
+                        "PRAGMA integrity_check"
+                    ).fetchone()
+                    if not integrity or str(integrity[0]).lower() != "ok":
+                        raise RuntimeError(
+                            "The cached PostgreSQL art catalog is corrupt."
+                        )
+                    info = {
+                        "catalog_revision": revision,
+                        "source_updated_at": modified_at,
+                        "card_art": int(
+                            snapshot_db.execute(
+                                "SELECT COUNT(*) FROM card_art"
+                            ).fetchone()[0]
+                        ),
+                        "phash": int(
+                            snapshot_db.execute(
+                                """
+                                SELECT COUNT(*) FROM card_art
+                                WHERE phash IS NOT NULL AND trim(phash) <> ''
+                                """
+                            ).fetchone()[0]
+                        ),
+                    }
+                finally:
+                    snapshot_db.close()
+
+            conn.commit()
+        finally:
+            conn.close()
+
+        snapshot_info = {
+            "row_count": int(info["card_art"]),
+            "phash_count": int(info["phash"]),
+            "source_modified_at": str(info["source_updated_at"]),
+            "catalog_revision": int(info["catalog_revision"]),
+        }
+        _SCANNER_CLIENT_ART_SNAPSHOT_SIGNATURE = signature
+        _SCANNER_CLIENT_ART_SNAPSHOT_PATH = snapshot_path
+        _SCANNER_CLIENT_ART_SNAPSHOT_INFO = snapshot_info
+        return snapshot_path, dict(snapshot_info)
+
+
 def _scanner_client_art_snapshot() -> tuple[Path, dict[str, Any]]:
     """Build/cache a consistent SQLite backup of the server's art catalog.
 
@@ -1941,6 +2047,9 @@ def _scanner_client_art_snapshot() -> tuple[Path, dict[str, Any]]:
     """
     global _SCANNER_CLIENT_ART_SNAPSHOT_SIGNATURE
     global _SCANNER_CLIENT_ART_SNAPSHOT_PATH, _SCANNER_CLIENT_ART_SNAPSHOT_INFO
+
+    if DATABASE_BACKEND == "postgres":
+        return _scanner_client_postgres_art_snapshot()
 
     if not DB_ART.is_file():
         raise FileNotFoundError("The production mtg_art_hashes.db file is unavailable.")
