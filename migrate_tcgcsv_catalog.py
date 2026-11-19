@@ -363,7 +363,11 @@ def stage_snapshot(args):
         url = f"{base_url}/tcgplayer/{CATEGORY_ID}/{group_id}/products"
         payload = request_json(session, url, allow_empty_404=True)
         # Validate here so a failed group never becomes a partial snapshot.
-        validate_envelope(payload, f"TCGCSV products for group {group_id}")
+        validate_envelope(
+            payload,
+            f"TCGCSV products for group {group_id}",
+            allow_missing_total_for_empty=True,
+        )
         products_by_group[group_id] = payload
         if index % 25 == 0 or index == len(groups):
             print(f"Fetched product catalogs for {index}/{len(groups)} groups")
