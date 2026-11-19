@@ -240,7 +240,8 @@ class PostgreSQLDeckImportHTTPTests(unittest.TestCase):
 
             cards = conn.execute(
                 """
-                SELECT name, quantity, category, role_tags_json
+                SELECT name, quantity, category, role_tags_json,
+                       card_id, printing_id
                 FROM app.deck_cards
                 WHERE deck_id = ?
                 ORDER BY name
