@@ -32,7 +32,7 @@ GAME = "mtg"
 PROVIDER = "tcgcsv"
 CATEGORY_ID = "1"
 REHEARSAL_DATABASE = "cardscanner_migration_rehearsal"
-DEFAULT_DATA_DIR = Path("/nfs/cards/data")
+DEFAULT_DATA_DIR = Path("data")
 DEFAULT_SNAPSHOT_DIR = (
     Path.home() / "cardscanner-tcgcsv-migration-source-2026-11-19"
 )
