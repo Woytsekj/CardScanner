@@ -353,6 +353,11 @@ def assign_free_to_deck(conn, deck_id: int, *, fuzzy: bool = False) -> dict:
             moved += take
             need -= take
 
+        # Include newly split/merged allocations before considering the next
+        # requirement. This prevents duplicate requirements from allocating
+        # the same free quantity more than once.
+        inventory = _inventory_rows(conn, owner=owner, lock=True)
+
     if moved:
         conn.execute(
             "UPDATE app.decklists SET updated_at = now() WHERE id = ?",
