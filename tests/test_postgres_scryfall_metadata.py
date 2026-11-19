@@ -343,6 +343,40 @@ class PostgreSQLScryfallMetadataTests(unittest.TestCase):
         self.assertEqual(saved_meta["needed"], 1)
         self.assertEqual(saved_meta["updated_at"], "2026-11-18T12:00:00Z")
 
+    def test_bulk_refresh_accepts_legacy_json_array_exports(self):
+        payload = self.card_payload()
+        compressed = gzip.compress(json.dumps([payload]).encode("utf-8"))
+        manifest = {
+            "data": [{
+                "type": "default_cards",
+                "name": "Default Cards",
+                "updated_at": "2026-11-17T12:00:00Z",
+                "download_uri": "https://fixture.invalid/legacy-default-cards.json.gz",
+            }]
+        }
+        responses = [
+            FakeResponse(payload=manifest),
+            FakeResponse(chunks=[compressed]),
+        ]
+
+        with patch.object(
+            self.app_module.requests,
+            "get",
+            side_effect=responses,
+        ):
+            response = self.client.post(
+                "/admin/refresh_scryfall_bulk",
+                data={"csrf_token": self.csrf},
+                base_url="http://localhost",
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("1 of 1 owned printings updated", self.message(response))
+        metadata, mapping = self.fetch_saved_metadata()
+        self.assertIsNotNone(metadata)
+        self.assertEqual(metadata["name"], self.card_name)
+        self.assertEqual(mapping["target_external_product_id"], "246801")
+
     def test_individual_enrichment_fetches_only_missing_owned_metadata(self):
         payload = self.card_payload()
         with (
