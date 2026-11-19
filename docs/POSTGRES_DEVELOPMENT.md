@@ -1,6 +1,6 @@
 # PostgreSQL development environment
 
-This is an isolated development/test PostgreSQL service. It is not part of the production Compose deployment and does not connect to Bertha's production database.
+This is an isolated development/test PostgreSQL service. It is not part of the production Compose deployment and does not connect to the production database.
 
 ## Prerequisites
 
@@ -66,7 +66,7 @@ This leaves the named development volume intact. To intentionally delete this di
 
 ## Safety boundary
 
-- Do not add this PostgreSQL service to the live Bertha Compose project yet.
+- Do not add this PostgreSQL service to the live production Compose project yet.
 - Do not set `CARD_SCANNER_POSTGRES_DSN` in production.
 - Do not migrate, rename, delete, or overwrite either production SQLite database.
-- Do not change the existing production `docker-compose.yml`, .env, staged changes, stash, or backup files as part of this phase.
+- Do not change the existing production deployment configuration, environment files, staged changes, stash, or backup files as part of this phase.
