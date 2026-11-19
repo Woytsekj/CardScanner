@@ -131,9 +131,20 @@ def fetch_price_history(conn, tcg_id: str, days: int) -> list[dict]:
     ]
 
 
-def latest_history_price(conn, tcg_id: str, finish: str, cutoff: datetime):
-    """Get the latest known finish price at or before a timestamp."""
+def latest_history_price(
+    conn,
+    tcg_id: str,
+    finish: str,
+    cutoff: datetime,
+    *,
+    not_before: datetime | None = None,
+):
+    """Get the latest finish price at or before cutoff, optionally within a lookback."""
     column = "foil_price" if finish == "foil" else "normal_price"
+    not_before_filter = "AND captured_at >= ?" if not_before is not None else ""
+    params = [_tcg_product_id(tcg_id), cutoff]
+    if not_before is not None:
+        params.append(not_before)
     row = conn.execute(
         f"""
         SELECT {column} AS price
@@ -142,11 +153,12 @@ def latest_history_price(conn, tcg_id: str, finish: str, cutoff: datetime):
           AND provider_id = 'tcgcsv'
           AND external_product_id = ?
           AND captured_at <= ?
+          {not_before_filter}
           AND {column} IS NOT NULL
         ORDER BY captured_at DESC, id DESC
         LIMIT 1
         """,
-        (_tcg_product_id(tcg_id), cutoff),
+        tuple(params),
     ).fetchone()
     return float(row["price"]) if row and row["price"] is not None else None
 
@@ -292,31 +304,54 @@ def insert_price_alert(
     )
 
 
-def prune_price_history(conn, cutoff: datetime) -> None:
+def prune_price_history(
+    conn,
+    cutoff: datetime,
+    *,
+    product_ids: list[str] | tuple[str, ...] | None = None,
+) -> None:
+    """Prune expired price data, optionally restricted to specific products."""
+    product_filter = ""
+    product_params: list[str] = []
+    if product_ids is not None:
+        product_params = [
+            _tcg_product_id(value)
+            for value in product_ids
+            if _tcg_product_id(value)
+        ]
+        if not product_params:
+            return
+        placeholders = ", ".join("?" for _ in product_params)
+        product_filter = f"AND external_product_id IN ({placeholders})"
+
+    params = (cutoff, *product_params)
     conn.execute(
-        """
+        f"""
         DELETE FROM catalog.product_price_history
         WHERE game_id = 'mtg'
           AND provider_id = 'tcgcsv'
           AND captured_at < ?
+          {product_filter}
         """,
-        (cutoff,),
+        params,
     )
     conn.execute(
-        """
+        f"""
         DELETE FROM catalog.provider_price_observations
         WHERE game_id = 'mtg'
           AND provider_id = 'tcgcsv'
           AND captured_at < ?
+          {product_filter}
         """,
-        (cutoff,),
+        params,
     )
     conn.execute(
-        """
+        f"""
         DELETE FROM app.price_alert_log
         WHERE game_id = 'mtg'
           AND provider_id = 'tcgcsv'
           AND alerted_at < ?
+          {product_filter}
         """,
-        (cutoff,),
+        params,
     )
