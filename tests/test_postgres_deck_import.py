@@ -5,11 +5,9 @@ from __future__ import annotations
 import io
 import os
 import unittest
-from datetime import datetime, timezone
 from unittest.mock import patch
 from uuid import uuid4
 
-from psycopg.types.json import Jsonb
 
 from postgres_app_db import connect_app_database
 from postgres_db import close_pool, open_pool, run_migrations
@@ -368,7 +366,7 @@ class PostgreSQLDeckImportHTTPTests(unittest.TestCase):
             self.assertEqual(int(inventory["person_id"]), self.person_id)
             self.assertEqual(inventory["location"], "Deck Binder")
             self.assertEqual(inventory["tcgplayer_id"], "123456")
-            self.assertEqual(inventory["rarity"], "Rare")
+            self.assertEqual(inventory["rarity"], "rare")
         finally:
             conn.close()
 
