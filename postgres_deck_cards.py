@@ -31,6 +31,7 @@ def _catalog_printing_by_scryfall_id(conn, scryfall_id: str):
             COALESCE(c.name, p.metadata->>'name') AS name,
             s.set_code,
             p.collector_number,
+            p.rarity,
             p.card_id,
             p.printing_id,
             (
@@ -96,6 +97,7 @@ def _catalog_printings_by_name(
             COALESCE(c.name, p.metadata->>'name') AS name,
             s.set_code,
             p.collector_number,
+            p.rarity,
             p.card_id,
             p.printing_id,
             (
@@ -163,6 +165,7 @@ def _resolve_card_fields(conn, values: dict) -> dict:
             "scryfall_id": resolved["scryfall_id"],
             "set_code": resolved["set_code"] or set_code,
             "collector_number": resolved["collector_number"] or collector,
+            "rarity": resolved["rarity"] or values.get("rarity") or "Common",
             "tcgplayer_id": resolved["tcgplayer_id"] or values.get("tcgplayer_id"),
             "card_id": resolved["card_id"],
             "printing_id": resolved["printing_id"],
@@ -175,6 +178,7 @@ def _resolve_card_fields(conn, values: dict) -> dict:
         "scryfall_id": raw_id,
         "set_code": set_code,
         "collector_number": collector,
+        "rarity": values.get("rarity") or "Common",
         "tcgplayer_id": values.get("tcgplayer_id"),
         "card_id": None,
         "printing_id": None,
