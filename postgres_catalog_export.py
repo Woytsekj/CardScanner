@@ -95,51 +95,52 @@ def _insert_stream(
 _CARD_ART_SQL = """
 SELECT
     printing_external.external_id AS scryfall_id,
-    COALESCE(
-        printing.metadata ->> 'name',
-        provider_metadata.name,
-        card.name,
-        face.name
-    ) AS name,
-    COALESCE(
-        printing.metadata ->> 'set_code',
-        card_set.set_code,
-        printing.metadata ->> 'set'
-    ) AS set_code,
-    COALESCE(
-        printing.metadata ->> 'set_name',
-        card_set.name
-    ) AS set_name,
-    COALESCE(printing.metadata ->> 'rarity', printing.rarity) AS rarity,
-    COALESCE(
-        product_mapping.target_external_product_id,
-        printing.metadata ->> 'tcgplayer_id'
-    ) AS tcgplayer_id,
-    COALESCE(
-        printing.metadata ->> 'collector_number',
-        printing.collector_number
-    ) AS collector_number,
+    CASE
+        WHEN printing.metadata ? 'name' THEN printing.metadata ->> 'name'
+        ELSE COALESCE(provider_metadata.name, card.name, face.name)
+    END AS name,
+    CASE
+        WHEN printing.metadata ? 'set_code' THEN printing.metadata ->> 'set_code'
+        WHEN printing.metadata ? 'set' THEN printing.metadata ->> 'set'
+        ELSE card_set.set_code
+    END AS set_code,
+    CASE
+        WHEN printing.metadata ? 'set_name' THEN printing.metadata ->> 'set_name'
+        ELSE card_set.name
+    END AS set_name,
+    CASE
+        WHEN printing.metadata ? 'rarity' THEN printing.metadata ->> 'rarity'
+        ELSE printing.rarity
+    END AS rarity,
+    CASE
+        WHEN printing.metadata ? 'tcgplayer_id' THEN printing.metadata ->> 'tcgplayer_id'
+        ELSE product_mapping.target_external_product_id
+    END AS tcgplayer_id,
+    CASE
+        WHEN printing.metadata ? 'collector_number' THEN printing.metadata ->> 'collector_number'
+        ELSE printing.collector_number
+    END AS collector_number,
     COALESCE(image_hash.hash_value, printing.metadata ->> 'phash') AS phash,
-    COALESCE(
-        provider_metadata.external_oracle_id,
-        printing.metadata ->> 'oracle_id',
-        face.metadata ->> 'oracle_id'
-    ) AS oracle_id,
-    COALESCE(
-        printing.metadata ->> 'illustration_id',
-        face_illustration.external_id
-    ) AS illustration_id,
-    COALESCE(
-        printing.metadata ->> 'image_uri',
-        printing_image.image_uri,
-        face_image.image_uri,
-        printing.metadata #>> '{image_uris,normal}'
-    ) AS image_uri,
-    COALESCE(
-        printing.metadata ->> 'last_seen_build',
-        provider_metadata.updated_at::text,
-        printing.updated_at::text
-    ) AS last_seen_build
+    CASE
+        WHEN printing.metadata ? 'oracle_id' THEN printing.metadata ->> 'oracle_id'
+        ELSE COALESCE(provider_metadata.external_oracle_id, face.metadata ->> 'oracle_id')
+    END AS oracle_id,
+    CASE
+        WHEN printing.metadata ? 'illustration_id' THEN printing.metadata ->> 'illustration_id'
+        ELSE face_illustration.external_id
+    END AS illustration_id,
+    CASE
+        WHEN printing.metadata ? 'image_uri' THEN printing.metadata ->> 'image_uri'
+        ELSE COALESCE(
+            printing_image.image_uri,
+            face_image.image_uri,
+            printing.metadata #>> '{image_uris,normal}'
+        )
+    END AS image_uri,
+    CASE
+        WHEN printing.metadata ? 'last_seen_build' THEN printing.metadata ->> 'last_seen_build'
+        ELSE COALESCE(provider_metadata.updated_at::text, printing.updated_at::text)
+    END AS last_seen_build
 FROM catalog.printings AS printing
 JOIN catalog.external_ids AS printing_external
   ON printing_external.game_id = printing.game_id
@@ -191,19 +192,21 @@ _FACE_SQL = """
 SELECT
     printing_external.external_id AS scryfall_id,
     face.face_index,
-    COALESCE(
-        face.metadata ->> 'oracle_id',
-        provider_metadata.external_oracle_id
-    ) AS oracle_id,
-    COALESCE(
-        illustration.external_id,
-        face.metadata ->> 'illustration_id'
-    ) AS illustration_id,
-    COALESCE(
-        face_image.image_uri,
-        face.metadata #>> '{image_uris,normal}',
-        face.metadata ->> 'image_uri'
-    ) AS image_uri
+    CASE
+        WHEN face.metadata ? 'oracle_id' THEN face.metadata ->> 'oracle_id'
+        ELSE provider_metadata.external_oracle_id
+    END AS oracle_id,
+    CASE
+        WHEN face.metadata ? 'illustration_id' THEN face.metadata ->> 'illustration_id'
+        ELSE illustration.external_id
+    END AS illustration_id,
+    CASE
+        WHEN face.metadata ? 'image_uri' THEN face.metadata ->> 'image_uri'
+        ELSE COALESCE(
+            face_image.image_uri,
+            face.metadata #>> '{image_uris,normal}'
+        )
+    END AS image_uri
 FROM catalog.printing_faces AS face
 JOIN catalog.external_ids AS printing_external
   ON printing_external.game_id = face.game_id
