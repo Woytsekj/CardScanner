@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import os
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from postgres_app_db import connect_app_database
 from postgres_db import close_pool, open_pool, run_migrations
+import price_updater
+
 from postgres_price_history import (
     fetch_owned_products,
     fetch_price_history,
@@ -352,6 +355,74 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
         except Exception:
             conn.rollback()
             raise
+        finally:
+            conn.close()
+
+    def test_updater_compares_against_previous_price_before_snapshot_insert(self):
+        conn = connect_app_database(expected_database="cardscanner_dev")
+        try:
+            old_time = datetime.now(timezone.utc) - timedelta(days=14)
+            insert_price_snapshot(
+                conn, self.product_id, "old-alert-source-build",
+                old_time, 1.00, None,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        source_rows = [{
+            "productId": self.product_id,
+            "subTypeName": "Normal",
+            "marketPrice": 3.00,
+            "lowPrice": 2.75,
+            "midPrice": 2.90,
+            "highPrice": 3.25,
+            "directLowPrice": None,
+        }]
+        with (
+            patch.object(price_updater, "DATABASE_BACKEND", "postgres"),
+            patch.object(price_updater, "PRICE_ALERT_ENABLED", True),
+            patch.object(price_updater, "DISCORD_WEBHOOK_URL", "configured-for-test"),
+            patch.object(price_updater, "PRICE_ALERT_LOOKBACK_DAYS", 30),
+            patch.object(price_updater, "PRICE_ALERT_COOLDOWN_DAYS", 7),
+            patch.object(price_updater, "PRICE_ALERT_MIN_DOLLARS", 1.00),
+            patch.object(price_updater, "PRICE_ALERT_MIN_PERCENT", 25.0),
+            patch.object(price_updater, "PRICE_ALERT_MIN_OWNED_VALUE_GAIN", 0.0),
+            patch.object(
+                price_updater,
+                "send_discord_alert",
+                return_value=(True, "sent"),
+            ) as send_alert,
+        ):
+            history_count, alerts_sent = price_updater.record_history_and_alerts(
+                {self.product_id: {"normal": 3.00, "foil": None}},
+                "current-alert-source-build",
+                source_rows,
+            )
+
+        self.assertEqual(history_count, 1)
+        self.assertEqual(alerts_sent, 1)
+        send_alert.assert_called_once()
+        self.assertEqual(send_alert.call_args.args[2], 1.00)
+        self.assertEqual(send_alert.call_args.args[3], 3.00)
+
+        conn = connect_app_database(expected_database="cardscanner_dev")
+        try:
+            alert = conn.execute(
+                """
+                SELECT old_price, new_price, owned_quantity, owned_value_gain
+                FROM app.price_alert_log
+                WHERE external_product_id = ?
+                  AND finish = 'normal'
+                """,
+                (self.product_id,),
+            ).fetchone()
+            self.assertIsNotNone(alert)
+            self.assertEqual(float(alert["old_price"]), 1.00)
+            self.assertEqual(float(alert["new_price"]), 3.00)
+            self.assertEqual(alert["owned_quantity"], 2)
+            self.assertEqual(float(alert["owned_value_gain"]), 4.00)
+            conn.commit()
         finally:
             conn.close()
 
