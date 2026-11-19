@@ -34,6 +34,7 @@ TARGET_TABLES = [
     "catalog.image_hashes", "catalog.images",
     "catalog.oracle_tag_assignments", "catalog.printing_faces",
     "catalog.printing_product_mappings", "catalog.printings",
+    "catalog.printing_rulings_cache",
     "catalog.product_price_history",
     "catalog.provider_printing_metadata", "catalog.sets",
     "catalog.tag_aliases", "catalog.tag_closure", "catalog.tags",
@@ -98,6 +99,31 @@ def json_value(value, field, expected_type, default=None):
         raise RuntimeError(f"Unexpected JSON type in {field}")
 
     return result
+
+
+def rulings_cache_records(inv, printing_ids):
+    """Yield provider-scoped PostgreSQL rows from the legacy SQLite rulings cache."""
+    for row in sqlite_rows(
+        inv,
+        "SELECT scryfall_id, rulings_json, fetched_at "
+        "FROM card_rulings_cache ORDER BY scryfall_id",
+    ):
+        sid = clean(row["scryfall_id"])
+        if not sid:
+            raise RuntimeError("Blank Scryfall ID in card_rulings_cache")
+
+        yield (
+            GAME,
+            SCRYFALL,
+            sid,
+            printing_ids.get(sid),
+            Jsonb(json_value(
+                row["rulings_json"], "card_rulings_cache.rulings_json", list, []
+            )),
+            timestamp(
+                row["fetched_at"], "card_rulings_cache.fetched_at"
+            ),
+        )
 
 
 def source_db(filename):
@@ -173,6 +199,7 @@ def validate_sources(inv, art):
     required = {
         "mtg_inventory.db": [
             "app_migrations", "app_state", "card_aliases", "card_metadata",
+            "card_rulings_cache",
             "card_price_mapping", "deck_cards", "decklists", "inventory",
             "login_attempts", "people", "price_alert_log", "price_history",
             "scan_log", "users",
@@ -290,6 +317,24 @@ def validate_sources(inv, art):
             )
         """),
     ]
+
+    checks.append(
+        (
+            inv,
+            "invalid cached card rulings",
+            """
+                SELECT COUNT(*) FROM card_rulings_cache
+                WHERE scryfall_id IS NULL OR trim(scryfall_id)=''
+                   OR rulings_json IS NULL
+                   OR CASE
+                        WHEN json_valid(rulings_json)
+                        THEN json_type(rulings_json) <> 'array'
+                        ELSE 1
+                      END
+                   OR fetched_at IS NULL OR trim(fetched_at)=''
+            """,
+        )
+    )
 
     for db, label, query in checks:
         failures = db.execute(query).fetchone()[0]
@@ -745,6 +790,18 @@ def migrate(pg, inv, art):
             "mana_value", "mana_cost", "oracle_text", "external_oracle_id",
             "legalities", "updated_at",
         ], provider_metadata_records(), expected)
+
+    # CACHED SCRYFALL RULINGS
+    put(
+        pg,
+        "catalog.printing_rulings_cache",
+        [
+            "game_id", "provider_id", "external_printing_id", "printing_id",
+            "rulings", "fetched_at",
+        ],
+        rulings_cache_records(inv, printing_ids),
+        expected,
+    )
 
     # PRODUCT MAPPINGS AND HISTORICAL PRICES
     # Explicit price mappings take precedence. Fill missing TCGCSV product IDs
