@@ -6233,7 +6233,7 @@ def deck_comparison(deck_id: int, owner: str, fuzzy: bool = False) -> tuple[list
         from postgres_app_db import connect_app_database
         from postgres_decks import fetch_deck_comparison_data
 
-        conn = connect_app_database(expected_database="cardscanner_dev")
+        conn = connect_app_database()
         try:
             deck, cards, inventory = fetch_deck_comparison_data(conn, deck_id)
         finally:
@@ -6418,7 +6418,7 @@ def decks_page():
         from postgres_app_db import connect_app_database
         from postgres_decks import fetch_deck_list_data
 
-        conn = connect_app_database(expected_database="cardscanner_dev")
+        conn = connect_app_database()
         try:
             rows, owners, locations = fetch_deck_list_data(conn)
         finally:
@@ -6559,7 +6559,7 @@ def decks_import():
             from postgres_decks import fetch_active_people
             from postgres_deck_import import import_deck
 
-            conn = connect_app_database(expected_database="cardscanner_dev")
+            conn = connect_app_database()
             try:
                 people = set(fetch_active_people(conn))
                 if deck_person and deck_person not in people:
@@ -6905,7 +6905,7 @@ def deck_view(deck_id:int):
         from postgres_app_db import connect_app_database
         from postgres_decks import fetch_deck_detail_data
 
-        conn = connect_app_database(expected_database="cardscanner_dev")
+        conn = connect_app_database()
         try:
             deck_row, owners, deck_cards_rows = fetch_deck_detail_data(
                 conn, deck_id
@@ -7010,7 +7010,7 @@ def edit_deck_card(deck_id:int, card_id:int):
         from postgres_app_db import connect_app_database
         from postgres_deck_cards import edit_deck_card as edit_postgres_deck_card
 
-        conn = connect_app_database(expected_database="cardscanner_dev")
+        conn = connect_app_database()
         try:
             result = edit_postgres_deck_card(
                 conn, deck_id, card_id,
@@ -7112,7 +7112,7 @@ def add_deck_card(deck_id:int):
         from postgres_app_db import connect_app_database
         from postgres_deck_cards import add_deck_card as add_postgres_deck_card
 
-        conn = connect_app_database(expected_database="cardscanner_dev")
+        conn = connect_app_database()
         try:
             result = add_postgres_deck_card(
                 conn, deck_id,
@@ -7174,7 +7174,7 @@ def delete_deck_card(deck_id:int, card_id:int):
         from postgres_app_db import connect_app_database
         from postgres_deck_cards import delete_deck_card as delete_postgres_deck_card
 
-        conn = connect_app_database(expected_database="cardscanner_dev")
+        conn = connect_app_database()
         try:
             result = delete_postgres_deck_card(conn, deck_id, card_id)
             conn.commit()
