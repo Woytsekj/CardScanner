@@ -80,6 +80,15 @@ class PostgreSQLMigrationRulingsTests(unittest.TestCase):
         self.assertEqual(unresolved[4].obj, [])
         self.assertEqual(unresolved[5].utcoffset(), timedelta(0))
 
+    def test_missing_legacy_cache_table_yields_no_rows(self):
+        legacy_db = sqlite3.connect(":memory:")
+        try:
+            legacy_db.row_factory = sqlite3.Row
+            rows = list(rulings_cache_records(legacy_db, {}))
+            self.assertEqual(rows, [])
+        finally:
+            legacy_db.close()
+
     def test_invalid_cached_rulings_json_is_rejected(self):
         self.add_row(
             "00000000-0000-4000-8000-000000000003",
