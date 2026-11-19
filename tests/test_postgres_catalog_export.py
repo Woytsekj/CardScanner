@@ -70,6 +70,7 @@ class PostgreSQLCatalogExportTests(unittest.TestCase):
         back_illustration = f"export-back-illustration-{self.token}"
         front_uri = f"https://fixture.invalid/export-front-{self.token}.jpg"
         back_uri = f"https://fixture.invalid/export-back-{self.token}.jpg"
+        parent_tag_id = f"export-parent-tag-{self.token}"
         art_tag_id = f"export-art-tag-{self.token}"
         oracle_tag_id = f"export-oracle-tag-{self.token}"
         art_alias = f"export-art-alias-{self.token}"
@@ -118,17 +119,25 @@ class PostgreSQLCatalogExportTests(unittest.TestCase):
             ],
         }
         printings_path = self.write_jsonl("printings.jsonl.gz", [printing])
-        art_tags_path = self.write_jsonl("art-tags.jsonl.gz", [{
-            "id": art_tag_id,
-            "slug": "export-art",
-            "label": "Export Art",
-            "aliases": [art_alias],
-            "taggings": [{
-                "illustration_id": front_illustration,
-                "weight": "high",
-                "annotation": "artwork fixture",
-            }],
-        }])
+        art_tags_path = self.write_jsonl("art-tags.jsonl.gz", [
+            {
+                "id": parent_tag_id,
+                "slug": "export-parent",
+                "label": "Export Parent",
+            },
+            {
+                "id": art_tag_id,
+                "slug": "export-art",
+                "label": "Export Art",
+                "parent_ids": [parent_tag_id],
+                "aliases": [art_alias],
+                "taggings": [{
+                    "illustration_id": front_illustration,
+                    "weight": "high",
+                    "annotation": "artwork fixture",
+                }],
+            },
+        ])
         oracle_tags_path = self.write_jsonl("oracle-tags.jsonl.gz", [{
             "id": oracle_tag_id,
             "slug": "export-oracle",
@@ -175,13 +184,16 @@ class PostgreSQLCatalogExportTests(unittest.TestCase):
             )
 
             info = export_mtg_legacy_art_catalog(conn, output_path)
-            self.assertEqual(info["card_art"], 1)
-            self.assertEqual(info["card_art_faces"], 2)
-            self.assertEqual(info["scryfall_tags"], 2)
-            self.assertEqual(info["scryfall_tag_aliases"], 1)
-            self.assertEqual(info["art_tag_assignments"], 1)
-            self.assertEqual(info["oracle_tag_assignments"], 1)
-            self.assertEqual(info["phash"], 1)
+            # CI seeds shared catalog fixtures before running this test, so
+            # assert the isolated test rows rather than global table totals.
+            self.assertGreaterEqual(info["card_art"], 1)
+            self.assertGreaterEqual(info["card_art_faces"], 2)
+            self.assertGreaterEqual(info["scryfall_tags"], 3)
+            self.assertGreaterEqual(info["scryfall_tag_aliases"], 1)
+            self.assertGreaterEqual(info["scryfall_tag_closure"], 1)
+            self.assertGreaterEqual(info["art_tag_assignments"], 1)
+            self.assertGreaterEqual(info["oracle_tag_assignments"], 1)
+            self.assertGreaterEqual(info["phash"], 1)
             self.assertTrue(output_path.is_file())
 
             db = sqlite3.connect(str(output_path))
@@ -194,6 +206,7 @@ class PostgreSQLCatalogExportTests(unittest.TestCase):
                            oracle_id, phash, illustration_id, image_uri
                     FROM card_art WHERE scryfall_id = ?
                 """, (printing_id,)).fetchone()
+                self.assertIsNotNone(card)
                 self.assertEqual(card, (
                     "Exporter Test Card",
                     "xts",
@@ -222,6 +235,17 @@ class PostgreSQLCatalogExportTests(unittest.TestCase):
                     FROM scryfall_tags WHERE id = ?
                 """, (art_tag_id,)).fetchone()
                 self.assertEqual(tag, ("export-art", "Export Art", "art"))
+                self.assertEqual(
+                    db.execute(
+                        """
+                        SELECT ancestor_tag_id, descendant_tag_id, depth
+                        FROM scryfall_tag_closure
+                        WHERE ancestor_tag_id = ? AND descendant_tag_id = ?
+                        """,
+                        (parent_tag_id, art_tag_id),
+                    ).fetchone(),
+                    (parent_tag_id, art_tag_id, 1),
+                )
                 self.assertEqual(
                     db.execute(
                         "SELECT tag_id, alias FROM scryfall_tag_aliases "
