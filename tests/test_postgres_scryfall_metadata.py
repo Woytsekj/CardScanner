@@ -377,6 +377,41 @@ class PostgreSQLScryfallMetadataTests(unittest.TestCase):
         self.assertEqual(metadata["name"], self.card_name)
         self.assertEqual(mapping["target_external_product_id"], "246801")
 
+    def test_bulk_refresh_rolls_back_when_jsonl_contains_invalid_record(self):
+        payload = self.card_payload()
+        raw = (json.dumps(payload) + "\n" + "not-valid-json\n").encode("utf-8")
+        compressed = gzip.compress(raw)
+        manifest = {
+            "data": [{
+                "type": "default_cards",
+                "name": "Default Cards",
+                "updated_at": "2026-11-16T12:00:00Z",
+                "download_uri": "https://fixture.invalid/invalid-default-cards.jsonl.gz",
+            }]
+        }
+        responses = [
+            FakeResponse(payload=manifest),
+            FakeResponse(chunks=[compressed]),
+        ]
+
+        with patch.object(
+            self.app_module.requests,
+            "get",
+            side_effect=responses,
+        ):
+            response = self.client.post(
+                "/admin/refresh_scryfall_bulk",
+                data={"csrf_token": self.csrf},
+                base_url="http://localhost",
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("Scryfall bulk refresh failed", self.message(response))
+        metadata, mapping = self.fetch_saved_metadata()
+        self.assertIsNone(metadata)
+        self.assertIsNone(mapping)
+        self.assertFalse(self.bulk_meta_path.exists())
+
     def test_individual_enrichment_fetches_only_missing_owned_metadata(self):
         payload = self.card_payload()
         with (
