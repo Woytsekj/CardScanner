@@ -7,6 +7,7 @@ DECLARE
     v_avacyn_card BIGINT;
     v_fury_printing BIGINT;
     v_avacyn_printing BIGINT;
+    v_avacyn_second_printing BIGINT;
     v_falcon_printing BIGINT;
     v_avacyn_illustration_front BIGINT;
     v_avacyn_illustration_back BIGINT;
@@ -164,13 +165,13 @@ BEGIN
 
     -- A second synthetic printing gives the fuzzy deck-comparison test two
     -- Scryfall printings with the same canonical Oracle identity.
-    SELECT printing_id INTO v_avacyn_printing
+    SELECT printing_id INTO v_avacyn_second_printing
     FROM catalog.external_ids
     WHERE game_id = 'mtg' AND provider_id = 'scryfall'
       AND entity_type = 'printing' AND external_id_type = 'scryfall_id'
       AND external_id = 'c3a8156a-09d9-4410-8891-bac1d4abc911'
     LIMIT 1;
-    IF v_avacyn_printing IS NULL THEN
+    IF v_avacyn_second_printing IS NULL THEN
         INSERT INTO catalog.printings (
             game_id, card_id, set_id, collector_number, rarity,
             available_finishes, metadata
@@ -180,7 +181,7 @@ BEGIN
             ARRAY['nonfoil','foil']::TEXT[],
             '{"name":"Archangel Avacyn // Avacyn, the Purifier"}'::JSONB
         )
-        RETURNING printing_id INTO v_avacyn_printing;
+        RETURNING printing_id INTO v_avacyn_second_printing;
 
         INSERT INTO catalog.external_ids (
             game_id, provider_id, entity_type, external_id_type,
@@ -188,7 +189,7 @@ BEGIN
         )
         VALUES (
             'mtg', 'scryfall', 'printing', 'scryfall_id',
-            'c3a8156a-09d9-4410-8891-bac1d4abc911', v_avacyn_printing
+            'c3a8156a-09d9-4410-8891-bac1d4abc911', v_avacyn_second_printing
         )
         ON CONFLICT DO NOTHING;
     END IF;
