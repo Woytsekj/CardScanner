@@ -205,14 +205,24 @@ def scryfall_image_url(scryfall_id: str | None) -> str | None:
     return f"https://cards.scryfall.io/normal/front/{sid[0]}/{sid[1]}/{sid}.jpg"
 
 
-def last_history_point(conn: sqlite3.Connection, tcg_id: str, finish: str, cutoff: str) -> float | None:
+def last_history_point(
+    conn: sqlite3.Connection,
+    tcg_id: str,
+    finish: str,
+    cutoff: str,
+    *,
+    not_before: str | None = None,
+) -> float | None:
     column = "foil_price" if finish == "foil" else "normal_price"
+    not_before_filter = "AND captured_at >= ?" if not_before is not None else ""
+    params = (tcg_id, cutoff) if not_before is None else (tcg_id, cutoff, not_before)
     row = conn.execute(
         f"""SELECT {column} AS price
             FROM price_history
-            WHERE tcgplayer_id = ? AND captured_at <= ? AND {column} IS NOT NULL
+            WHERE tcgplayer_id = ? AND captured_at <= ?
+              {not_before_filter} AND {column} IS NOT NULL
             ORDER BY captured_at DESC LIMIT 1""",
-        (tcg_id, cutoff),
+        params,
     ).fetchone()
     return normalize_price(row["price"]) if row else None
 
@@ -307,7 +317,9 @@ def record_postgres_history_and_alerts(
             # Capture the prior prices before inserting this snapshot. Otherwise
             # the current observation could become its own comparison baseline.
             previous_prices = {
-                finish: latest_history_price(conn, tcg_id, finish, cutoff_alert)
+                finish: latest_history_price(
+                    conn, tcg_id, finish, now, not_before=cutoff_alert
+                )
                 for finish in ("normal", "foil")
                 if (normal if finish == "normal" else foil) is not None
             }
@@ -419,7 +431,9 @@ def record_history_and_alerts(price_map: dict[str, dict[str, Any]], source_updat
             if current is None:
                 continue
             # Check the old price before inserting today's point so the comparison is genuinely historical.
-            old = last_history_point(conn, tcg_id, finish, cutoff_alert)
+            old = last_history_point(
+                conn, tcg_id, finish, captured_at, not_before=cutoff_alert
+            )
             cur = conn.execute(
                 """INSERT OR IGNORE INTO price_history
                    (tcgplayer_id,captured_at,source_updated,normal_price,foil_price)
