@@ -366,7 +366,7 @@ class PostgreSQLDeckImportHTTPTests(unittest.TestCase):
             self.assertEqual(int(inventory["person_id"]), self.person_id)
             self.assertEqual(inventory["location"], "Deck Binder")
             self.assertEqual(inventory["tcgplayer_id"], "123456")
-            self.assertEqual(inventory["rarity"], "rare")
+            self.assertEqual(inventory["rarity"], "Rare")
         finally:
             conn.close()
 
