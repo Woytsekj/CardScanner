@@ -110,7 +110,12 @@ def decimal_value(value, label: str):
     return number
 
 
-def validate_envelope(payload, label: str, *, allow_total_missing: bool = False):
+def validate_envelope(
+    payload,
+    label: str,
+    *,
+    allow_missing_total_for_empty: bool = False,
+):
     if not isinstance(payload, dict):
         raise RuntimeError(f"{label} response is not a JSON object")
     if payload.get("success") is not True:
@@ -122,7 +127,9 @@ def validate_envelope(payload, label: str, *, allow_total_missing: bool = False)
     if not isinstance(results, list):
         raise RuntimeError(f"{label} response results is not a list")
     total = payload.get("totalItems")
-    if total is None and not allow_total_missing:
+    if total is None and not (
+        allow_missing_total_for_empty and not results
+    ):
         raise RuntimeError(f"{label} response is missing totalItems")
     if total is not None and int(total) != len(results):
         raise RuntimeError(
@@ -268,7 +275,9 @@ def validate_products_by_group(products_by_group, groups, expected_category: str
     for group_id in sorted(group_ids, key=int):
         payload = products_by_group[group_id]
         group_products = validate_envelope(
-            payload, f"TCGCSV products for group {group_id}"
+            payload,
+            f"TCGCSV products for group {group_id}",
+            allow_missing_total_for_empty=True,
         )
         if not group_products:
             empty_groups.append(group_id)
