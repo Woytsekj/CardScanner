@@ -176,14 +176,13 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
     def test_owned_products_snapshots_and_exact_subtypes_are_preserved(self):
         conn = connect_app_database(expected_database="cardscanner_dev")
         try:
+            fixture_product_ids = {self.product_id, self.vending_product_id}
             products = {
                 row["tcgplayer_id"]: row
                 for row in fetch_owned_products(conn)
+                if row["tcgplayer_id"] in fixture_product_ids
             }
-            self.assertEqual(
-                set(products),
-                {self.product_id, self.vending_product_id},
-            )
+            self.assertEqual(set(products), fixture_product_ids)
             self.assertEqual(products[self.product_id]["normal_qty"], 2)
             self.assertEqual(products[self.product_id]["foil_qty"], 0)
             self.assertEqual(products[self.vending_product_id]["foil_qty"], 3)
@@ -331,15 +330,22 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
                 conn, self.vending_product_id, "expired-source-build",
                 expired, 0.50, None,
             )
-            prune_price_history(conn, retention_cutoff)
+            prune_price_history(
+                conn,
+                retention_cutoff,
+                product_ids=(self.product_id, self.vending_product_id),
+            )
 
             remaining = conn.execute(
                 """
                 SELECT external_product_id, source_updated
                 FROM catalog.product_price_history
-                WHERE game_id = 'mtg' AND provider_id = 'tcgcsv'
+                WHERE game_id = 'mtg'
+                  AND provider_id = 'tcgcsv'
+                  AND external_product_id IN (?, ?)
                 ORDER BY external_product_id, source_updated
-                """
+                """,
+                (self.product_id, self.vending_product_id),
             ).fetchall()
             self.assertEqual(
                 {
