@@ -864,6 +864,7 @@ def security_gate():
             "assign_free_to_deck": "POST",
             "move_inventory_to_deck": "POST",
             "delete_deck": "POST",
+            "decks_import": "POST",
             "import_csv": "POST",
             "api_scan": "POST",
             "api_scan_batch": "POST",
