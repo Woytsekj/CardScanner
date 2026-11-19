@@ -10,7 +10,7 @@
 </head><body data-vending-mode="browse">
 <header class="topbar">
   <div><h1>Vending View</h1><div class="subtle">Cards marked for vending across all storage locations · {{ result_count }} matching rows</div></div>
-  <div class="actions"><a class="button secondary" href="{{ url_for('index') }}">Inventory</a><a class="button secondary" href="{{ url_for('decks_page') }}">Decks</a><a class="button" href="{{ url_for('vending_export_csv', owner=selected_owner, q=search, min_value=min_value) }}">Export Vendor CSV</a></div>
+  <div class="actions">{% if admin_user %}<a class="button secondary" href="{{ url_for('index') }}">Inventory</a><a class="button secondary" href="{{ url_for('decks_page') }}">Decks</a>{% endif %}<a class="button" href="{{ url_for('vending_export_csv', owner=selected_owner, q=search, min_value=min_value) }}">Export Vendor CSV</a></div>
 </header>
 <main>
 <section class="toolbar vending-toolbar">

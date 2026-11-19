@@ -115,6 +115,17 @@ SORTS = {
 }
 
 app = Flask(__name__)
+
+# SQLite remains the default until the PostgreSQL application migration
+# is complete. PostgreSQL mode is explicitly opt-in.
+DATABASE_BACKEND = os.environ.get(
+    "CARD_SCANNER_DATABASE_BACKEND", "sqlite"
+).strip().lower()
+
+if DATABASE_BACKEND not in {"sqlite", "postgres"}:
+    raise RuntimeError(
+        "CARD_SCANNER_DATABASE_BACKEND must be either 'sqlite' or 'postgres'"
+    )
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 app.secret_key = SESSION_SECRET
 app.config["SESSION_COOKIE_HTTPONLY"] = True
@@ -189,6 +200,11 @@ def connect_inventory() -> sqlite3.Connection:
     journal_mode is persistent for the database and should be initialized once
     during startup, not repeatedly by concurrent request workers.
     """
+    if DATABASE_BACKEND == "postgres":
+        raise RuntimeError(
+            "PostgreSQL mode is active, but this application connection path "
+            "has not been migrated. Refusing to fall back to SQLite."
+        )
     conn = sqlite3.connect(DB_INV, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
@@ -494,32 +510,104 @@ def login_rate_key(username: str) -> str:
 
 
 def check_login_rate_limits(username: str) -> tuple[bool, str]:
-    now=time.time(); keys=[f"ip:{client_ip()}", f"user:{login_rate_key(username)}"]
-    conn=connect_inventory()
+    now = time.time()
+    keys = [f"ip:{client_ip()}", f"user:{login_rate_key(username)}"]
+
+    if DATABASE_BACKEND == "postgres":
+        from postgres_auth import check_login_rate_limits as pg_check
+
+        allowed = pg_check(keys, now)
+        return (
+            (True, "")
+            if allowed
+            else (False, "Too many failed login attempts. Please wait and try again.")
+        )
+
+    conn = connect_inventory()
     try:
         for key in keys:
-            row=conn.execute("SELECT blocked_until FROM login_attempts WHERE key=?",(key,)).fetchone()
-            if row and float(row[0] or 0)>now: return False,"Too many failed login attempts. Please wait and try again."
-    finally: conn.close()
-    return True,""
+            row = conn.execute(
+                "SELECT blocked_until FROM login_attempts WHERE key=?",
+                (key,),
+            ).fetchone()
+            if row and float(row[0] or 0) > now:
+                return False, "Too many failed login attempts. Please wait and try again."
+    finally:
+        conn.close()
 
-
+    return True, ""
 def record_failed_login(username: str) -> None:
-    now=time.time(); conn=connect_inventory()
+    now = time.time()
+    keys = [f"ip:{client_ip()}", f"user:{login_rate_key(username)}"]
+
+    if DATABASE_BACKEND == "postgres":
+        from postgres_auth import record_failed_login as pg_record
+
+        pg_record(
+            keys,
+            now,
+            LOGIN_WINDOW_MINUTES * 60,
+            LOGIN_MAX_ATTEMPTS,
+            LOGIN_LOCKOUT_MINUTES * 60,
+        )
+        return
+
+    conn = connect_inventory()
     try:
-        for key in (f"ip:{client_ip()}", f"user:{login_rate_key(username)}"):
-            row=conn.execute("SELECT first_attempt,attempts FROM login_attempts WHERE key=?",(key,)).fetchone()
-            if not row or now-float(row[0])>LOGIN_WINDOW_MINUTES*60: first,attempts=now,1
-            else: first,attempts=float(row[0]),int(row[1])+1
-            blocked=now+LOGIN_LOCKOUT_MINUTES*60 if attempts>=LOGIN_MAX_ATTEMPTS else 0
-            conn.execute("INSERT INTO login_attempts(key,first_attempt,attempts,blocked_until) VALUES(?,?,?,?) ON CONFLICT(key) DO UPDATE SET first_attempt=excluded.first_attempt,attempts=excluded.attempts,blocked_until=excluded.blocked_until",(key,first,attempts,blocked))
-        conn.execute("DELETE FROM login_attempts WHERE first_attempt<?",(now-86400,)); conn.commit()
-    finally: conn.close()
+        for key in keys:
+            row = conn.execute(
+                "SELECT first_attempt,attempts FROM login_attempts WHERE key=?",
+                (key,),
+            ).fetchone()
 
+            if not row or now - float(row[0]) > LOGIN_WINDOW_MINUTES * 60:
+                first, attempts = now, 1
+            else:
+                first, attempts = float(row[0]), int(row[1]) + 1
 
+            blocked = (
+                now + LOGIN_LOCKOUT_MINUTES * 60
+                if attempts >= LOGIN_MAX_ATTEMPTS else 0
+            )
+
+            conn.execute(
+                """
+                INSERT INTO login_attempts
+                    (key,first_attempt,attempts,blocked_until)
+                VALUES (?,?,?,?)
+                ON CONFLICT(key) DO UPDATE SET
+                    first_attempt=excluded.first_attempt,
+                    attempts=excluded.attempts,
+                    blocked_until=excluded.blocked_until
+                """,
+                (key, first, attempts, blocked),
+            )
+
+        conn.execute(
+            "DELETE FROM login_attempts WHERE first_attempt<?",
+            (now - 86400,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 def clear_login_failures(username: str) -> None:
-    conn=connect_inventory(); conn.execute("DELETE FROM login_attempts WHERE key IN (?,?)",(f"ip:{client_ip()}", f"user:{login_rate_key(username)}")); conn.commit(); conn.close()
+    keys = [f"ip:{client_ip()}", f"user:{login_rate_key(username)}"]
 
+    if DATABASE_BACKEND == "postgres":
+        from postgres_auth import clear_login_failures as pg_clear
+
+        pg_clear(keys)
+        return
+
+    conn = connect_inventory()
+    try:
+        conn.execute(
+            "DELETE FROM login_attempts WHERE key IN (?,?)",
+            tuple(keys),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 def current_user() -> sqlite3.Row | None:
     """Resolve the logged-in user once per request (cached on flask.g)."""
     username = str(session.get("username") or "").strip()
@@ -534,29 +622,49 @@ def current_user() -> sqlite3.Row | None:
 def _load_current_user(username: str) -> sqlite3.Row | None:
     if not username:
         return None
+
     try:
-        conn = connect_inventory()
-        ensure_people_and_auth(conn)
-        user = conn.execute(
-            """SELECT u.username, u.password_hash, u.is_admin, u.role, u.is_superadmin,
-                      u.active, u.created_at, u.last_login_at, u.person_id,
-                      p.name AS person_name
-               FROM users u LEFT JOIN people p ON p.id = u.person_id
-               WHERE u.username = ?""",
-            (username,),
-        ).fetchone()
-        conn.close()
+        if DATABASE_BACKEND == "postgres":
+            from postgres_auth import load_current_user
+
+            user = load_current_user(username)
+        else:
+            conn = connect_inventory()
+            try:
+                ensure_people_and_auth(conn)
+                user = conn.execute(
+                    """
+                    SELECT u.username, u.password_hash, u.is_admin, u.role,
+                           u.is_superadmin, u.active, u.created_at,
+                           u.last_login_at, u.person_id,
+                           p.name AS person_name
+                    FROM users u
+                    LEFT JOIN people p ON p.id = u.person_id
+                    WHERE u.username = ?
+                    """,
+                    (username,),
+                ).fetchone()
+            finally:
+                conn.close()
     except Exception:
+        app.logger.exception("Could not load the current user")
         return None
+
     if not user or not int(user["active"]):
         session.clear()
         return None
-    is_admin = bool(int(user["is_admin"]) or str(user["role"]).lower() in {"admin", "superadmin"} or int(user["is_superadmin"]))
+
+    is_admin = bool(
+        int(user["is_admin"])
+        or str(user["role"]).lower() in {"admin", "superadmin"}
+        or int(user["is_superadmin"])
+    )
     session["is_admin"] = is_admin
-    session["is_superadmin"] = bool(int(user["is_superadmin"]) or str(user["role"]).lower() == "superadmin")
+    session["is_superadmin"] = bool(
+        int(user["is_superadmin"])
+        or str(user["role"]).lower() == "superadmin"
+    )
     return user
-
-
 def current_admin() -> str | None:
     user = current_user()
     return str(user["username"]) if user and (int(user["is_admin"]) or int(user["is_superadmin"]) or str(user["role"]).lower() in {"admin", "superadmin"}) else None
@@ -655,6 +763,131 @@ def scanner_api_path_allowed(path: str) -> bool:
 
 @app.before_request
 def security_gate():
+    # PostgreSQL mode exposes only routes with explicit database support.
+    if DATABASE_BACKEND == "postgres":
+        if TRUSTED_HOSTS:
+            host = str(request.host.split(":", 1)[0]).lower()
+            if host not in TRUSTED_HOSTS:
+                return "Bad Request", 400
+
+        path = request.path
+
+        # login_post validates its own CSRF token.
+        if request.endpoint == "login_post":
+            return None
+
+        # Logout is part of the authentication slice, and remains CSRF-protected.
+        if request.endpoint == "logout":
+            if not csrf_valid():
+                return "CSRF validation failed", 400
+            return None
+
+        if request.endpoint == "login" or path.startswith("/static/"):
+            return None
+
+        # Deck pages use PostgreSQL read helpers. Cover files are validated
+        # generated filenames and are served read-only.
+        if request.endpoint in {
+            "index",
+            "decks_page",
+            "deck_view",
+            "deck_cover_file",
+            "vending_view",
+            "vending_export_csv",
+            "vending_labels",
+            "export_csv",
+            "export_manabox_csv",
+        } and request.method == "GET":
+            return None
+
+        # The PostgreSQL-backed admin page is read-only except for its
+        # separately gated manual-add and alias operations.
+        if request.endpoint == "admin_page" and request.method == "GET":
+            return None
+
+        # Card details and catalog search have PostgreSQL query implementations.
+        if request.endpoint in {
+            "api_card_info",
+            "api_card_rulings",
+            "catalog_search",
+            "catalog_suggest",
+            "search_suggest",
+            "api_people",
+            "api_scanner_options",
+            "scanner_desktop_download",
+            "scanner_mobile_index",
+            "scanner_mobile_asset",
+            "api_scanner_mobile_options",
+            "api_scanner_mobile_search",
+            "api_scanner_mobile_price",
+            "api_scanner_client_data_manifest",
+            "api_scanner_client_data_download",
+            "api_health",
+            "api_version",
+            "api_price_by_card",
+            "api_price",
+            "api_price_history",
+            "deck_missing_csv",
+        } and request.method == "GET":
+            return None
+
+        # Alias listing is a supported read-only admin operation.
+        if request.endpoint == "list_aliases" and request.method == "GET":
+            return None
+
+        # Only these specific writes are enabled. Their route decorators
+        # still enforce admin authorization.
+        write_methods = {
+            "add_alias": "POST",
+            "delete_alias": "DELETE",
+            "manual_add": "POST",
+            "add_person": "POST",
+            "rename_person": "POST",
+            "toggle_person": "POST",
+            "delete_person": "POST",
+            "add_user": "POST",
+            "assign_user_person": "POST",
+            "toggle_user": "POST",
+            "admin_reset_user_password": "POST",
+            "rename_user": "POST",
+            "change_user_role": "POST",
+            "delete_user": "POST",
+            "change_password": "POST",
+            "set_counts": "POST",
+            "update_inventory": "POST",
+            "delete_item": "DELETE",
+            "bulk_update_inventory": "POST",
+            "move_quantity": "POST",
+            "add_deck_card": "POST",
+            "delete_deck_card": "POST",
+            "edit_deck_card": "POST",
+            "update_deck_settings": "POST",
+            "update_deck_cover": "POST",
+            "assign_free_to_deck": "POST",
+            "move_inventory_to_deck": "POST",
+            "delete_deck": "POST",
+            "decks_import": "POST",
+            "import_csv": "POST",
+            "api_scan": "POST",
+            "api_scan_batch": "POST",
+            "api_scanner_mobile_scan": "POST",
+            "api_scanner_mobile_recognize": "POST",
+            "refresh_prices": "POST",
+            "test_discord": "POST",
+            "admin_refresh_scryfall_bulk": "POST",
+            "enrich_metadata": "POST",
+        }
+        if request.endpoint in write_methods:
+            if request.method == write_methods[request.endpoint]:
+                if current_user() and not csrf_valid():
+                    return "CSRF validation failed", 400
+                return None
+
+        return jsonify({
+            "success": False,
+            "error": "This application route is not enabled in PostgreSQL mode yet.",
+        }), 503
+
     # Host allow-list. For the public deployment, use the exact Cloudflare hostname.
     if TRUSTED_HOSTS:
         host = str(request.host.split(":", 1)[0]).lower()
@@ -1380,34 +1613,55 @@ def inventory_summary(
 ):
     """Calculate totals using a lightweight query without materializing card metadata/aliases."""
     prices = get_tcg_prices()
-    conn = connect_inventory()
-    join_sql = attach_art_join(conn)
-    where, args, _, _ = _inventory_filter_parts(
-        search, owner_filter, finish_filter, type_filter, color_filter, location_filter, vending_filter
-    )
-    where_sql = "WHERE " + " AND ".join(where) if where else ""
-    owner_expr = "IFNULL(i.owner, 'Me')"
-    finish_expr = "IFNULL(NULLIF(i.finish, ''), 'normal')"
-    quantity_expr = "CASE WHEN i.quantity IS NULL OR CAST(i.quantity AS INTEGER) < 1 THEN 1 ELSE CAST(i.quantity AS INTEGER) END"
-    tcg_id_expr = "COALESCE(NULLIF(TRIM(i.tcgplayer_id), ''), NULLIF(TRIM(a.tcgplayer_id), ''), NULLIF(TRIM(m.tcgplayer_id), ''))"
-    try:
-        # Inventory rows are often split by storage location or scan session even
-        # when they share the same price identity. Aggregate compatible rows in SQL
-        # before computing collection totals, but retain the number of physical rows
-        # separately for the pagination count.
-        rows = conn.execute(
-            f"""SELECT i.scryfall_id, {owner_expr} AS owner, {finish_expr} AS finish,
-                       SUM({quantity_expr}) AS quantity, COUNT(*) AS row_count,
-                       i.price AS scanned_price, {tcg_id_expr} AS tcgplayer_id
-                FROM inventory i
-                {join_sql}
-                LEFT JOIN card_metadata cm ON cm.scryfall_id = i.scryfall_id
-                {where_sql}
-                GROUP BY i.scryfall_id, {owner_expr}, {finish_expr}, i.price, {tcg_id_expr}""",
-            args,
-        ).fetchall()
-    finally:
-        conn.close()
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_inventory import fetch_inventory_summary_rows
+
+        conn = connect_app_database()
+        try:
+            rows = fetch_inventory_summary_rows(
+                conn,
+                search,
+                owner_filter,
+                finish_filter,
+                sort_key,
+                direction,
+                type_filter,
+                color_filter,
+                location_filter,
+                vending_filter,
+            )
+        finally:
+            conn.close()
+    else:
+        conn = connect_inventory()
+        join_sql = attach_art_join(conn)
+        where, args, _, _ = _inventory_filter_parts(
+            search, owner_filter, finish_filter, type_filter, color_filter, location_filter, vending_filter
+        )
+        where_sql = "WHERE " + " AND ".join(where) if where else ""
+        owner_expr = "IFNULL(i.owner, 'Me')"
+        finish_expr = "IFNULL(NULLIF(i.finish, ''), 'normal')"
+        quantity_expr = "CASE WHEN i.quantity IS NULL OR CAST(i.quantity AS INTEGER) < 1 THEN 1 ELSE CAST(i.quantity AS INTEGER) END"
+        tcg_id_expr = "COALESCE(NULLIF(TRIM(i.tcgplayer_id), ''), NULLIF(TRIM(a.tcgplayer_id), ''), NULLIF(TRIM(m.tcgplayer_id), ''))"
+        try:
+            # Inventory rows are often split by storage location or scan session even
+            # when they share the same price identity. Aggregate compatible rows in SQL
+            # before computing collection totals, but retain the number of physical rows
+            # separately for the pagination count.
+            rows = conn.execute(
+                f"""SELECT i.scryfall_id, {owner_expr} AS owner, {finish_expr} AS finish,
+                           SUM({quantity_expr}) AS quantity, COUNT(*) AS row_count,
+                           i.price AS scanned_price, {tcg_id_expr} AS tcgplayer_id
+                    FROM inventory i
+                    {join_sql}
+                    LEFT JOIN card_metadata cm ON cm.scryfall_id = i.scryfall_id
+                    {where_sql}
+                    GROUP BY i.scryfall_id, {owner_expr}, {finish_expr}, i.price, {tcg_id_expr}""",
+                args,
+            ).fetchall()
+        finally:
+            conn.close()
 
     owner_totals: dict[str, float] = {}
     owner_counts: dict[str, dict[str, int]] = {}
@@ -1436,119 +1690,149 @@ def inventory_rows(
     limit: int | None = None, offset: int = 0,
 ):
     prices = get_tcg_prices()
-    conn = connect_inventory()
-    join_sql = attach_art_join(conn)
-
-    where, args, query_order, query_direction = _inventory_filter_parts(
-        search, owner_filter, finish_filter, type_filter, color_filter, location_filter, vending_filter
-    )
+    _, _, query_order, query_direction = parse_scryfall_search(search)
     if query_order:
         sort_key = query_order
     if query_direction:
         direction = query_direction
-    where_sql = "WHERE " + " AND ".join(where) if where else ""
-
-    sort_key = sort_key if sort_key in SORTS else "date"
     direction_sql = "ASC" if direction == "asc" else "DESC"
-    price_sort = sort_key in {"normal", "foil", "price", "value"}
-    price_sort_join = ""
-    sql_sort = SORTS[sort_key] if not price_sort else "i.scan_time"
-    if limit is not None and price_sort:
-        # Current market prices live in a cached JSON snapshot rather than a SQL
-        # table. Load that compact map into a temporary table so price/value sorts
-        # can also LIMIT in SQL instead of enriching and sorting the entire library.
-        conn.execute("CREATE TEMP TABLE inventory_price_sort (tcgplayer_id TEXT PRIMARY KEY, normal_price REAL, foil_price REAL)")
-        conn.executemany(
-            "INSERT INTO inventory_price_sort(tcgplayer_id, normal_price, foil_price) VALUES(?,?,?)",
-            [(str(pid), to_float(values.get("normal")) if values.get("normal") is not None else None,
-              to_float(values.get("foil")) if values.get("foil") is not None else None)
-             for pid, values in prices.items() if str(pid).strip()],
-        )
-        joined_tcg_id = "COALESCE(NULLIF(TRIM(i.tcgplayer_id), ''), NULLIF(TRIM(a.tcgplayer_id), ''), NULLIF(TRIM(m.tcgplayer_id), ''))"
-        price_sort_join = f"LEFT JOIN inventory_price_sort ips ON ips.tcgplayer_id = {joined_tcg_id}"
-        finish_expr = "IFNULL(NULLIF(i.finish, ''), 'normal')"
-        quantity_expr = "CASE WHEN i.quantity IS NULL OR CAST(i.quantity AS INTEGER) < 1 THEN 1 ELSE CAST(i.quantity AS INTEGER) END"
-        unit_price_expr = f"CASE WHEN {finish_expr} = 'foil' THEN COALESCE(ips.foil_price, CAST(i.price AS REAL), 0) ELSE COALESCE(ips.normal_price, CAST(i.price AS REAL), 0) END"
-        if sort_key == "normal":
-            sql_sort = "COALESCE(ips.normal_price, 0)"
-        elif sort_key == "foil":
-            sql_sort = "COALESCE(ips.foil_price, 0)"
-        elif sort_key == "price":
-            sql_sort = unit_price_expr
-        else:  # value = current/fallback unit price multiplied by the stored quantity
-            sql_sort = f"({unit_price_expr}) * ({quantity_expr})"
-    if sort_key == "set":
-        order_sql = (
-            f"COALESCE(i.set_code, '') COLLATE NOCASE {direction_sql}, "
-            f"CAST(COALESCE(i.collector_number, a.collector_number, '0') AS INTEGER) {direction_sql}, "
-            f"COALESCE(CAST(COALESCE(i.collector_number, a.collector_number) AS TEXT), '') COLLATE NOCASE {direction_sql}"
-        )
+
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_inventory import fetch_inventory_page_rows
+
+        conn = connect_app_database()
+        try:
+            rows, all_count_rows, page_limit_in_sql = fetch_inventory_page_rows(
+                conn,
+                search,
+                owner_filter,
+                finish_filter,
+                sort_key,
+                direction,
+                type_filter,
+                color_filter,
+                location_filter,
+                vending_filter,
+                limit=limit,
+                offset=offset,
+            )
+        finally:
+            conn.close()
     else:
-        order_sql = f"{sql_sort} {direction_sql}"
+        conn = connect_inventory()
+        join_sql = attach_art_join(conn)
 
-    page_limit_in_sql = limit is not None
-    query = f"""
-        SELECT i.id, i.scryfall_id, i.name, i.set_code, i.rarity,
-               i.price AS scanned_price, i.scan_time,
-               IFNULL(i.quantity, 1) AS quantity, IFNULL(i.owner, 'Me') AS owner,
-               IFNULL(NULLIF(i.finish, ''), 'normal') AS finish,
-               COALESCE(i.collector_number, a.collector_number) AS collector_number,
-               COALESCE(
-                    NULLIF(TRIM(i.tcgplayer_id), ''),
-                    NULLIF(TRIM(a.tcgplayer_id), ''),
-                    NULLIF(TRIM(m.tcgplayer_id), '')
-                 ) AS tcgplayer_id,
-               COALESCE(i.location, 'Free') AS location,
-               i.deck_id, COALESCE(i.for_vending, 0) AS for_vending,
-               cm.type_line, cm.colors_text, cm.mana_value, cm.oracle_text, cm.oracle_id, cm.legalities_json, cm.updated_at AS metadata_updated_at,
-               COALESCE((SELECT GROUP_CONCAT(ca.alias, ' · ') FROM card_aliases ca WHERE ca.scryfall_id = i.scryfall_id), '') AS alternate_names
-        FROM inventory i
-        {join_sql}
-        {price_sort_join}
-        LEFT JOIN card_metadata cm ON cm.scryfall_id = i.scryfall_id
-        {where_sql}
-        ORDER BY {order_sql}, i.id ASC
-    """
-    query_args = list(args)
-    safe_limit = max(1, int(limit)) if limit is not None else None
-    safe_offset = max(0, int(offset))
-    if page_limit_in_sql:
-        query += " LIMIT ? OFFSET ?"
-        query_args.extend([safe_limit, safe_offset])
-    rows = conn.execute(query, query_args).fetchall()
+        where, args, query_order, query_direction = _inventory_filter_parts(
+            search, owner_filter, finish_filter, type_filter, color_filter, location_filter, vending_filter
+        )
+        if query_order:
+            sort_key = query_order
+        if query_direction:
+            direction = query_direction
+        where_sql = "WHERE " + " AND ".join(where) if where else ""
 
-    # Count Normal/Foil copies only for the cards on this page. The old page path
-    # grouped the entire inventory on every query, even when rendering 50–100 rows.
-    page_sids = sorted({str(row["scryfall_id"]).strip() for row in rows if row["scryfall_id"]})
-    if page_limit_in_sql:
-        page_has_null_sid = any(not row["scryfall_id"] for row in rows)
-        count_predicates = []
-        count_args: list[Any] = []
-        if page_sids:
-            marks = ",".join("?" for _ in page_sids)
-            count_predicates.append(f"scryfall_id IN ({marks})")
-            count_args.extend(page_sids)
-        if page_has_null_sid:
-            count_predicates.append("scryfall_id IS NULL")
-        if count_predicates:
-            all_count_rows = conn.execute(
-                f"""SELECT scryfall_id, IFNULL(owner, 'Me') owner,
-                           IFNULL(NULLIF(finish, ''), 'normal') finish,
-                           SUM(IFNULL(quantity,1)) qty
-                    FROM inventory WHERE {' OR '.join(count_predicates)}
-                    GROUP BY scryfall_id, owner, finish""",
-                count_args,
-            ).fetchall()
+        sort_key = sort_key if sort_key in SORTS else "date"
+        direction_sql = "ASC" if direction == "asc" else "DESC"
+        price_sort = sort_key in {"normal", "foil", "price", "value"}
+        price_sort_join = ""
+        sql_sort = SORTS[sort_key] if not price_sort else "i.scan_time"
+        if limit is not None and price_sort:
+            # Current market prices live in a cached JSON snapshot rather than a SQL
+            # table. Load that compact map into a temporary table so price/value sorts
+            # can also LIMIT in SQL instead of enriching and sorting the entire library.
+            conn.execute("CREATE TEMP TABLE inventory_price_sort (tcgplayer_id TEXT PRIMARY KEY, normal_price REAL, foil_price REAL)")
+            conn.executemany(
+                "INSERT INTO inventory_price_sort(tcgplayer_id, normal_price, foil_price) VALUES(?,?,?)",
+                [(str(pid), to_float(values.get("normal")) if values.get("normal") is not None else None,
+                  to_float(values.get("foil")) if values.get("foil") is not None else None)
+                 for pid, values in prices.items() if str(pid).strip()],
+            )
+            joined_tcg_id = "COALESCE(NULLIF(TRIM(i.tcgplayer_id), ''), NULLIF(TRIM(a.tcgplayer_id), ''), NULLIF(TRIM(m.tcgplayer_id), ''))"
+            price_sort_join = f"LEFT JOIN inventory_price_sort ips ON ips.tcgplayer_id = {joined_tcg_id}"
+            finish_expr = "IFNULL(NULLIF(i.finish, ''), 'normal')"
+            quantity_expr = "CASE WHEN i.quantity IS NULL OR CAST(i.quantity AS INTEGER) < 1 THEN 1 ELSE CAST(i.quantity AS INTEGER) END"
+            unit_price_expr = f"CASE WHEN {finish_expr} = 'foil' THEN COALESCE(ips.foil_price, CAST(i.price AS REAL), 0) ELSE COALESCE(ips.normal_price, CAST(i.price AS REAL), 0) END"
+            if sort_key == "normal":
+                sql_sort = "COALESCE(ips.normal_price, 0)"
+            elif sort_key == "foil":
+                sql_sort = "COALESCE(ips.foil_price, 0)"
+            elif sort_key == "price":
+                sql_sort = unit_price_expr
+            else:  # value = current/fallback unit price multiplied by the stored quantity
+                sql_sort = f"({unit_price_expr}) * ({quantity_expr})"
+        if sort_key == "set":
+            order_sql = (
+                f"COALESCE(i.set_code, '') COLLATE NOCASE {direction_sql}, "
+                f"CAST(COALESCE(i.collector_number, a.collector_number, '0') AS INTEGER) {direction_sql}, "
+                f"COALESCE(CAST(COALESCE(i.collector_number, a.collector_number) AS TEXT), '') COLLATE NOCASE {direction_sql}"
+            )
         else:
-            all_count_rows = []
-    else:
-        all_count_rows = conn.execute(
-            """SELECT scryfall_id, IFNULL(owner, 'Me') owner,
-                      IFNULL(NULLIF(finish, ''), 'normal') finish,
-                      SUM(IFNULL(quantity,1)) qty
-               FROM inventory GROUP BY scryfall_id, owner, finish"""
-        ).fetchall()
-    conn.close()
+            order_sql = f"{sql_sort} {direction_sql}"
+
+        page_limit_in_sql = limit is not None
+        query = f"""
+            SELECT i.id, i.scryfall_id, i.name, i.set_code, i.rarity,
+                   i.price AS scanned_price, i.scan_time,
+                   IFNULL(i.quantity, 1) AS quantity, IFNULL(i.owner, 'Me') AS owner,
+                   IFNULL(NULLIF(i.finish, ''), 'normal') AS finish,
+                   COALESCE(i.collector_number, a.collector_number) AS collector_number,
+                   COALESCE(
+                        NULLIF(TRIM(i.tcgplayer_id), ''),
+                        NULLIF(TRIM(a.tcgplayer_id), ''),
+                        NULLIF(TRIM(m.tcgplayer_id), '')
+                     ) AS tcgplayer_id,
+                   COALESCE(i.location, 'Free') AS location,
+                   i.deck_id, COALESCE(i.for_vending, 0) AS for_vending,
+                   cm.type_line, cm.colors_text, cm.mana_value, cm.oracle_text, cm.oracle_id, cm.legalities_json, cm.updated_at AS metadata_updated_at,
+                   COALESCE((SELECT GROUP_CONCAT(ca.alias, ' · ') FROM card_aliases ca WHERE ca.scryfall_id = i.scryfall_id), '') AS alternate_names
+            FROM inventory i
+            {join_sql}
+            {price_sort_join}
+            LEFT JOIN card_metadata cm ON cm.scryfall_id = i.scryfall_id
+            {where_sql}
+            ORDER BY {order_sql}, i.id ASC
+        """
+        query_args = list(args)
+        safe_limit = max(1, int(limit)) if limit is not None else None
+        safe_offset = max(0, int(offset))
+        if page_limit_in_sql:
+            query += " LIMIT ? OFFSET ?"
+            query_args.extend([safe_limit, safe_offset])
+        rows = conn.execute(query, query_args).fetchall()
+
+        # Count Normal/Foil copies only for the cards on this page. The old page path
+        # grouped the entire inventory on every query, even when rendering 50–100 rows.
+        page_sids = sorted({str(row["scryfall_id"]).strip() for row in rows if row["scryfall_id"]})
+        if page_limit_in_sql:
+            page_has_null_sid = any(not row["scryfall_id"] for row in rows)
+            count_predicates = []
+            count_args: list[Any] = []
+            if page_sids:
+                marks = ",".join("?" for _ in page_sids)
+                count_predicates.append(f"scryfall_id IN ({marks})")
+                count_args.extend(page_sids)
+            if page_has_null_sid:
+                count_predicates.append("scryfall_id IS NULL")
+            if count_predicates:
+                all_count_rows = conn.execute(
+                    f"""SELECT scryfall_id, IFNULL(owner, 'Me') owner,
+                               IFNULL(NULLIF(finish, ''), 'normal') finish,
+                               SUM(IFNULL(quantity,1)) qty
+                        FROM inventory WHERE {' OR '.join(count_predicates)}
+                        GROUP BY scryfall_id, owner, finish""",
+                    count_args,
+                ).fetchall()
+            else:
+                all_count_rows = []
+        else:
+            all_count_rows = conn.execute(
+                """SELECT scryfall_id, IFNULL(owner, 'Me') owner,
+                          IFNULL(NULLIF(finish, ''), 'normal') finish,
+                          SUM(IFNULL(quantity,1)) qty
+                   FROM inventory GROUP BY scryfall_id, owner, finish"""
+            ).fetchall()
+        conn.close()
 
     owner_finish: dict[tuple[str, str], dict[str, int]] = {}
     card_finish: dict[str, dict[str, int]] = {}
@@ -1605,6 +1889,32 @@ def inventory_rows(
         key_name = {"normal": "curr_normal", "foil": "curr_foil", "price": "calculated_unit_price", "value": "calculated_total_value"}[sort_key]
         inventory.sort(key=lambda x: to_float(x.get(key_name)), reverse=(direction_sql == "DESC"))
 
+    if (
+        DATABASE_BACKEND == "postgres"
+        and limit is not None
+        and sort_key in {"normal", "foil", "price", "value"}
+        and not page_limit_in_sql
+    ):
+        safe_limit = max(1, int(limit))
+        safe_offset = max(0, int(offset))
+        inventory = inventory[safe_offset:safe_offset + safe_limit]
+
+        owner_totals = {}
+        owner_counts = {}
+        grand_total = 0.0
+        finish_totals = {"normal": 0, "foil": 0}
+
+        for item in inventory:
+            owner = str(item.get("owner") or "Me")
+            finish = item["finish"]
+            quantity = int(item["quantity"] or 0)
+            value = float(item["calculated_total_value"] or 0.0)
+
+            owner_totals[owner] = owner_totals.get(owner, 0.0) + value
+            owner_counts.setdefault(owner, {"normal": 0, "foil": 0})[finish] += quantity
+            finish_totals[finish] += quantity
+            grand_total += value
+
     return inventory, owner_totals, owner_counts, grand_total, finish_totals, len(inventory)
 
 
@@ -1623,6 +1933,112 @@ def _scanner_client_file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _scanner_client_postgres_art_snapshot() -> tuple[Path, dict[str, Any]]:
+    """Build/cache the legacy MTG SQLite artifact from one PostgreSQL snapshot."""
+    global _SCANNER_CLIENT_ART_SNAPSHOT_SIGNATURE
+    global _SCANNER_CLIENT_ART_SNAPSHOT_PATH, _SCANNER_CLIENT_ART_SNAPSHOT_INFO
+
+    from postgres_app_db import connect_app_database
+    from postgres_catalog_export import export_mtg_legacy_art_catalog
+
+    with _SCANNER_CLIENT_ART_SNAPSHOT_LOCK:
+        conn = connect_app_database()
+        try:
+            # All seven legacy tables must reflect the same committed catalog
+            # revision, even if a background Scryfall sync runs concurrently.
+            conn.execute(
+                "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
+            )
+            state = conn.execute(
+                """
+                SELECT revision, updated_at
+                FROM catalog.game_catalog_state
+                WHERE game_id = 'mtg'
+                """
+            ).fetchone()
+            if not state:
+                raise RuntimeError(
+                    "The PostgreSQL MTG catalog state is not initialized."
+                )
+
+            revision = int(state["revision"])
+            updated_at = state["updated_at"]
+            modified_at = (
+                updated_at.isoformat()
+                if hasattr(updated_at, "isoformat")
+                else str(updated_at)
+            )
+            signature = ("postgres", revision, modified_at)
+            cached_path = _SCANNER_CLIENT_ART_SNAPSHOT_PATH
+            if (
+                signature == _SCANNER_CLIENT_ART_SNAPSHOT_SIGNATURE
+                and cached_path is not None
+                and cached_path.is_file()
+            ):
+                return cached_path, dict(_SCANNER_CLIENT_ART_SNAPSHOT_INFO)
+
+            cache_dir = DATA_DIR / ".scanner-client-data"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            snapshot_path = cache_dir / (
+                f"mtg_art_hashes-postgres-rev-{revision}.db"
+            )
+
+            if not snapshot_path.is_file():
+                info = export_mtg_legacy_art_catalog(conn, snapshot_path)
+                if int(info["catalog_revision"]) != revision:
+                    raise RuntimeError(
+                        "The PostgreSQL catalog revision changed during export."
+                    )
+            else:
+                snapshot_db = sqlite3.connect(
+                    f"{snapshot_path.resolve().as_uri()}?mode=ro",
+                    uri=True,
+                    timeout=30,
+                )
+                try:
+                    integrity = snapshot_db.execute(
+                        "PRAGMA integrity_check"
+                    ).fetchone()
+                    if not integrity or str(integrity[0]).lower() != "ok":
+                        raise RuntimeError(
+                            "The cached PostgreSQL art catalog is corrupt."
+                        )
+                    info = {
+                        "catalog_revision": revision,
+                        "source_updated_at": modified_at,
+                        "card_art": int(
+                            snapshot_db.execute(
+                                "SELECT COUNT(*) FROM card_art"
+                            ).fetchone()[0]
+                        ),
+                        "phash": int(
+                            snapshot_db.execute(
+                                """
+                                SELECT COUNT(*) FROM card_art
+                                WHERE phash IS NOT NULL AND trim(phash) <> ''
+                                """
+                            ).fetchone()[0]
+                        ),
+                    }
+                finally:
+                    snapshot_db.close()
+
+            conn.commit()
+        finally:
+            conn.close()
+
+        snapshot_info = {
+            "row_count": int(info["card_art"]),
+            "phash_count": int(info["phash"]),
+            "source_modified_at": str(info["source_updated_at"]),
+            "catalog_revision": int(info["catalog_revision"]),
+        }
+        _SCANNER_CLIENT_ART_SNAPSHOT_SIGNATURE = signature
+        _SCANNER_CLIENT_ART_SNAPSHOT_PATH = snapshot_path
+        _SCANNER_CLIENT_ART_SNAPSHOT_INFO = snapshot_info
+        return snapshot_path, dict(snapshot_info)
+
+
 def _scanner_client_art_snapshot() -> tuple[Path, dict[str, Any]]:
     """Build/cache a consistent SQLite backup of the server's art catalog.
 
@@ -1631,6 +2047,9 @@ def _scanner_client_art_snapshot() -> tuple[Path, dict[str, Any]]:
     """
     global _SCANNER_CLIENT_ART_SNAPSHOT_SIGNATURE
     global _SCANNER_CLIENT_ART_SNAPSHOT_PATH, _SCANNER_CLIENT_ART_SNAPSHOT_INFO
+
+    if DATABASE_BACKEND == "postgres":
+        return _scanner_client_postgres_art_snapshot()
 
     if not DB_ART.is_file():
         raise FileNotFoundError("The production mtg_art_hashes.db file is unavailable.")
@@ -1766,7 +2185,7 @@ def _scanner_client_data_manifest() -> dict[str, Any]:
         files["mtg_art_hashes.db"] = art_entry
     except FileNotFoundError as exc:
         files["mtg_art_hashes.db"] = {"available": False, "reason": str(exc)}
-    except (OSError, sqlite3.Error, RuntimeError) as exc:
+    except Exception as exc:
         app.logger.exception("Could not prepare desktop art-hash download")
         files["mtg_art_hashes.db"] = {"available": False, "reason": str(exc)}
 
@@ -1792,6 +2211,26 @@ def _scanner_client_data_manifest() -> dict[str, Any]:
 
 
 def insert_or_increment_scan(payload: dict[str, Any]) -> dict[str, Any]:
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_scanner import insert_or_increment_scan as save_postgres_scan
+
+        conn = connect_app_database()
+        try:
+            result = save_postgres_scan(
+                conn,
+                payload,
+                parse_quantity=parse_qty,
+                normalize_finish=normalize_finish,
+            )
+            conn.commit()
+            return result
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     scryfall_id = str(payload.get("scryfall_id") or "").strip()
     name = str(payload.get("name") or "").strip()
     if not scryfall_id or not name:
@@ -1968,17 +2407,46 @@ def login_post():
         flash("Too many failed login attempts. Please wait and try again.", "error")
         return redirect(url_for("login", next=next_url))
 
-    conn = connect_inventory()
-    ensure_people_and_auth(conn)
-    user = conn.execute("SELECT username, password_hash, is_admin, role, is_superadmin, active FROM users WHERE username = ?", (username,)).fetchone()
-    if not user or not int(user["active"]) or not check_password_hash(user["password_hash"], password):
-        conn.close()
+    conn = None
+
+    if DATABASE_BACKEND == "postgres":
+        from postgres_auth import get_login_user, update_last_login
+
+        user = get_login_user(username)
+    else:
+        conn = connect_inventory()
+        ensure_people_and_auth(conn)
+        user = conn.execute(
+            """
+            SELECT username, password_hash, is_admin, role,
+                   is_superadmin, active
+            FROM users
+            WHERE username = ?
+            """,
+            (username,),
+        ).fetchone()
+
+    if (
+        not user
+        or not int(user["active"])
+        or not check_password_hash(user["password_hash"], password)
+    ):
+        if conn is not None:
+            conn.close()
         record_failed_login(username)
         flash("Invalid username or password.", "error")
         return redirect(url_for("login", next=next_url))
-    now_iso = datetime.now(timezone.utc).isoformat()
-    conn.execute("UPDATE users SET last_login_at=? WHERE username=?", (now_iso, user["username"]))
-    conn.commit(); conn.close()
+
+    if DATABASE_BACKEND == "postgres":
+        update_last_login(user["username"], datetime.now(timezone.utc))
+    else:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "UPDATE users SET last_login_at=? WHERE username=?",
+            (now_iso, user["username"]),
+        )
+        conn.commit()
+        conn.close()
     clear_login_failures(username)
     session.clear()
     session.permanent = True
@@ -2001,23 +2469,54 @@ def logout():
 @app.get("/admin")
 @admin_required
 def admin_page():
-    conn = connect_inventory()
-    ensure_people_and_auth(conn)
-    people = conn.execute("""SELECT p.id, p.name, p.active, p.created_at,
-               COALESCE((SELECT SUM(IFNULL(i.quantity,1)) FROM inventory i WHERE IFNULL(i.owner, 'Me') = p.name),0) AS card_count
-               FROM people p ORDER BY p.active DESC, p.name COLLATE NOCASE""").fetchall()
-    users = conn.execute(
-        """SELECT u.username, u.is_admin, u.role, u.is_superadmin, u.active,
-                  u.created_at, u.last_login_at, u.person_id, p.name AS person_name
-           FROM users u LEFT JOIN people p ON p.id = u.person_id
-           ORDER BY u.is_superadmin DESC, u.username COLLATE NOCASE"""
-    ).fetchall()
-    conn.close()
+    postgres_mode = DATABASE_BACKEND == "postgres"
+
+    if postgres_mode:
+        from postgres_app_db import connect_app_database
+        from postgres_admin import fetch_admin_page_data
+
+        conn = connect_app_database()
+        try:
+            people, users = fetch_admin_page_data(conn)
+        finally:
+            conn.close()
+    else:
+        conn = connect_inventory()
+        ensure_people_and_auth(conn)
+        people = conn.execute(
+            """
+            SELECT
+                p.id, p.name, p.active, p.created_at,
+                COALESCE(
+                    (
+                        SELECT SUM(IFNULL(i.quantity, 1))
+                        FROM inventory i
+                        WHERE IFNULL(i.owner, 'Me') = p.name
+                    ),
+                    0
+                ) AS card_count
+            FROM people p
+            ORDER BY p.active DESC, p.name COLLATE NOCASE
+            """
+        ).fetchall()
+        users = conn.execute(
+            """
+            SELECT
+                u.username, u.is_admin, u.role, u.is_superadmin, u.active,
+                u.created_at, u.last_login_at, u.person_id,
+                p.name AS person_name
+            FROM users u
+            LEFT JOIN people p ON p.id = u.person_id
+            ORDER BY u.is_superadmin DESC, u.username COLLATE NOCASE
+            """
+        ).fetchall()
+        conn.close()
+
     return render_template(
         "admin.html",
         people=people,
         users=users,
-        account_people=[p for p in people if p["active"]],
+        account_people=[person for person in people if person["active"]],
         admin_user=current_admin(),
         admin_is_superadmin=is_superadmin_user(current_user()),
         message=request.args.get("message", ""),
@@ -2031,6 +2530,7 @@ def admin_page():
         alert_min_percent=PRICE_ALERT_MIN_PERCENT,
         alert_min_owned_gain=PRICE_ALERT_MIN_OWNED_VALUE_GAIN,
         scryfall_bulk_meta=get_scryfall_bulk_meta(),
+        postgres_mode=postgres_mode,
     )
 
 
@@ -2079,7 +2579,25 @@ def build_inventory_search_index(rows: list[dict[str, Any]]) -> list[dict[str, A
     return list(merged.values())
 
 def _catalog_search_results(q: str, limit: int = 12) -> list[dict[str, Any]]:
-    if not q or not DB_ART.exists():
+    if not q:
+        return []
+
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_catalog_search import fetch_catalog_search_results
+
+        try:
+            conn = connect_app_database()
+            try:
+                return fetch_catalog_search_results(conn, q, limit=limit)
+            finally:
+                conn.close()
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Card catalog search failed: {exc}") from exc
+
+    if not DB_ART.exists():
         return []
 
     contains = _like_pattern(q)
@@ -2158,6 +2676,23 @@ def search_suggest():
     if len(q) < 2:
         return jsonify({"success": True, "results": []})
 
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_inventory_search import fetch_inventory_search_suggestions
+
+        conn = connect_app_database()
+        try:
+            results = fetch_inventory_search_suggestions(
+                conn,
+                q,
+                owner=owner,
+                limit=12,
+            )
+        finally:
+            conn.close()
+
+        return jsonify({"success": True, "results": results})
+
     contains = _like_pattern(q)
     prefix = _prefix_pattern(q)
     conn = connect_inventory()
@@ -2218,13 +2753,33 @@ def list_aliases():
     scryfall_id = str(request.args.get("scryfall_id") or "").strip()
     if not scryfall_id:
         return jsonify({"success": True, "aliases": []})
-    conn = connect_inventory()
-    rows = conn.execute(
-        "SELECT id, alias, created_at FROM card_aliases WHERE scryfall_id = ? ORDER BY alias COLLATE NOCASE",
-        (scryfall_id,),
-    ).fetchall()
-    conn.close()
-    return jsonify({"success": True, "aliases": [dict(r) for r in rows]})
+
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_aliases import fetch_aliases
+
+        conn = connect_app_database()
+        try:
+            rows = fetch_aliases(conn, scryfall_id)
+        finally:
+            conn.close()
+    else:
+        conn = connect_inventory()
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, alias, created_at
+                FROM card_aliases
+                WHERE scryfall_id = ?
+                ORDER BY alias COLLATE NOCASE
+                """,
+                (scryfall_id,),
+            ).fetchall()
+            rows = [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+    return jsonify({"success": True, "aliases": rows})
 
 
 @app.post("/admin/aliases")
@@ -2233,34 +2788,78 @@ def add_alias():
     scryfall_id = str(request.form.get("scryfall_id") or "").strip()[:80]
     alias = " ".join(str(request.form.get("alias") or "").strip().split())[:200]
     if not scryfall_id or not alias:
-        return redirect(url_for("admin_page", message="Choose a card and enter an alternate name."))
-    conn = connect_inventory()
-    try:
-        # Require the card to exist in inventory so aliases cannot become orphaned.
-        exists = conn.execute("SELECT 1 FROM inventory WHERE scryfall_id = ? LIMIT 1", (scryfall_id,)).fetchone()
-        if not exists:
-            return redirect(url_for("admin_page", message="That card is not in your inventory."))
-        conn.execute("INSERT OR IGNORE INTO card_aliases(scryfall_id, alias) VALUES (?,?)", (scryfall_id, alias))
-        conn.commit()
-    finally:
-        conn.close()
-    return redirect(url_for("admin_page", message=f'Alternate name added: {alias}'))
+        return redirect(
+            url_for("admin_page", message="Choose a card and enter an alternate name.")
+        )
+
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_aliases import add_alias as add_postgres_alias
+
+        conn = connect_app_database()
+        try:
+            exists = add_postgres_alias(conn, scryfall_id, alias)
+            if not exists:
+                return redirect(
+                    url_for("admin_page", message="That card is not in your inventory.")
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    else:
+        conn = connect_inventory()
+        try:
+            # Require the card to exist in inventory so aliases cannot become orphaned.
+            exists = conn.execute(
+                "SELECT 1 FROM inventory WHERE scryfall_id = ? LIMIT 1",
+                (scryfall_id,),
+            ).fetchone()
+            if not exists:
+                return redirect(
+                    url_for("admin_page", message="That card is not in your inventory.")
+                )
+            conn.execute(
+                "INSERT OR IGNORE INTO card_aliases(scryfall_id, alias) VALUES (?,?)",
+                (scryfall_id, alias),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    return redirect(
+        url_for("admin_page", message=f"Alternate name added: {alias}")
+    )
 
 
 @app.delete("/admin/aliases/<int:alias_id>")
 @admin_required
 def delete_alias(alias_id: int):
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_aliases import delete_alias as delete_postgres_alias
+
+        conn = connect_app_database()
+        try:
+            deleted = delete_postgres_alias(conn, alias_id)
+            conn.commit()
+        finally:
+            conn.close()
+        return jsonify({"success": bool(deleted)})
+
     conn = connect_inventory()
-    cur = conn.execute("DELETE FROM card_aliases WHERE id = ?", (alias_id,))
-    conn.commit()
-    conn.close()
-    return jsonify({"success": cur.rowcount > 0})
+    try:
+        cur = conn.execute("DELETE FROM card_aliases WHERE id = ?", (alias_id,))
+        conn.commit()
+        deleted = cur.rowcount > 0
+    finally:
+        conn.close()
+    return jsonify({"success": deleted})
 
 
 @app.post("/admin/manual_add")
 @admin_required
 def manual_add():
-    """Add a card directly to inventory, optionally using metadata from the local catalog."""
+    """Add a card directly to inventory, optionally using local catalog metadata."""
     name = str(request.form.get("name") or "").strip()[:200]
     if not name:
         return redirect(url_for("admin_page", message="Card name is required."))
@@ -2283,48 +2882,136 @@ def manual_add():
     price = str(request.form.get("price") or "0.00").strip()[:32]
     location = str(request.form.get("location") or "Free").strip()[:120] or "Free"
 
-    conn = connect_inventory()
-    ensure_people_and_auth(conn)
-    valid_owner = conn.execute("SELECT 1 FROM people WHERE name = ? AND active=1", (owner,)).fetchone()
-    if not valid_owner:
-        conn.close()
-        return redirect(url_for("admin_page", message="Choose an active owner."))
+    if DATABASE_BACKEND == "postgres":
+        conn = None
+        try:
+            from postgres_app_db import connect_app_database
+            from postgres_manual_add import add_manual_card
 
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        existing = None
-        if scryfall_id:
-            existing = conn.execute(
-                """SELECT id, quantity FROM inventory
-                   WHERE scryfall_id = ? AND owner = ? AND IFNULL(NULLIF(finish,''),'normal') = ?
-                     AND COALESCE(location,'Free') = ? AND deck_id IS NULL
-                     AND COALESCE(for_vending,0) = 0
-                   ORDER BY id LIMIT 1""",
-                (scryfall_id, owner, finish, location),
+            conn = connect_app_database()
+            result = add_manual_card(
+                conn,
+                name=name,
+                owner=owner,
+                finish=finish,
+                quantity=qty,
+                scryfall_id=scryfall_id,
+                set_code=set_code,
+                collector_number=collector_number,
+                rarity=rarity,
+                tcgplayer_id=tcgplayer_id,
+                price=price,
+                location=location,
+            )
+            if result == "invalid_owner":
+                conn.rollback()
+                return redirect(
+                    url_for("admin_page", message="Choose an active owner.")
+                )
+            conn.commit()
+        except Exception as exc:
+            if conn is not None:
+                conn.rollback()
+            return redirect(
+                url_for("admin_page", message=f"Manual add failed: {exc}")
+            )
+        finally:
+            if conn is not None:
+                conn.close()
+    else:
+        conn = connect_inventory()
+        try:
+            ensure_people_and_auth(conn)
+            valid_owner = conn.execute(
+                "SELECT 1 FROM people WHERE name = ? AND active=1",
+                (owner,),
             ).fetchone()
-        if existing:
-            new_qty = int(existing["quantity"] or 0) + qty
-            conn.execute(
-                """UPDATE inventory SET quantity=?, price=?, set_code=COALESCE(NULLIF(?,''),set_code),
-                   rarity=COALESCE(NULLIF(?,''),rarity), collector_number=COALESCE(?,collector_number),
-                   tcgplayer_id=COALESCE(?,tcgplayer_id), scan_time=? WHERE id=?""",
-                (new_qty, price, set_code, rarity, collector_number, tcgplayer_id, datetime.now(timezone.utc).isoformat(), existing["id"]),
+            if not valid_owner:
+                return redirect(
+                    url_for("admin_page", message="Choose an active owner.")
+                )
+
+            conn.execute("BEGIN IMMEDIATE")
+            existing = None
+            if scryfall_id:
+                existing = conn.execute(
+                    """
+                    SELECT id, quantity
+                    FROM inventory
+                    WHERE scryfall_id = ?
+                      AND owner = ?
+                      AND IFNULL(NULLIF(finish, ''), 'normal') = ?
+                      AND COALESCE(location, 'Free') = ?
+                      AND deck_id IS NULL
+                      AND COALESCE(for_vending, 0) = 0
+                    ORDER BY id
+                    LIMIT 1
+                    """,
+                    (scryfall_id, owner, finish, location),
+                ).fetchone()
+
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE inventory
+                    SET quantity = ?,
+                        price = ?,
+                        set_code = COALESCE(NULLIF(?, ''), set_code),
+                        rarity = COALESCE(NULLIF(?, ''), rarity),
+                        collector_number = COALESCE(?, collector_number),
+                        tcgplayer_id = COALESCE(?, tcgplayer_id),
+                        scan_time = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        int(existing["quantity"] or 0) + qty,
+                        price,
+                        set_code,
+                        rarity,
+                        collector_number,
+                        tcgplayer_id,
+                        datetime.now(timezone.utc).isoformat(),
+                        existing["id"],
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO inventory (
+                        scryfall_id, name, set_code, rarity, price, owner,
+                        quantity, scan_time, finish, collector_number,
+                        tcgplayer_id, location, for_vending
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        scryfall_id or None,
+                        name,
+                        set_code,
+                        rarity,
+                        price,
+                        owner,
+                        qty,
+                        datetime.now(timezone.utc).isoformat(),
+                        finish,
+                        collector_number,
+                        tcgplayer_id,
+                        location,
+                        0,
+                    ),
+                )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            return redirect(
+                url_for("admin_page", message=f"Manual add failed: {exc}")
             )
-        else:
-            conn.execute(
-                """INSERT INTO inventory
-                   (scryfall_id,name,set_code,rarity,price,owner,quantity,scan_time,finish,collector_number,tcgplayer_id,location,for_vending)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (scryfall_id or None, name, set_code, rarity, price, owner, qty,
-                 datetime.now(timezone.utc).isoformat(), finish, collector_number, tcgplayer_id, location, 0),
-            )
-        conn.commit()
-    except Exception as exc:
-        conn.rollback()
-        conn.close()
-        return redirect(url_for("admin_page", message=f"Manual add failed: {exc}"))
-    conn.close()
-    return redirect(url_for("admin_page", message=f"Added {qty} × {name} ({finish})."))
+        finally:
+            conn.close()
+
+    return redirect(
+        url_for("admin_page", message=f"Added {qty} × {name} ({finish}).")
+    )
 
 
 @app.post("/admin/people")
@@ -2333,29 +3020,30 @@ def add_person():
     name = str(request.form.get("name") or "").strip()[:100]
     if not name:
         return redirect(url_for("admin_page"))
-    conn = connect_inventory()
-    ensure_people_and_auth(conn)
-    try:
-        conn.execute("INSERT INTO people(name, active) VALUES (?,1)", (name,))
-        conn.commit()
-    except sqlite3.IntegrityError:
-        conn.execute("UPDATE people SET active=1 WHERE name = ?", (name,))
-        conn.commit()
-    finally:
-        conn.close()
+
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_people import add_person as postgres_add_person
+
+        conn = connect_app_database()
+        try:
+            postgres_add_person(conn, name)
+            conn.commit()
+        finally:
+            conn.close()
+    else:
+        conn = connect_inventory()
+        ensure_people_and_auth(conn)
+        try:
+            conn.execute("INSERT INTO people(name, active) VALUES (?, 1)", (name,))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.execute("UPDATE people SET active = 1 WHERE name = ?", (name,))
+            conn.commit()
+        finally:
+            conn.close()
+
     return redirect(url_for("admin_page", message=f"Added {name}"))
-
-
-@app.post("/admin/people/<int:person_id>/toggle")
-@admin_required
-def toggle_person(person_id: int):
-    conn = connect_inventory()
-    row = conn.execute("SELECT active FROM people WHERE id = ?", (person_id,)).fetchone()
-    if row:
-        conn.execute("UPDATE people SET active = ? WHERE id = ?", (0 if row["active"] else 1, person_id))
-        conn.commit()
-    conn.close()
-    return redirect(url_for("admin_page"))
 
 
 @app.post("/admin/people/<int:person_id>/rename")
@@ -2363,81 +3051,259 @@ def toggle_person(person_id: int):
 def rename_person(person_id: int):
     name = str(request.form.get("name") or "").strip()[:100]
     if name:
-        conn = connect_inventory()
+        if DATABASE_BACKEND == "postgres":
+            from postgres_app_db import connect_app_database
+            from postgres_people import rename_person as postgres_rename_person
+
+            conn = connect_app_database()
+            try:
+                postgres_rename_person(conn, person_id, name)
+                conn.commit()
+            finally:
+                conn.close()
+        else:
+            conn = connect_inventory()
+            try:
+                old = conn.execute(
+                    "SELECT name FROM people WHERE id = ?",
+                    (person_id,),
+                ).fetchone()
+                conn.execute(
+                    "UPDATE people SET name = ? WHERE id = ?",
+                    (name, person_id),
+                )
+                if old:
+                    conn.execute(
+                        "UPDATE inventory SET owner = ? WHERE owner = ?",
+                        (name, old["name"]),
+                    )
+                conn.commit()
+            except sqlite3.IntegrityError:
+                pass
+            finally:
+                conn.close()
+
+    return redirect(url_for("admin_page"))
+
+
+@app.post("/admin/people/<int:person_id>/toggle")
+@admin_required
+def toggle_person(person_id: int):
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_people import toggle_person as postgres_toggle_person
+
+        conn = connect_app_database()
         try:
-            old = conn.execute("SELECT name FROM people WHERE id = ?", (person_id,)).fetchone()
-            conn.execute("UPDATE people SET name = ? WHERE id = ?", (name, person_id))
-            if old:
-                conn.execute("UPDATE inventory SET owner = ? WHERE owner = ?", (name, old["name"]))
+            postgres_toggle_person(conn, person_id)
             conn.commit()
-        except sqlite3.IntegrityError:
-            pass
         finally:
             conn.close()
+    else:
+        conn = connect_inventory()
+        try:
+            row = conn.execute(
+                "SELECT active FROM people WHERE id = ?",
+                (person_id,),
+            ).fetchone()
+            if row:
+                conn.execute(
+                    "UPDATE people SET active = ? WHERE id = ?",
+                    (0 if row["active"] else 1, person_id),
+                )
+                conn.commit()
+        finally:
+            conn.close()
+
     return redirect(url_for("admin_page"))
 
 
 @app.post("/admin/people/<int:person_id>/delete")
 @admin_required
 def delete_person(person_id: int):
-    """Permanently remove a person. Cards may be transferred to another active owner.
+    """Delete a person without discarding inventory or account relationships."""
+    transfer_to = " ".join(
+        str(request.form.get("transfer_to") or "").strip().split()
+    )[:100]
 
-    We never silently discard inventory. If the person still owns cards, the form
-    must provide another active owner to receive them before the people record is
-    deleted. Existing locations/deck assignments and finish quantities are preserved.
-    """
-    transfer_to = " ".join(str(request.form.get("transfer_to") or "").strip().split())[:100]
+    if DATABASE_BACKEND == "postgres":
+        conn = None
+        try:
+            from postgres_app_db import connect_app_database
+            from postgres_people import delete_person as postgres_delete_person
+
+            conn = connect_app_database()
+            result = postgres_delete_person(conn, person_id, transfer_to)
+            status = result["status"]
+
+            if status == "needs_transfer":
+                conn.rollback()
+                return redirect(
+                    url_for(
+                        "admin_page",
+                        message=(
+                            f"{result['name']} still owns {result['quantity']} card(s). "
+                            "Choose another active owner to transfer them to before deleting."
+                        ),
+                    )
+                )
+            if status == "invalid_target":
+                conn.rollback()
+                return redirect(
+                    url_for(
+                        "admin_page",
+                        message="Choose an active owner for the inventory transfer.",
+                    )
+                )
+            if status == "not_found":
+                conn.rollback()
+                return redirect(
+                    url_for("admin_page", message="Person not found.")
+                )
+
+            conn.commit()
+            message = f"Deleted {result['name']} permanently."
+            if result["quantity"] > 0:
+                message += (
+                    f" Transferred {result['quantity']} card(s) "
+                    f"to {result['target_name']}."
+                )
+            return redirect(url_for("admin_page", message=message))
+        except Exception as exc:
+            if conn is not None:
+                conn.rollback()
+            return redirect(
+                url_for("admin_page", message=f"Could not delete person: {exc}")
+            )
+        finally:
+            if conn is not None:
+                conn.close()
+
     conn = connect_inventory()
     ensure_people_and_auth(conn)
     try:
-        person = conn.execute("SELECT id, name FROM people WHERE id = ?", (person_id,)).fetchone()
+        person = conn.execute(
+            "SELECT id, name FROM people WHERE id = ?",
+            (person_id,),
+        ).fetchone()
         if not person:
-            return redirect(url_for("admin_page", message="Person not found."))
+            return redirect(
+                url_for("admin_page", message="Person not found.")
+            )
+
         name = str(person["name"])
-        total_qty = int(conn.execute("SELECT COALESCE(SUM(IFNULL(quantity,1)),0) FROM inventory WHERE owner = ?", (name,)).fetchone()[0] or 0)
+        total_qty = int(
+            conn.execute(
+                """
+                SELECT COALESCE(SUM(IFNULL(quantity, 1)), 0)
+                FROM inventory
+                WHERE owner = ?
+                """,
+                (name,),
+            ).fetchone()[0] or 0
+        )
+        target_name = None
+
         if total_qty > 0:
             if not transfer_to or transfer_to.casefold() == name.casefold():
-                return redirect(url_for("admin_page", message=f"{name} still owns {total_qty} card(s). Choose another active owner to transfer them to before deleting."))
-            target = conn.execute("SELECT name FROM people WHERE name = ? AND active = 1", (transfer_to,)).fetchone()
+                return redirect(
+                    url_for(
+                        "admin_page",
+                        message=(
+                            f"{name} still owns {total_qty} card(s). "
+                            "Choose another active owner to transfer them to before deleting."
+                        ),
+                    )
+                )
+
+            target = conn.execute(
+                "SELECT name FROM people WHERE name = ? AND active = 1",
+                (transfer_to,),
+            ).fetchone()
             if not target:
-                return redirect(url_for("admin_page", message="Choose an active owner for the inventory transfer."))
+                return redirect(
+                    url_for(
+                        "admin_page",
+                        message="Choose an active owner for the inventory transfer.",
+                    )
+                )
+
             target_name = str(target["name"])
             conn.execute("BEGIN IMMEDIATE")
-            # Transfer rows one-by-one so exact printing, finish, location, and deck membership stay intact.
-            rows = conn.execute("SELECT * FROM inventory WHERE owner = ? ORDER BY id", (name,)).fetchall()
+            rows = conn.execute(
+                "SELECT * FROM inventory WHERE owner = ? ORDER BY id",
+                (name,),
+            ).fetchall()
+
             for row in rows:
                 finish = normalize_finish(row["finish"])
                 location = str(row["location"] or "Free")
                 deck_id = row["deck_id"]
                 scryfall_id = row["scryfall_id"]
+
                 existing = conn.execute(
-                    """SELECT id, quantity FROM inventory
-                       WHERE owner = ? AND IFNULL(scryfall_id,'') = IFNULL(?, '')
-                         AND IFNULL(NULLIF(finish,''),'normal') = ?
-                         AND COALESCE(location,'Free') = ?
-                         AND IFNULL(deck_id,0) = IFNULL(?,0)
-                         AND COALESCE(for_vending,0) = COALESCE(?,0)
-                       ORDER BY id LIMIT 1""",
-                    (target_name, scryfall_id, finish, location, deck_id, row["for_vending"]),
+                    """
+                    SELECT id, quantity
+                    FROM inventory
+                    WHERE owner = ?
+                      AND IFNULL(scryfall_id, '') = IFNULL(?, '')
+                      AND IFNULL(NULLIF(finish, ''), 'normal') = ?
+                      AND COALESCE(location, 'Free') = ?
+                      AND IFNULL(deck_id, 0) = IFNULL(?, 0)
+                      AND COALESCE(for_vending, 0) = COALESCE(?, 0)
+                    ORDER BY id
+                    LIMIT 1
+                    """,
+                    (
+                        target_name,
+                        scryfall_id,
+                        finish,
+                        location,
+                        deck_id,
+                        row["for_vending"],
+                    ),
                 ).fetchone()
+
                 qty = int(row["quantity"] or 0)
                 if existing:
-                    conn.execute("UPDATE inventory SET quantity = quantity + ? WHERE id = ?", (qty, existing["id"]))
-                    conn.execute("DELETE FROM inventory WHERE id = ?", (row["id"],))
+                    conn.execute(
+                        "UPDATE inventory SET quantity = quantity + ? WHERE id = ?",
+                        (qty, existing["id"]),
+                    )
+                    conn.execute(
+                        "DELETE FROM inventory WHERE id = ?",
+                        (row["id"],),
+                    )
                 else:
-                    conn.execute("UPDATE inventory SET owner = ? WHERE id = ?", (target_name, row["id"]))
+                    conn.execute(
+                        "UPDATE inventory SET owner = ? WHERE id = ?",
+                        (target_name, row["id"]),
+                    )
         else:
             conn.execute("BEGIN IMMEDIATE")
-        # Deleting a person safely removes the account's default-owner mapping;
-        # it never deletes or transfers the web account itself.
-        conn.execute("UPDATE users SET person_id = NULL WHERE person_id = ?", (person_id,))
+
+        conn.execute(
+            "UPDATE users SET person_id = NULL WHERE person_id = ?",
+            (person_id,),
+        )
         conn.execute("DELETE FROM people WHERE id = ?", (person_id,))
         conn.commit()
-        msg = f"Deleted {name} permanently." + (f" Transferred {total_qty} card(s) to {target_name}." if total_qty > 0 else "")
-        return redirect(url_for("admin_page", message=msg))
+
+        message = f"Deleted {name} permanently."
+        if total_qty > 0:
+            message += f" Transferred {total_qty} card(s) to {target_name}."
+        return redirect(url_for("admin_page", message=message))
     except Exception as exc:
         conn.rollback()
-        return redirect(url_for("admin_page", message=f"Could not delete {name if 'name' in locals() else 'person'}: {exc}"))
+        return redirect(
+            url_for(
+                "admin_page",
+                message=(
+                    f"Could not delete "
+                    f"{name if 'name' in locals() else 'person'}: {exc}"
+                ),
+            )
+        )
     finally:
         conn.close()
 
@@ -2445,6 +3311,10 @@ def delete_person(person_id: int):
 @app.post("/admin/users")
 @superadmin_required
 def add_user():
+    if DATABASE_BACKEND == "postgres":
+        from postgres_user_admin import handle_add_user
+        return handle_add_user()
+
     username = " ".join(str(request.form.get("username") or "").strip().split())[:150]
     password = str(request.form.get("password") or "")
     role = str(request.form.get("role") or "vendor").strip().lower()
@@ -2479,6 +3349,10 @@ def add_user():
 @superadmin_required
 def assign_user_person(username: str):
     """Associate a web account with its default collection person, or clear the link."""
+    if DATABASE_BACKEND == "postgres":
+        from postgres_user_admin import handle_assign_user_person
+        return handle_assign_user_person(username)
+
     username = str(username)[:150]
     raw_person_id = str(request.form.get("person_id") or "").strip()
     person_id: int | None = None
@@ -2519,6 +3393,10 @@ def assign_user_person(username: str):
 @app.post("/admin/users/<username>/toggle")
 @superadmin_required
 def toggle_user(username):
+    if DATABASE_BACKEND == "postgres":
+        from postgres_user_admin import handle_toggle_user
+        return handle_toggle_user(username)
+
     username = str(username)[:150]
     current = current_user()
     if current and str(current["username"]).casefold() == username.casefold():
@@ -2539,6 +3417,10 @@ def toggle_user(username):
 @app.post("/admin/users/<username>/password")
 @superadmin_required
 def admin_reset_user_password(username):
+    if DATABASE_BACKEND == "postgres":
+        from postgres_user_admin import handle_admin_reset_user_password
+        return handle_admin_reset_user_password(username)
+
     password=str(request.form.get("password") or "")
     if len(password)<12:
         return redirect(url_for("admin_page", message="Password must be at least 12 characters."))
@@ -2549,6 +3431,10 @@ def admin_reset_user_password(username):
 @app.post("/admin/users/<username>/rename")
 @superadmin_required
 def rename_user(username):
+    if DATABASE_BACKEND == "postgres":
+        from postgres_user_admin import handle_rename_user
+        return handle_rename_user(username)
+
     old_username = str(username)[:150]
     new_username = " ".join(str(request.form.get("new_username") or "").strip().split())[:150]
     if len(new_username) < 2:
@@ -2578,6 +3464,10 @@ def rename_user(username):
 @app.post("/admin/users/<username>/role")
 @superadmin_required
 def change_user_role(username):
+    if DATABASE_BACKEND == "postgres":
+        from postgres_user_admin import handle_change_user_role
+        return handle_change_user_role(username)
+
     username = str(username)[:150]
     role = str(request.form.get("role") or "vendor").strip().lower()
     if role not in {"admin", "vendor"}:
@@ -2604,6 +3494,10 @@ def change_user_role(username):
 @app.post("/admin/users/<username>/delete")
 @superadmin_required
 def delete_user(username):
+    if DATABASE_BACKEND == "postgres":
+        from postgres_user_admin import handle_delete_user
+        return handle_delete_user(username)
+
     username = str(username)[:150]
     current = current_user()
     if current and str(current["username"]).casefold() == username.casefold():
@@ -2631,6 +3525,10 @@ def delete_user(username):
 @app.post("/admin/password")
 @admin_required
 def change_password():
+    if DATABASE_BACKEND == "postgres":
+        from postgres_user_admin import handle_change_password
+        return handle_change_password()
+
     password = str(request.form.get("password") or "")
     if len(password) < 12:
         return redirect(url_for("admin_page", message="Password must be at least 12 characters."))
@@ -2654,6 +3552,24 @@ def set_counts():
         return jsonify({"success": False, "error": "Counts must be whole numbers."}), 400
     if not scryfall_id or not owner:
         return jsonify({"success": False, "error": "scryfall_id and owner are required"}), 400
+
+    if DATABASE_BACKEND == "postgres":
+        from postgres_inventory_counts import set_inventory_finish_counts
+
+        updated = set_inventory_finish_counts(
+            scryfall_id=scryfall_id,
+            owner=owner,
+            normal_qty=normal_qty,
+            foil_qty=foil_qty,
+            normalize_finish=normalize_finish,
+        )
+        if not updated:
+            return jsonify({
+                "success": False,
+                "error": "No inventory row found for this card and owner.",
+            }), 404
+        return jsonify({"success": True})
+
     conn = connect_inventory()
     ensure_people_and_auth(conn)
     rows = conn.execute("SELECT id, finish FROM inventory WHERE scryfall_id = ? AND owner = ?", (scryfall_id, owner)).fetchall()
@@ -2771,15 +3687,27 @@ def index():
         limit=page_size, offset=(page - 1) * page_size,
     )
 
-    conn = connect_inventory()
-    owners = active_people(conn)
-    decks = conn.execute("SELECT id, name FROM decklists ORDER BY name COLLATE NOCASE").fetchall()
-    total_rows = conn.execute("SELECT COUNT(*) FROM inventory").fetchone()[0]
-    total_cards = conn.execute("SELECT COALESCE(SUM(IFNULL(quantity,1)),0) FROM inventory").fetchone()[0]
-    locations = [r[0] for r in conn.execute("SELECT DISTINCT COALESCE(location, 'Free') FROM inventory ORDER BY COALESCE(location, 'Free') COLLATE NOCASE").fetchall()]
-    if "Free" not in locations:
-        locations.insert(0, "Free")
-    conn.close()
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_inventory import fetch_inventory_page_options
+
+        conn = connect_app_database()
+        try:
+            owners, decks, total_rows, total_cards, locations = (
+                fetch_inventory_page_options(conn)
+            )
+        finally:
+            conn.close()
+    else:
+        conn = connect_inventory()
+        owners = active_people(conn)
+        decks = conn.execute("SELECT id, name FROM decklists ORDER BY name COLLATE NOCASE").fetchall()
+        total_rows = conn.execute("SELECT COUNT(*) FROM inventory").fetchone()[0]
+        total_cards = conn.execute("SELECT COALESCE(SUM(IFNULL(quantity,1)),0) FROM inventory").fetchone()[0]
+        locations = [r[0] for r in conn.execute("SELECT DISTINCT COALESCE(location, 'Free') FROM inventory ORDER BY COALESCE(location, 'Free') COLLATE NOCASE").fetchall()]
+        if "Free" not in locations:
+            locations.insert(0, "Free")
+        conn.close()
 
     return render_template(
         "index.html",
@@ -2816,6 +3744,7 @@ def index():
         scryfall_catalog_meta=get_scryfall_catalog_meta(),
         price_history_days=PRICE_HISTORY_DAYS,
         scanner_api_enabled=bool(SCANNER_API_KEY),
+        postgres_mode=(DATABASE_BACKEND == 'postgres'),
         admin_user=current_admin(),
         admin_is_superadmin=is_superadmin_user(current_user()),
     )
@@ -2837,12 +3766,16 @@ def update_inventory():
         value = parse_qty(value)
     elif field == "owner":
         value = str(value or "Me").strip()[:100] or "Me"
-        conn_check = connect_inventory()
-        ensure_people_and_auth(conn_check)
-        valid = conn_check.execute("SELECT 1 FROM people WHERE name = ? AND active=1", (value,)).fetchone()
-        conn_check.close()
-        if not valid:
-            return jsonify({"success": False, "error": "Owner is not active"}), 400
+        if DATABASE_BACKEND != "postgres":
+            conn_check = connect_inventory()
+            ensure_people_and_auth(conn_check)
+            valid = conn_check.execute(
+                "SELECT 1 FROM people WHERE name = ? AND active=1",
+                (value,),
+            ).fetchone()
+            conn_check.close()
+            if not valid:
+                return jsonify({"success": False, "error": "Owner is not active"}), 400
     elif field == "finish":
         value = normalize_finish(value)
     elif field == "location":
@@ -2862,6 +3795,29 @@ def update_inventory():
                 value = int(value)
             except (TypeError, ValueError):
                 return jsonify({"success": False, "error": "Invalid deck."}), 400
+
+    if DATABASE_BACKEND == "postgres":
+        from postgres_inventory_update import update_inventory_field
+
+        result = update_inventory_field(
+            item_id=item_id,
+            field=field,
+            value=value,
+            normalize_finish=normalize_finish,
+        )
+
+        if result == "updated":
+            return jsonify({"success": True})
+        if result == "invalid_owner":
+            return jsonify({"success": False, "error": "Owner is not active"}), 400
+        if result == "deck_not_found":
+            return jsonify({"success": False, "error": "Deck not found."}), 404
+        if result == "vending_conflict":
+            return jsonify({
+                "success": False,
+                "error": "Cards assigned to a deck cannot be marked for vending. Unassign them first.",
+            }), 400
+        return jsonify({"success": False, "error": "Row not found"}), 404
 
     conn = connect_inventory()
     try:
@@ -2898,6 +3854,22 @@ def update_inventory():
 @admin_required
 def bulk_update_inventory():
     data = request.get_json(silent=True) or {}
+
+    if DATABASE_BACKEND == "postgres":
+        from postgres_inventory_bulk import apply_bulk_inventory_update
+
+        result = apply_bulk_inventory_update(data)
+        if result["status"] == "error":
+            return jsonify({
+                "success": False,
+                "error": result["error"],
+            }), int(result["http_status"])
+
+        return jsonify({
+            "success": True,
+            "updated": int(result["updated"]),
+            "selected": int(result["selected"]),
+        })
     raw_ids = data.get("ids")
     if not isinstance(raw_ids, list):
         return jsonify({"success": False, "error": "Select one or more inventory rows."}), 400
@@ -3010,6 +3982,46 @@ def move_quantity():
     if move_qty < 1:
         return jsonify({"success": False, "error": "Quantity must be at least 1."}), 400
 
+    if DATABASE_BACKEND == "postgres":
+        from postgres_inventory_move import move_inventory_quantity
+
+        try:
+            result, details = move_inventory_quantity(
+                item_id=item_id,
+                move_qty=move_qty,
+                destination=destination,
+                normalize_finish=normalize_finish,
+            )
+        except Exception as exc:
+            return jsonify({"success": False, "error": str(exc)}), 500
+
+        if result == "not_found":
+            return jsonify({
+                "success": False,
+                "error": "Inventory row not found.",
+            }), 404
+
+        if result == "quantity_exceeded":
+            source_qty, source_location = details
+            return jsonify({
+                "success": False,
+                "error": (
+                    f"You only have {source_qty} copy/copies "
+                    f"in {source_location}."
+                ),
+            }), 400
+
+        if result == "same_location":
+            return jsonify({
+                "success": True,
+                "message": "Destination is the current location.",
+            })
+
+        return jsonify({
+            "success": True,
+            "message": f"Moved {move_qty} card(s) to {destination}.",
+        })
+
     conn = connect_inventory()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -3072,6 +4084,12 @@ def move_quantity():
 @app.delete("/delete/<int:item_id>")
 @admin_required
 def delete_item(item_id: int):
+    if DATABASE_BACKEND == "postgres":
+        from postgres_inventory_delete import delete_inventory_item
+
+        deleted = delete_inventory_item(item_id=item_id)
+        return jsonify({"success": deleted})
+
     conn = connect_inventory()
     cur = conn.execute("DELETE FROM inventory WHERE id = ?", (item_id,))
     conn.commit()
@@ -3120,6 +4138,46 @@ def import_csv():
             return "foil" if foil_flag else "normal"
         finish_value = get(row, "finish", "printing", "treatment", default="normal")
         return normalize_finish(finish_value)
+
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_inventory_import import import_inventory_csv
+
+        conn = None
+        try:
+            conn = connect_app_database()
+            result = import_inventory_csv(
+                conn,
+                reader,
+                owner_override=owner_override,
+                location_override=location_override,
+                parse_quantity=parse_qty,
+                normalize_finish=normalize_finish,
+                parse_foil_flag=_import_foil_flag,
+            )
+            conn.commit()
+        except ValueError as exc:
+            if conn is not None:
+                conn.rollback()
+            return jsonify({"success": False, "error": str(exc)}), 400
+        except Exception:
+            if conn is not None:
+                conn.rollback()
+            app.logger.exception("PostgreSQL CSV import failed")
+            return jsonify({
+                "success": False,
+                "error": "CSV import failed; no rows were imported.",
+            }), 500
+        finally:
+            if conn is not None:
+                conn.close()
+
+        if result["unknown_owners"]:
+            result["note"] = (
+                "Rows for unknown owners were skipped. "
+                "Add those people in Admin, then re-import."
+            )
+        return jsonify({"success": True, **result})
 
     conn = connect_inventory()
     ensure_people_and_auth(conn)
@@ -3238,6 +4296,16 @@ def export_manabox_csv():
 def api_people():
     if not SCANNER_API_KEY or not check_api_key():
         return jsonify({"success": False, "error": "Invalid scanner API key"}), 401
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_scanner import fetch_active_people
+
+        conn = connect_app_database()
+        try:
+            return jsonify({"success": True, "people": fetch_active_people(conn)})
+        finally:
+            conn.close()
+
     conn = connect_inventory()
     ensure_people_and_auth(conn)
     people = active_people(conn)
@@ -3274,6 +4342,11 @@ def _scanner_person_options(conn: sqlite3.Connection, people_rows=None) -> list[
 
 
 def _scanner_location_options(conn: sqlite3.Connection, owner: str | None = None) -> list[dict[str, str]]:
+    if DATABASE_BACKEND == "postgres":
+        from postgres_scanner import fetch_location_options
+
+        return fetch_location_options(conn, owner)
+
     # Physical locations are plain labels in the current inventory schema (there is
     # no location table/foreign key). Return observed names, with a stable ID equal
     # to the name so clients can carry the choice without guessing numeric IDs.
@@ -3297,6 +4370,16 @@ def api_scanner_options():
     """Compatibility options route for the trusted desktop scanner API key."""
     if not SCANNER_API_KEY or not check_api_key():
         return jsonify({"success": False, "error": "Invalid scanner API key"}), 401
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_scanner import fetch_scanner_options
+
+        conn = connect_app_database()
+        try:
+            return jsonify({"success": True, **fetch_scanner_options(conn)})
+        finally:
+            conn.close()
+
     conn = connect_inventory()
     try:
         ensure_people_and_auth(conn)
@@ -3323,6 +4406,13 @@ def _scanner_user_is_admin(user) -> bool:
 
 
 def _scanner_mobile_authorized_people(conn: sqlite3.Connection, user) -> list[dict[str, Any]]:
+    if DATABASE_BACKEND == "postgres":
+        from postgres_scanner import fetch_mobile_authorized_people
+
+        return fetch_mobile_authorized_people(
+            conn, user, is_admin=_scanner_user_is_admin(user)
+        )
+
     ensure_people_and_auth(conn)
     if _scanner_user_is_admin(user):
         rows = conn.execute(
@@ -3381,7 +4471,7 @@ def api_scanner_client_data_download(file_name: str):
             source_path, _info = _scanner_client_art_snapshot()
         except FileNotFoundError as exc:
             return jsonify({"success": False, "error": str(exc)}), 404
-        except (OSError, sqlite3.Error, RuntimeError) as exc:
+        except Exception as exc:
             app.logger.exception("Could not prepare desktop art-hash download")
             return jsonify({"success": False, "error": f"Could not prepare art-hash database: {exc}"}), 503
     elif file_name == "tcg_prices.json":
@@ -3483,8 +4573,15 @@ def api_scanner_mobile_options():
         return jsonify({"success": False, "error": "Login required"}), 401
     if str(user["role"] or "").lower() == "vendor" and not _scanner_user_is_admin(user):
         return jsonify({"success": False, "error": "Vendor accounts cannot scan cards."}), 403
-    conn = connect_inventory()
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+
+        conn = connect_app_database()
+    else:
+        conn = connect_inventory()
     try:
+        if DATABASE_BACKEND != "postgres":
+            ensure_people_and_auth(conn)
         people = _scanner_mobile_authorized_people(conn, user)
         if not people and not _scanner_user_is_admin(user):
             return jsonify({"success": False, "error": "This account is not linked to an active person. Ask the CardScanner administrator to map your account to a person."}), 403
@@ -3524,27 +4621,45 @@ def _scanner_mobile_parse_footer_metadata(metadata_text: str) -> dict[str, str |
     """
     result: dict[str, str | None] = {"set_code": None, "collector_number": None}
     raw = str(metadata_text or "")[:500]
-    if not raw or not DB_ART.is_file():
+    if not raw:
         return result
 
     global _SCANNER_MOBILE_SET_CODES_CACHE_KEY, _SCANNER_MOBILE_SET_CODES_CACHE
-    try:
-        stat = DB_ART.stat()
-        cache_key = (str(DB_ART.resolve()), stat.st_mtime_ns, stat.st_size)
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_scanner import fetch_catalog_set_codes
+
+        conn = connect_app_database()
+        try:
+            revision, codes = fetch_catalog_set_codes(conn)
+        finally:
+            conn.close()
+        cache_key = ("postgres", revision)
         if cache_key == _SCANNER_MOBILE_SET_CODES_CACHE_KEY and _SCANNER_MOBILE_SET_CODES_CACHE:
             codes = _SCANNER_MOBILE_SET_CODES_CACHE
         else:
-            con = sqlite3.connect(DB_ART)
-            try:
-                codes = {str(row[0] or "").strip().lower() for row in con.execute(
-                    "SELECT DISTINCT LOWER(TRIM(set_code)) FROM card_art WHERE COALESCE(set_code,'') <> ''"
-                ).fetchall()}
-            finally:
-                con.close()
             _SCANNER_MOBILE_SET_CODES_CACHE_KEY = cache_key
             _SCANNER_MOBILE_SET_CODES_CACHE = codes
-    except (sqlite3.Error, OSError):
-        return result
+    else:
+        if not DB_ART.is_file():
+            return result
+        try:
+            stat = DB_ART.stat()
+            cache_key = (str(DB_ART.resolve()), stat.st_mtime_ns, stat.st_size)
+            if cache_key == _SCANNER_MOBILE_SET_CODES_CACHE_KEY and _SCANNER_MOBILE_SET_CODES_CACHE:
+                codes = _SCANNER_MOBILE_SET_CODES_CACHE
+            else:
+                con = sqlite3.connect(DB_ART)
+                try:
+                    codes = {str(row[0] or "").strip().lower() for row in con.execute(
+                        "SELECT DISTINCT LOWER(TRIM(set_code)) FROM card_art WHERE COALESCE(set_code,'') <> ''"
+                    ).fetchall()}
+                finally:
+                    con.close()
+                _SCANNER_MOBILE_SET_CODES_CACHE_KEY = cache_key
+                _SCANNER_MOBILE_SET_CODES_CACHE = codes
+        except (sqlite3.Error, OSError):
+            return result
 
     # Current cards print e.g. ``C 0065`` on one row and ``FRA • EN`` below it.
     # Older/bundled OCR engines sometimes flatten the two rows into one string;
@@ -3673,6 +4788,22 @@ def _scanner_mobile_easyocr_footer_text(ocr_rows: Any, image_width: int, image_h
 def _scanner_mobile_cached_card_names() -> list[str]:
     """Distinct local card names for fuzzy OCR correction, cached until DB changes."""
     global _SCANNER_MOBILE_NAMES_CACHE_KEY, _SCANNER_MOBILE_NAMES_CACHE
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_scanner import fetch_catalog_card_names
+
+        conn = connect_app_database()
+        try:
+            revision, names = fetch_catalog_card_names(conn)
+        finally:
+            conn.close()
+        cache_key = ("postgres", revision)
+        if cache_key == _SCANNER_MOBILE_NAMES_CACHE_KEY and _SCANNER_MOBILE_NAMES_CACHE:
+            return _SCANNER_MOBILE_NAMES_CACHE
+        _SCANNER_MOBILE_NAMES_CACHE_KEY = cache_key
+        _SCANNER_MOBILE_NAMES_CACHE = names
+        return names
+
     if not DB_ART.is_file():
         return []
     try:
@@ -3865,11 +4996,58 @@ def _scanner_mobile_get_easyocr_reader():
 
 
 def _scanner_mobile_catalog_search(name: str, set_code: str = "", collector_number: str = "", limit: int = 40) -> list[dict[str, Any]]:
-    """Search the local art/catalog SQLite DB; intentionally never calls Scryfall.
+    """Search the local art/catalog database; intentionally never calls Scryfall.
 
     An empty name is allowed only when both set and collector number are known,
     enabling the footer OCR to recover a printing even when title OCR is poor.
     """
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_scanner import fetch_mobile_catalog_search_results
+
+        conn = connect_app_database()
+        try:
+            normalized_set = re.sub(
+                r"[^a-z0-9-]", "", str(set_code or "").strip().lower()
+            )[:12]
+            normalized_collector = (
+                _scanner_mobile_normalize_collector_number(str(collector_number))
+                if collector_number
+                else ""
+            )
+            rows = fetch_mobile_catalog_search_results(
+                conn, name, normalized_set, normalized_collector, limit=limit
+            )
+        finally:
+            conn.close()
+
+        price_snapshot = get_tcg_prices()
+        results = []
+        for row in rows:
+            sid = str(row["scryfall_id"] or "").strip()
+            tcg_id = _normalize_tcgplayer_id(row["tcgplayer_id"])
+            price = price_snapshot.get(str(tcg_id), {}) if tcg_id else {}
+            results.append({
+                "id": sid,
+                "scryfall_id": sid,
+                "name": row["name"],
+                "set": row["set_code"],
+                "set_code": row["set_code"],
+                "rarity": row["rarity"],
+                "tcgplayer_id": tcg_id,
+                "collector_number": row["collector_number"],
+                "set_name": row["set_name"],
+                "finishes": row["finishes"],
+                "prices": {"usd": price.get("normal"), "usd_foil": price.get("foil")},
+                "price_source": (
+                    "local_tcgcsv"
+                    if price.get("normal") is not None or price.get("foil") is not None
+                    else "local_catalog"
+                ),
+                "image_url": scryfall_image_url(sid),
+            })
+        return results
+
     if not DB_ART.is_file():
         raise FileNotFoundError(f"Local card catalog is unavailable at {DB_ART}.")
     name = str(name or "").strip()[:120]
@@ -4177,17 +5355,28 @@ def api_scanner_mobile_price(scryfall_id: str):
     # resolve_scryfall_mapping() here: that helper can make a live Scryfall request
     # when a mapping is missing, which would create network traffic while scanning.
     sid = str(scryfall_id or "").strip()
-    conn = connect_inventory()
-    try:
-        ensure_card_mapping_table(conn)
-        cached = conn.execute(
-            "SELECT tcgplayer_id FROM card_price_mapping WHERE scryfall_id=?", (sid,)
-        ).fetchone()
-        tcg_id = _normalize_tcgplayer_id(cached[0]) if cached else None
-    finally:
-        conn.close()
-    if not tcg_id:
-        tcg_id = _art_db_tcgplayer_id(sid)
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_scanner import resolve_printing_price_mapping
+
+        conn = connect_app_database()
+        try:
+            mapping = resolve_printing_price_mapping(conn, sid)
+            tcg_id = _normalize_tcgplayer_id(mapping.get("tcgplayer_id"))
+        finally:
+            conn.close()
+    else:
+        conn = connect_inventory()
+        try:
+            ensure_card_mapping_table(conn)
+            cached = conn.execute(
+                "SELECT tcgplayer_id FROM card_price_mapping WHERE scryfall_id=?", (sid,)
+            ).fetchone()
+            tcg_id = _normalize_tcgplayer_id(cached[0]) if cached else None
+        finally:
+            conn.close()
+        if not tcg_id:
+            tcg_id = _art_db_tcgplayer_id(sid)
     prices = get_tcg_prices().get(str(tcg_id), {"normal": None, "foil": None}) if tcg_id else {"normal": None, "foil": None}
     return jsonify({"success": True, "scryfall_id": sid, "tcgplayer_id": tcg_id,
                     "normal": prices.get("normal"), "foil": prices.get("foil"),
@@ -4212,9 +5401,14 @@ def api_scanner_mobile_scan():
     except (TypeError, ValueError):
         return jsonify({"success": False, "error": "Select a person/collection before saving."}), 400
 
-    conn = connect_inventory()
-    try:
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+
+        conn = connect_app_database()
+    else:
+        conn = connect_inventory()
         ensure_people_and_auth(conn)
+    try:
         people = _scanner_mobile_authorized_people(conn, user)
         selected = next((p for p in people if int(p["id"]) == person_id), None)
         if selected is None:
@@ -4268,11 +5462,21 @@ def api_price_by_card(scryfall_id: str):
         return jsonify({"success": False, "error": "SCANNER_API_KEY is not configured on the server"}), 503
     if not check_api_key():
         return jsonify({"success": False, "error": "Invalid scanner API key"}), 401
-    conn = connect_inventory()
-    try:
-        mapping = resolve_scryfall_mapping(scryfall_id, conn)
-    finally:
-        conn.close()
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_scanner import resolve_printing_price_mapping
+
+        conn = connect_app_database()
+        try:
+            mapping = resolve_printing_price_mapping(conn, scryfall_id)
+        finally:
+            conn.close()
+    else:
+        conn = connect_inventory()
+        try:
+            mapping = resolve_scryfall_mapping(scryfall_id, conn)
+        finally:
+            conn.close()
     tcg_id = mapping.get("tcgplayer_id")
     prices = get_tcg_prices().get(str(tcg_id), {"normal": None, "foil": None}) if tcg_id else {"normal": None, "foil": None}
     meta = get_price_meta()
@@ -4309,19 +5513,43 @@ def api_price(tcg_id: str):
 
     # If the live snapshot has no entry but history exists, return the newest
     # historical point so the scanner can still display a known price.
-    if normal is None and foil is None and DB_INV.exists():
+    if normal is None and foil is None:
         try:
-            conn = connect_inventory()
-            row = conn.execute(
-                "SELECT normal_price, foil_price FROM price_history WHERE tcgplayer_id = ? ORDER BY captured_at DESC LIMIT 1",
-                (key,),
-            ).fetchone()
-            conn.close()
+            if DATABASE_BACKEND == "postgres":
+                from postgres_app_db import connect_app_database
+
+                conn = connect_app_database()
+                try:
+                    row = conn.execute(
+                        """
+                        SELECT normal_price, foil_price
+                        FROM catalog.product_price_history
+                        WHERE game_id = 'mtg'
+                          AND provider_id = 'tcgcsv'
+                          AND external_product_id = ?
+                        ORDER BY captured_at DESC, id DESC
+                        LIMIT 1
+                        """,
+                        (key,),
+                    ).fetchone()
+                finally:
+                    conn.close()
+            elif DB_INV.exists():
+                conn = connect_inventory()
+                try:
+                    row = conn.execute(
+                        "SELECT normal_price, foil_price FROM price_history WHERE tcgplayer_id = ? ORDER BY captured_at DESC LIMIT 1",
+                        (key,),
+                    ).fetchone()
+                finally:
+                    conn.close()
+            else:
+                row = None
             if row:
                 normal = row[0]
                 foil = row[1]
-        except sqlite3.Error:
-            pass
+        except Exception:
+            app.logger.exception("Historical price fallback failed for %s", key)
 
     return jsonify({
         "success": True,
@@ -4385,6 +5613,34 @@ def api_price_history(tcg_id: str):
     days = max(3, min(days, PRICE_HISTORY_DAYS))
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_price_history import fetch_price_history, has_owned_product
+
+        conn = connect_app_database()
+        try:
+            user = current_user()
+            is_vendor_only = bool(
+                user
+                and not int(user["is_admin"])
+                and str(user["role"]).lower() == "vendor"
+            )
+            if not has_owned_product(conn, tcg_id, vending_only=is_vendor_only):
+                return jsonify({
+                    "success": False,
+                    "error": "That card is not in the inventory",
+                }), 404
+            points = fetch_price_history(conn, tcg_id, days)
+        finally:
+            conn.close()
+        return jsonify({
+            "success": True,
+            "tcgplayer_id": tcg_id,
+            "days": days,
+            "timezone": DISPLAY_TIMEZONE,
+            "points": points,
+        })
+
     conn = connect_inventory()
     join_sql = attach_art_join(conn)
     user = current_user()
@@ -4432,6 +5688,28 @@ def api_price_history(tcg_id: str):
             for r in rows
         ],
     })
+
+
+def send_discord_message(payload: dict[str, Any]) -> tuple[bool, str]:
+    """Post one JSON message to the configured Discord webhook."""
+    webhook_url = DISCORD_WEBHOOK_URL
+    if not webhook_url:
+        return False, "DISCORD_WEBHOOK_URL is not configured."
+
+    try:
+        response = requests.post(
+            webhook_url,
+            json=payload,
+            headers={"User-Agent": "CardScanner/1.0"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        return True, ""
+    except requests.RequestException as exc:
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+        if status_code is not None:
+            return False, f"Discord webhook returned HTTP {int(status_code)}."
+        return False, "Could not reach the Discord webhook."
 
 
 @app.post("/admin/test_discord")
@@ -4951,38 +6229,57 @@ def save_deck(
 
 def deck_comparison(deck_id: int, owner: str, fuzzy: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Compare deck requirements against every owner's inventory, ordered by allocation priority."""
-    conn = connect_inventory()
-    deck = conn.execute("SELECT name,person_name FROM decklists WHERE id=?", (deck_id,)).fetchone()
-    if not deck:
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_decks import fetch_deck_comparison_data
+
+        conn = connect_app_database(expected_database="cardscanner_dev")
+        try:
+            deck, cards, inventory = fetch_deck_comparison_data(conn, deck_id)
+        finally:
+            conn.close()
+    else:
+        conn = connect_inventory()
+        deck = conn.execute(
+            "SELECT name,person_name FROM decklists WHERE id=?", (deck_id,)
+        ).fetchone()
+
+        if deck:
+            cards = conn.execute(
+                """SELECT dc.id,dc.name,dc.quantity,dc.scryfall_id,dc.set_code,dc.collector_number,
+                          dc.category,dc.finish,COALESCE(dc.any_printing,0) AS any_printing,
+                          COALESCE(NULLIF(dc.tcgplayer_id,''), NULLIF(cpm.tcgplayer_id,'')) AS resolved_tcgplayer_id,
+                          dc.role_tags_json,cm.oracle_id AS card_oracle_id
+                   FROM deck_cards dc
+                   LEFT JOIN card_metadata cm ON cm.scryfall_id=dc.scryfall_id
+                   LEFT JOIN card_price_mapping cpm ON cpm.scryfall_id=dc.scryfall_id
+                   WHERE dc.deck_id=?
+                   ORDER BY CASE WHEN LOWER(COALESCE(dc.category,''))='commander' THEN 0 ELSE 1 END,
+                            dc.category, dc.name COLLATE NOCASE, dc.id""",
+                (deck_id,),
+            ).fetchall()
+            inventory = conn.execute(
+                """SELECT i.id,i.scryfall_id,i.name,i.set_code,i.collector_number,i.finish,
+                          i.owner,i.quantity,i.deck_id,COALESCE(i.for_vending,0) AS for_vending,
+                          COALESCE(i.location,'Free') AS location,i.tcgplayer_id,
+                          cm.oracle_id AS oracle_id,d.name AS assigned_deck_name
+                   FROM inventory i
+                   LEFT JOIN card_metadata cm ON cm.scryfall_id=i.scryfall_id
+                   LEFT JOIN decklists d ON d.id=i.deck_id
+                   ORDER BY i.id"""
+            ).fetchall()
+        else:
+            cards = []
+            inventory = []
+
         conn.close()
+
+    if not deck:
         return [], {"required": 0, "owned": 0, "assigned": 0, "free_available": 0,
                     "other_deck_available": 0, "other_people_available": 0,
                     "missing": 0, "complete": False, "fuzzy": fuzzy}
+
     deck_owner = str(deck["person_name"] or owner or "Jonathan").strip()
-    cards = conn.execute(
-        """SELECT dc.id,dc.name,dc.quantity,dc.scryfall_id,dc.set_code,dc.collector_number,
-                  dc.category,dc.finish,COALESCE(dc.any_printing,0) AS any_printing,
-                  COALESCE(NULLIF(dc.tcgplayer_id,''), NULLIF(cpm.tcgplayer_id,'')) AS resolved_tcgplayer_id,
-                  dc.role_tags_json,cm.oracle_id AS card_oracle_id
-           FROM deck_cards dc
-           LEFT JOIN card_metadata cm ON cm.scryfall_id=dc.scryfall_id
-           LEFT JOIN card_price_mapping cpm ON cpm.scryfall_id=dc.scryfall_id
-           WHERE dc.deck_id=?
-           ORDER BY CASE WHEN LOWER(COALESCE(dc.category,''))='commander' THEN 0 ELSE 1 END,
-                    dc.category, dc.name COLLATE NOCASE, dc.id""",
-        (deck_id,),
-    ).fetchall()
-    inventory = conn.execute(
-        """SELECT i.id,i.scryfall_id,i.name,i.set_code,i.collector_number,i.finish,
-                  i.owner,i.quantity,i.deck_id,COALESCE(i.for_vending,0) AS for_vending,
-                  COALESCE(i.location,'Free') AS location,i.tcgplayer_id,
-                  cm.oracle_id AS oracle_id,d.name AS assigned_deck_name
-           FROM inventory i
-           LEFT JOIN card_metadata cm ON cm.scryfall_id=i.scryfall_id
-           LEFT JOIN decklists d ON d.id=i.deck_id
-           ORDER BY i.id"""
-    ).fetchall()
-    conn.close()
 
     remaining = {int(row["id"]): max(0, int(row["quantity"] or 0)) for row in inventory}
     out: list[dict[str, Any]] = []
@@ -5077,10 +6374,13 @@ def deck_comparison(deck_id: int, owner: str, fuzzy: bool = False) -> tuple[list
         row_status_label = {"current": "In this deck", "free": "Free copy available",
                             "other-deck": "In another deck", "other-owner": "Other person's copy",
                             "missing": "Need to buy"}[row_status]
-        try:
-            role_tags = _clean_tag_list(json.loads(card.get("role_tags_json") or "[]"))
-        except (TypeError, json.JSONDecodeError):
-            role_tags = []
+        raw_role_tags = card.get("role_tags_json")
+        if isinstance(raw_role_tags, (str, bytes, bytearray)):
+            try:
+                raw_role_tags = json.loads(raw_role_tags)
+            except (TypeError, json.JSONDecodeError):
+                raw_role_tags = []
+        role_tags = _clean_tag_list(raw_role_tags)
         out.append({
             "id": card["id"], "name": card["name"], "category": card.get("category") or "Mainboard",
             "role_tags": role_tags, "required": required, "owned": owned, "assigned": assigned,
@@ -5114,22 +6414,41 @@ def decks_page():
     query = str(request.args.get("q") or "").strip().casefold()
     selected_tag = str(request.args.get("tag") or "").strip()
     selected_person = str(request.args.get("person") or "").strip()
-    conn = connect_inventory()
-    rows = conn.execute(
-        "SELECT d.*,COALESCE(SUM(dc.quantity),0) card_count FROM decklists d "
-        "LEFT JOIN deck_cards dc ON dc.deck_id=d.id GROUP BY d.id ORDER BY d.updated_at DESC, d.name COLLATE NOCASE"
-    ).fetchall()
-    owners = active_people(conn)
-    locations = [r[0] for r in conn.execute("SELECT DISTINCT COALESCE(location,'Free') FROM inventory ORDER BY COALESCE(location,'Free') COLLATE NOCASE").fetchall()]
-    conn.close()
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_decks import fetch_deck_list_data
+
+        conn = connect_app_database(expected_database="cardscanner_dev")
+        try:
+            rows, owners, locations = fetch_deck_list_data(conn)
+        finally:
+            conn.close()
+    else:
+        conn = connect_inventory()
+        rows = conn.execute(
+            "SELECT d.*,COALESCE(SUM(dc.quantity),0) card_count FROM decklists d "
+            "LEFT JOIN deck_cards dc ON dc.deck_id=d.id "
+            "GROUP BY d.id ORDER BY d.updated_at DESC, d.name COLLATE NOCASE"
+        ).fetchall()
+        owners = active_people(conn)
+        locations = [
+            r[0] for r in conn.execute(
+                "SELECT DISTINCT COALESCE(location,'Free') FROM inventory "
+                "ORDER BY COALESCE(location,'Free') COLLATE NOCASE"
+            ).fetchall()
+        ]
+        conn.close()
     decks: list[dict[str, Any]] = []
     all_tags: dict[str, str] = {}
     for row in rows:
         deck = dict(row)
-        try:
-            deck["tags"] = _clean_tag_list(json.loads(deck.get("tags_json") or "[]"))
-        except (TypeError, json.JSONDecodeError):
-            deck["tags"] = []
+        raw_tags = deck.get("tags_json")
+        if isinstance(raw_tags, (str, bytes, bytearray)):
+            try:
+                raw_tags = json.loads(raw_tags or "[]")
+            except (TypeError, json.JSONDecodeError):
+                raw_tags = []
+        deck["tags"] = _clean_tag_list(raw_tags)
         for tag in deck["tags"]:
             all_tags.setdefault(tag.casefold(), tag)
         deck["cover_url"] = deck_cover_url(deck)
@@ -5156,6 +6475,7 @@ def decks_page():
         message=request.args.get("message", ""), q=request.args.get("q", ""), selected_tag=selected_tag,
         selected_person=selected_person, tag_options=sorted(all_tags.values(), key=str.casefold),
         person_options=person_options, default_person=default_person,
+        postgres_mode=(DATABASE_BACKEND == "postgres"),
     )
 
 
@@ -5233,6 +6553,60 @@ def decks_import():
             raise ValueError("No cards were found in the decklist.")
         deck_tags = _clean_tag_list(imported_tags + _clean_tag_list(request.form.get("deck_tags") or ""))
         deck_person = str(request.form.get("deck_person") or "").strip()[:100]
+
+        if DATABASE_BACKEND == "postgres":
+            from postgres_app_db import connect_app_database
+            from postgres_decks import fetch_active_people
+            from postgres_deck_import import import_deck
+
+            conn = connect_app_database(expected_database="cardscanner_dev")
+            try:
+                people = set(fetch_active_people(conn))
+                if deck_person and deck_person not in people:
+                    raise ValueError(
+                        f"Deck for person '{deck_person}' is not an active person."
+                    )
+                if not deck_person:
+                    user = current_user()
+                    mapped = str(user["person_name"] or "").strip() if user else ""
+                    deck_person = (
+                        mapped if mapped in people
+                        else ("Jonathan" if "Jonathan" in people else (owner if owner in people else ""))
+                    )
+                if not deck_person:
+                    raise ValueError(
+                        "A deck owner is required. Add or activate a person named Jonathan first."
+                    )
+
+                deck_db_id = import_deck(
+                    conn,
+                    name=deck_name,
+                    source=source,
+                    source_url=source_url or None,
+                    cards=cards,
+                    deck_tags=deck_tags,
+                    person_name=deck_person,
+                    add_inventory=add_inventory,
+                    inventory_owner=owner,
+                    location=location or "Free",
+                    store_free=store_free,
+                    price_snapshot=get_tcg_prices() if add_inventory else {},
+                    normalize_finish=normalize_finish,
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+            return redirect(url_for(
+                "deck_view",
+                deck_id=deck_db_id,
+                owner=deck_person or owner,
+                message=f"Imported {deck_name} with {len(deck_tags)} deck tag(s).",
+            ))
+
         conn = connect_inventory()
         people = set(active_people(conn))
         conn.close()
@@ -5310,6 +6684,34 @@ def update_deck_settings(deck_id: int):
         return redirect(url_for("deck_view", deck_id=deck_id, message="Deck name cannot be empty."))
     tags = _clean_tag_list(request.form.get("deck_tags") or "")
     person_name = str(request.form.get("person_name") or "").strip()[:100]
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_deck_lifecycle import update_deck_settings as pg_update_deck_settings
+
+        conn = connect_app_database()
+        status = "error"
+        try:
+            status = pg_update_deck_settings(
+                conn, deck_id, name=name, tags=tags, person_name=person_name
+            )
+            if status == "updated":
+                conn.commit()
+                message = "Deck settings saved."
+            else:
+                conn.rollback()
+                message = (
+                    "Every deck must have exactly one active owner."
+                    if status == "invalid_owner"
+                    else "Deck not found."
+                )
+        except Exception as exc:
+            conn.rollback()
+            app.logger.exception("PostgreSQL deck settings update failed")
+            message = f"Could not save deck settings: {exc}"
+        finally:
+            conn.close()
+        return redirect(url_for("deck_view" if status != "deck_not_found" else "decks_page",
+                                deck_id=deck_id, message=message))
     conn = connect_inventory()
     if not conn.execute("SELECT 1 FROM decklists WHERE id=?", (deck_id,)).fetchone():
         conn.close()
@@ -5361,6 +6763,91 @@ def _valid_cover_upload(upload) -> tuple[bytes, str]:
 @admin_required
 def update_deck_cover(deck_id: int):
     mode = str(request.form.get("cover_mode") or "none").strip().lower()
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+
+        conn = connect_app_database()
+        new_filename = None
+        old_filename = None
+        try:
+            deck = conn.execute(
+                """
+                SELECT cover_filename
+                FROM app.decklists
+                WHERE id = ? AND game_id = 'mtg'
+                FOR UPDATE
+                """,
+                (deck_id,),
+            ).fetchone()
+            if not deck:
+                conn.rollback()
+                return redirect(url_for("decks_page", message="Deck not found."))
+            old_filename = deck["cover_filename"]
+            if mode == "keep":
+                conn.rollback()
+                return redirect(url_for("deck_view", deck_id=deck_id, message="Current cover kept."))
+
+            new_filename = None
+            cover_scryfall_id = None
+            cover_printing_id = None
+            if mode == "upload":
+                raw, ext = _valid_cover_upload(request.files.get("cover_image"))
+                new_filename = f"{uuid4().hex}.{ext}"
+                (deck_cover_directory() / new_filename).write_bytes(raw)
+            elif mode == "card":
+                cover_scryfall_id = str(
+                    request.form.get("cover_scryfall_id") or ""
+                ).strip()
+                row = conn.execute(
+                    """
+                    SELECT e.printing_id
+                    FROM app.deck_cards AS dc
+                    LEFT JOIN catalog.external_ids AS e
+                      ON e.game_id = dc.game_id
+                     AND e.provider_id = 'scryfall'
+                     AND e.entity_type = 'printing'
+                     AND e.external_id_type = 'scryfall_id'
+                     AND e.external_id = dc.scryfall_id
+                    WHERE dc.deck_id = ?
+                      AND dc.game_id = 'mtg'
+                      AND dc.scryfall_id = ?
+                    LIMIT 1
+                    """,
+                    (deck_id, cover_scryfall_id),
+                ).fetchone()
+                if not cover_scryfall_id or not row:
+                    raise ValueError("Choose a card printing that is actually in this deck.")
+                cover_printing_id = row["printing_id"]
+            elif mode != "none":
+                raise ValueError("Choose uploaded image, card image, or no cover.")
+
+            conn.execute(
+                """
+                UPDATE app.decklists
+                SET cover_filename = ?, cover_scryfall_id = ?,
+                    cover_printing_id = ?, updated_at = now()
+                WHERE id = ? AND game_id = 'mtg'
+                """,
+                (new_filename, cover_scryfall_id, cover_printing_id, deck_id),
+            )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            if new_filename:
+                try:
+                    (deck_cover_directory() / new_filename).unlink()
+                except OSError:
+                    pass
+            app.logger.warning("PostgreSQL deck cover update failed: %s", exc)
+            return redirect(url_for("deck_view", deck_id=deck_id,
+                                    message=f"Could not update deck cover: {exc}"))
+        finally:
+            conn.close()
+
+        if old_filename and old_filename != new_filename:
+            _remove_deck_cover_file(old_filename)
+        return redirect(url_for("deck_view", deck_id=deck_id, message="Deck cover updated."))
+
     conn = connect_inventory()
     deck = conn.execute("SELECT cover_filename FROM decklists WHERE id=?", (deck_id,)).fetchone()
     if not deck:
@@ -5410,41 +6897,76 @@ def update_deck_cover(deck_id: int):
 @admin_required
 def deck_view(deck_id:int):
     fuzzy = request.args.get("fuzzy", "0").strip().lower() in {"1", "true", "yes", "on"}
-    conn = connect_inventory()
-    deck_row = conn.execute("SELECT * FROM decklists WHERE id=?", (deck_id,)).fetchone()
-    owners = active_people(conn)
-    # A deck created by an older/manual path may still have a NULL owner even
-    # though every deck is now required to have exactly one active owner. Prefer
-    # the signed-in account's linked Person, then Jonathan, then the first active
-    # Person so the fallback follows the same collection defaults as Inventory.
+
     user = current_user()
     mapped_person = str(user["person_name"] or "").strip() if user else ""
-    default_owner = mapped_person if mapped_person in owners else (
-        "Jonathan" if "Jonathan" in owners else (owners[0] if owners else "")
-    )
-    if deck_row and not str(deck_row["person_name"] or "").strip() and default_owner:
-        conn.execute(
-            "UPDATE decklists SET person_name=?, updated_at=? WHERE id=? AND (person_name IS NULL OR TRIM(person_name)='')",
-            (default_owner, datetime.now(timezone.utc).isoformat(), deck_id),
+
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_decks import fetch_deck_detail_data
+
+        conn = connect_app_database(expected_database="cardscanner_dev")
+        try:
+            deck_row, owners, deck_cards_rows = fetch_deck_detail_data(
+                conn, deck_id
+            )
+        finally:
+            conn.close()
+
+        default_owner = mapped_person if mapped_person in owners else (
+            "Jonathan" if "Jonathan" in owners else (owners[0] if owners else "")
         )
-        conn.commit()
-        deck_row = conn.execute("SELECT * FROM decklists WHERE id=?", (deck_id,)).fetchone()
-    deck_cards_rows = conn.execute(
-        "SELECT * FROM deck_cards WHERE deck_id=? ORDER BY CASE WHEN LOWER(COALESCE(category,''))='commander' THEN 0 ELSE 1 END, category, name COLLATE NOCASE, id",
-        (deck_id,),
-    ).fetchall()
-    conn.close()
+    else:
+        conn = connect_inventory()
+        deck_row = conn.execute(
+            "SELECT * FROM decklists WHERE id=?", (deck_id,)
+        ).fetchone()
+        owners = active_people(conn)
+
+        default_owner = mapped_person if mapped_person in owners else (
+            "Jonathan" if "Jonathan" in owners else (owners[0] if owners else "")
+        )
+
+        # Preserve the legacy SQLite fallback. PostgreSQL GET requests remain read-only.
+        if deck_row and not str(deck_row["person_name"] or "").strip() and default_owner:
+            conn.execute(
+                "UPDATE decklists SET person_name=?, updated_at=? "
+                "WHERE id=? AND (person_name IS NULL OR TRIM(person_name)='')",
+                (default_owner, datetime.now(timezone.utc).isoformat(), deck_id),
+            )
+            conn.commit()
+            deck_row = conn.execute(
+                "SELECT * FROM decklists WHERE id=?", (deck_id,)
+            ).fetchone()
+
+        deck_cards_rows = conn.execute(
+            "SELECT * FROM deck_cards WHERE deck_id=? "
+            "ORDER BY CASE WHEN LOWER(COALESCE(category,''))='commander' "
+            "THEN 0 ELSE 1 END, category, name COLLATE NOCASE, id",
+            (deck_id,),
+        ).fetchall()
+        conn.close()
     if not deck_row:
         return redirect(url_for("decks_page", message="Deck not found."))
     deck = dict(deck_row)
-    try: deck["tags"] = _clean_tag_list(json.loads(deck.get("tags_json") or "[]"))
-    except (TypeError, json.JSONDecodeError): deck["tags"] = []
+    raw_tags = deck.get("tags_json")
+    if isinstance(raw_tags, (str, bytes, bytearray)):
+        try:
+            raw_tags = json.loads(raw_tags or "[]")
+        except (TypeError, json.JSONDecodeError):
+            raw_tags = []
+    deck["tags"] = _clean_tag_list(raw_tags)
     deck["cover_url"] = deck_cover_url(deck)
     deck_cards: list[dict[str, Any]] = []
     for row in deck_cards_rows:
         card = dict(row)
-        try: card["role_tags"] = _clean_tag_list(json.loads(card.get("role_tags_json") or "[]"))
-        except (TypeError, json.JSONDecodeError): card["role_tags"] = []
+        raw_role_tags = card.get("role_tags_json")
+        if isinstance(raw_role_tags, (str, bytes, bytearray)):
+            try:
+                raw_role_tags = json.loads(raw_role_tags or "[]")
+            except (TypeError, json.JSONDecodeError):
+                raw_role_tags = []
+        card["role_tags"] = _clean_tag_list(raw_role_tags)
         deck_cards.append(card)
     cover_cards = [card for card in deck_cards if card.get("scryfall_id")]
     owner = str(deck.get("person_name") or default_owner or "Jonathan").strip()
@@ -5456,12 +6978,74 @@ def deck_view(deck_id:int):
         price_summary=price_summary, price_meta=price_meta,
         owners=owners, selected_owner=owner, fuzzy=fuzzy, cover_cards=cover_cards,
         message=request.args.get("message", ""),
+        postgres_mode=(DATABASE_BACKEND == "postgres"),
     )
 
 
 @app.post("/decks/<int:deck_id>/cards/<int:card_id>/edit")
 @admin_required
 def edit_deck_card(deck_id:int, card_id:int):
+    if DATABASE_BACKEND == "postgres":
+        name = " ".join(str(request.form.get("name") or "").strip().split())
+        if not name:
+            return redirect(url_for(
+                "deck_view", deck_id=deck_id,
+                message="Card name cannot be empty.",
+            ))
+
+        try:
+            quantity = max(1, int(request.form.get("quantity") or 1))
+        except (TypeError, ValueError):
+            quantity = 1
+
+        set_code = str(request.form.get("set_code") or "").strip().upper()[:20] or None
+        collector = str(request.form.get("collector_number") or "").strip()[:30] or None
+        category = str(request.form.get("category") or "Mainboard").strip()[:100] or "Mainboard"
+        role_tags = _clean_tag_list(request.form.get("role_tags") or "")
+        finish = normalize_finish(request.form.get("finish"))
+        any_printing = str(request.form.get("any_printing") or "0").strip().lower() in {"1", "true", "yes", "on"}
+        scryfall_id = str(request.form.get("scryfall_id") or "").strip() or None
+        tcgplayer_id = _normalize_tcgplayer_id(request.form.get("tcgplayer_id"))
+
+        from postgres_app_db import connect_app_database
+        from postgres_deck_cards import edit_deck_card as edit_postgres_deck_card
+
+        conn = connect_app_database(expected_database="cardscanner_dev")
+        try:
+            result = edit_postgres_deck_card(
+                conn, deck_id, card_id,
+                {
+                    "name": name,
+                    "quantity": quantity,
+                    "set_code": set_code,
+                    "collector_number": collector,
+                    "category": category,
+                    "role_tags": role_tags,
+                    "finish": finish,
+                    "any_printing": any_printing,
+                    "scryfall_id": scryfall_id,
+                    "tcgplayer_id": tcgplayer_id,
+                },
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        if result["status"] == "deck_not_found":
+            return redirect(url_for("decks_page", message="Deck not found."))
+        if result["status"] == "card_not_found":
+            return redirect(url_for(
+                "deck_view", deck_id=deck_id,
+                message="Deck card not found.",
+            ))
+        return redirect(url_for(
+            "deck_view", deck_id=deck_id,
+            message=f"Updated {result['name']}.",
+        ))
+
     name=" ".join(str(request.form.get("name") or "").strip().split())
     if not name:
         return redirect(url_for("deck_view",deck_id=deck_id,message="Card name cannot be empty."))
@@ -5504,6 +7088,60 @@ def edit_deck_card(deck_id:int, card_id:int):
 @app.post("/decks/<int:deck_id>/cards/add")
 @admin_required
 def add_deck_card(deck_id:int):
+    if DATABASE_BACKEND == "postgres":
+        name = " ".join(str(request.form.get("name") or "").strip().split())
+        if not name:
+            return redirect(url_for(
+                "deck_view", deck_id=deck_id,
+                message="Card name cannot be empty.",
+            ))
+
+        try:
+            quantity = max(1, int(request.form.get("quantity") or 1))
+        except (TypeError, ValueError):
+            quantity = 1
+
+        set_code = str(request.form.get("set_code") or "").strip().upper()[:20] or None
+        collector = str(request.form.get("collector_number") or "").strip()[:30] or None
+        category = str(request.form.get("category") or "Mainboard").strip()[:100] or "Mainboard"
+        role_tags = _clean_tag_list(request.form.get("role_tags") or "")
+        finish = normalize_finish(request.form.get("finish"))
+        tcgplayer_id = _normalize_tcgplayer_id(request.form.get("tcgplayer_id"))
+        scryfall_id = str(request.form.get("scryfall_id") or "").strip() or None
+
+        from postgres_app_db import connect_app_database
+        from postgres_deck_cards import add_deck_card as add_postgres_deck_card
+
+        conn = connect_app_database(expected_database="cardscanner_dev")
+        try:
+            result = add_postgres_deck_card(
+                conn, deck_id,
+                {
+                    "name": name,
+                    "quantity": quantity,
+                    "set_code": set_code,
+                    "collector_number": collector,
+                    "category": category,
+                    "role_tags": role_tags,
+                    "finish": finish,
+                    "scryfall_id": scryfall_id,
+                    "tcgplayer_id": tcgplayer_id,
+                },
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        if result["status"] == "deck_not_found":
+            return redirect(url_for("decks_page", message="Deck not found."))
+        return redirect(url_for(
+            "deck_view", deck_id=deck_id,
+            message=f"Added {result['name']} to the deck.",
+        ))
+
     name=" ".join(str(request.form.get("name") or "").strip().split())
     if not name:
         return redirect(url_for("deck_view",deck_id=deck_id,message="Card name cannot be empty."))
@@ -5532,6 +7170,29 @@ def add_deck_card(deck_id:int):
 @app.post("/decks/<int:deck_id>/cards/<int:card_id>/delete")
 @admin_required
 def delete_deck_card(deck_id:int, card_id:int):
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_deck_cards import delete_deck_card as delete_postgres_deck_card
+
+        conn = connect_app_database(expected_database="cardscanner_dev")
+        try:
+            result = delete_postgres_deck_card(conn, deck_id, card_id)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        if result["status"] == "deck_not_found":
+            return redirect(url_for("decks_page", message="Deck not found."))
+        message = (
+            "Removed card from deck."
+            if result["status"] == "deleted"
+            else "Deck card not found."
+        )
+        return redirect(url_for("deck_view", deck_id=deck_id, message=message))
+
     conn=connect_inventory()
     cur=conn.execute("DELETE FROM deck_cards WHERE id=? AND deck_id=?",(card_id,deck_id))
     if cur.rowcount:
@@ -5558,6 +7219,47 @@ def _deck_available_free_rows(conn: sqlite3.Connection, deck_card: sqlite3.Row, 
 @admin_required
 def assign_free_to_deck(deck_id:int):
     fuzzy=str(request.form.get("fuzzy") or "0").strip().lower() in {"1","true","yes","on"}
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_deck_lifecycle import assign_free_to_deck as pg_assign_free_to_deck
+
+        conn = connect_app_database()
+        owner = ""
+        try:
+            result = pg_assign_free_to_deck(conn, deck_id, fuzzy=fuzzy)
+            if result["status"] == "assigned":
+                conn.commit()
+                owner = result["owner"]
+                moved = int(result["moved"])
+                requested = int(result["requested"])
+                message = (
+                    f"Assigned {moved} card(s) from the unassigned pool to this deck. "
+                    "Physical storage locations were preserved."
+                )
+                if moved < requested:
+                    message += (
+                        f" {requested - moved} still need unassigned copies "
+                        "matching the deck."
+                    )
+            else:
+                conn.rollback()
+                message = (
+                    "Deck not found."
+                    if result["status"] == "deck_not_found"
+                    else "This deck needs an active owner before cards can be assigned."
+                )
+        except Exception as exc:
+            conn.rollback()
+            app.logger.exception("PostgreSQL free-pool deck allocation failed")
+            message = f"Could not assign cards: {exc}"
+        finally:
+            conn.close()
+        return redirect(url_for(
+            "deck_view" if owner or message != "Deck not found." else "decks_page",
+            deck_id=deck_id, owner=owner, fuzzy="1" if fuzzy else "0",
+            message=message,
+        ))
+
     conn=connect_inventory()
     deck=conn.execute("SELECT * FROM decklists WHERE id=?",(deck_id,)).fetchone()
     if not deck:
@@ -5640,6 +7342,49 @@ def move_inventory_to_deck(deck_id: int):
     except (TypeError, ValueError):
         return redirect(url_for("deck_view", deck_id=deck_id, message="Choose a valid inventory copy and quantity."))
     fuzzy = str(request.form.get("fuzzy") or "0").strip().lower() in {"1", "true", "yes", "on"}
+
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_deck_lifecycle import move_inventory_to_deck as pg_move_inventory_to_deck
+
+        conn = connect_app_database()
+        try:
+            result = pg_move_inventory_to_deck(
+                conn, deck_id, inventory_id, quantity, fuzzy=fuzzy
+            )
+            if result["status"] == "moved":
+                conn.commit()
+                message = (
+                    f"Moved {result['quantity']} {result['card_name']} copy/copies "
+                    f"into {result['deck_name']}. The previous decklist requirement "
+                    f"remains; {result['previous_deck_name']} will now show the copy "
+                    "as allocated elsewhere."
+                )
+                if result["printing_updated"]:
+                    message += " The deck entry artwork/printing was updated to the copy you selected."
+                if result["any_printing"]:
+                    message += " Its generic basic-land requirement still accepts any art/printing."
+            else:
+                conn.rollback()
+                messages = {
+                    "not_found": "The deck or inventory copy no longer exists.",
+                    "wrong_owner": "Cards owned by another person cannot be moved into this deck automatically.",
+                    "already_assigned": "That copy is already assigned to this deck.",
+                    "insufficient_quantity": f"Only {result.get('available', 0)} copy/copies remain in that inventory row.",
+                    "no_matching_requirement": "That inventory copy does not match a card required by this deck.",
+                    "invalid_quantity": "Choose a valid inventory copy and quantity.",
+                }
+                message = messages.get(result["status"], "Could not move card.")
+        except Exception as exc:
+            conn.rollback()
+            app.logger.exception("PostgreSQL inventory-to-deck move failed")
+            message = f"Could not move card: {exc}"
+        finally:
+            conn.close()
+        return redirect(url_for(
+            "deck_view", deck_id=deck_id,
+            fuzzy="1" if fuzzy else "0", message=message
+        ))
 
     conn = connect_inventory()
     try:
@@ -5732,9 +7477,21 @@ def move_inventory_to_deck(deck_id: int):
 
 @app.get("/decks/<int:deck_id>/missing.csv")
 def deck_missing_csv(deck_id:int):
-    conn=connect_inventory()
-    deck=conn.execute("SELECT person_name FROM decklists WHERE id=?",(deck_id,)).fetchone()
-    conn.close()
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+
+        conn = connect_app_database()
+        try:
+            deck = conn.execute(
+                "SELECT person_name FROM app.decklists WHERE id=? AND game_id='mtg'",
+                (deck_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+    else:
+        conn=connect_inventory()
+        deck=conn.execute("SELECT person_name FROM decklists WHERE id=?",(deck_id,)).fetchone()
+        conn.close()
     if not deck:
         return redirect(url_for("decks_page",message="Deck not found."))
     owner=str(deck["person_name"] or "Jonathan").strip()
@@ -5746,7 +7503,10 @@ def deck_missing_csv(deck_id:int):
     return send_file(io.BytesIO(out.getvalue().encode()),mimetype="text/csv",as_attachment=True,download_name=f"deck_{deck_id}_missing.csv")
 
 
-def refresh_scryfall_metadata(scryfall_id: str, conn: sqlite3.Connection) -> bool:
+def refresh_scryfall_metadata(
+    scryfall_id: str,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
     sid = str(scryfall_id or "").strip()
     if not _looks_like_uuid(sid):
         return False
@@ -5760,6 +7520,28 @@ def refresh_scryfall_metadata(scryfall_id: str, conn: sqlite3.Connection) -> boo
         data = response.json()
         if not isinstance(data, dict):
             return False
+
+        if DATABASE_BACKEND == "postgres":
+            from postgres_app_db import connect_app_database
+            from postgres_scryfall_metadata import save_provider_printing_metadata
+
+            own_conn = conn is None
+            pg_conn = connect_app_database() if own_conn else conn
+            try:
+                save_provider_printing_metadata(pg_conn, sid, data)
+                if own_conn:
+                    pg_conn.commit()
+                return True
+            except Exception:
+                if own_conn:
+                    pg_conn.rollback()
+                raise
+            finally:
+                if own_conn:
+                    pg_conn.close()
+
+        if conn is None:
+            raise ValueError("A SQLite inventory connection is required for metadata refresh.")
         _upsert_card_metadata(conn, sid, data)
         tcg_id = _normalize_tcgplayer_id(data.get("tcgplayer_id"))
         finishes = data.get("finishes") if isinstance(data.get("finishes"), list) else []
@@ -5772,7 +7554,6 @@ def refresh_scryfall_metadata(scryfall_id: str, conn: sqlite3.Connection) -> boo
     except Exception as exc:
         app.logger.warning("Metadata refresh failed for %s: %s", sid, exc)
         return False
-
 
 def get_scryfall_bulk_meta() -> dict[str, Any]:
     if not SCRYFALL_BULK_META_FILE.exists(): return {}
@@ -5797,50 +7578,150 @@ def get_scryfall_bulk_manifest() -> dict[str, Any]:
     raise RuntimeError("Scryfall bulk-data manifest did not contain default_cards.")
 
 
-def refresh_scryfall_bulk_metadata(force: bool=False) -> dict[str,Any]:
-    manifest=get_scryfall_bulk_manifest(); remote_version=str(manifest.get("updated_at") or "").strip()
-    cached=get_scryfall_bulk_meta()
-    if not force and remote_version and cached.get("updated_at")==remote_version:
-        return {"success":True,"skipped":True,"updated":0,"needed":0,"found":0,"updated_at":remote_version}
-    conn=connect_inventory()
-    needed={str(r[0]).strip() for r in conn.execute("SELECT DISTINCT scryfall_id FROM inventory WHERE scryfall_id IS NOT NULL AND TRIM(scryfall_id)<>''").fetchall()}
-    conn.close()
-    if not needed: return {"success":True,"skipped":False,"updated":0,"needed":0,"found":0,"updated_at":remote_version}
-    uri=manifest.get("jsonl_download_uri") or manifest.get("download_uri")
-    if not uri: raise RuntimeError("Scryfall bulk manifest has no download URI for default_cards.")
-    temp=DATA_DIR/"scryfall_default_cards.tmp"
-    found=0
-    try:
-        with requests.get(uri,headers={"User-Agent":SCRYFALL_USER_AGENT,"Accept":"application/json"},timeout=SCRYFALL_BULK_TIMEOUT,stream=True) as response:
-            response.raise_for_status()
-            with temp.open("wb") as fh:
-                for chunk in response.iter_content(1024*1024):
-                    if chunk: fh.write(chunk)
-        import gzip
-        opener=gzip.open if temp.open("rb").read(2)==b"\x1f\x8b" else open
-        conn=connect_inventory()
-        with opener(temp,"rt",encoding="utf-8") as fh:
-            for raw in fh:
-                line=raw.strip()
-                if not line or line in {"[","]",","}: continue
-                if line.endswith(","): line=line[:-1]
-                try: card=json.loads(line)
-                except json.JSONDecodeError: continue
-                if not isinstance(card,dict): continue
-                sid=str(card.get("id") or "").strip()
-                if sid not in needed: continue
-                _upsert_card_metadata(conn,sid,card)
-                tcg_id=_normalize_tcgplayer_id(card.get("tcgplayer_id")); finishes=card.get("finishes") if isinstance(card.get("finishes"),list) else []
-                conn.execute("INSERT OR REPLACE INTO card_price_mapping(scryfall_id,tcgplayer_id,finishes_json,card_name,set_code,collector_number,resolved_at) VALUES(?,?,?,?,?,?,?)",(sid,tcg_id,json.dumps(finishes,separators=(",",":")),card.get("name"),card.get("set"),card.get("collector_number"),datetime.now(timezone.utc).isoformat()))
-                found+=1
-                if found>=len(needed): break
-        conn.commit(); conn.close()
-        SCRYFALL_BULK_META_FILE.write_text(json.dumps({"updated_at":remote_version,"synced_at":datetime.now(timezone.utc).isoformat(),"needed":len(needed),"found":found,"bulk_name":manifest.get("name")},indent=2),encoding="utf-8")
-        return {"success":True,"skipped":False,"updated":found,"needed":len(needed),"found":found,"updated_at":remote_version}
-    finally:
-        try: temp.unlink()
-        except FileNotFoundError: pass
+def refresh_scryfall_bulk_metadata(force: bool = False) -> dict[str, Any]:
+    manifest = get_scryfall_bulk_manifest()
+    remote_version = str(manifest.get("updated_at") or "").strip()
+    cached = get_scryfall_bulk_meta()
+    if not force and remote_version and cached.get("updated_at") == remote_version:
+        return {
+            "success": True, "skipped": True, "updated": 0,
+            "needed": 0, "found": 0, "updated_at": remote_version,
+        }
 
+    postgres_mode = DATABASE_BACKEND == "postgres"
+    if postgres_mode:
+        from postgres_app_db import connect_app_database
+        from postgres_scryfall_metadata import fetch_owned_scryfall_ids
+
+        conn = connect_app_database()
+        try:
+            needed = set(fetch_owned_scryfall_ids(conn))
+        finally:
+            conn.close()
+    else:
+        conn = connect_inventory()
+        try:
+            needed = {
+                str(row[0]).strip()
+                for row in conn.execute(
+                    "SELECT DISTINCT scryfall_id FROM inventory "
+                    "WHERE scryfall_id IS NOT NULL AND TRIM(scryfall_id)<>''"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+    if not needed:
+        return {
+            "success": True, "skipped": False, "updated": 0,
+            "needed": 0, "found": 0, "updated_at": remote_version,
+        }
+
+    uri = manifest.get("jsonl_download_uri") or manifest.get("download_uri")
+    if not uri:
+        raise RuntimeError("Scryfall bulk manifest has no download URI for default_cards.")
+
+    import tempfile
+    from scryfall_updater import iter_bulk_records
+
+    if not str(uri).startswith("https://"):
+        raise RuntimeError("Scryfall bulk-data download URI must use HTTPS.")
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    temp_handle = tempfile.NamedTemporaryFile(
+        prefix="scryfall-default-cards-",
+        suffix=".jsonl.gz",
+        dir=DATA_DIR,
+        delete=False,
+    )
+    temp_path = Path(temp_handle.name)
+    found = 0
+    pg_conn = None
+    sqlite_conn = None
+    try:
+        with temp_handle:
+            with requests.get(
+                uri,
+                headers={"User-Agent": SCRYFALL_USER_AGENT, "Accept": "application/json"},
+                timeout=SCRYFALL_BULK_TIMEOUT,
+                stream=True,
+            ) as response:
+                response.raise_for_status()
+                for chunk in response.iter_content(1024 * 1024):
+                    if chunk:
+                        temp_handle.write(chunk)
+
+        if temp_path.stat().st_size < 2:
+            raise RuntimeError("Scryfall Default Cards bulk download was empty.")
+
+        if postgres_mode:
+            from postgres_app_db import connect_app_database
+            from postgres_scryfall_metadata import save_provider_printing_metadata
+
+            pg_conn = connect_app_database()
+        else:
+            sqlite_conn = connect_inventory()
+
+        for card in iter_bulk_records(temp_path):
+            sid = str(card.get("id") or "").strip()
+            if sid not in needed:
+                continue
+
+            if postgres_mode:
+                save_provider_printing_metadata(pg_conn, sid, card)
+            else:
+                _upsert_card_metadata(sqlite_conn, sid, card)
+                tcg_id = _normalize_tcgplayer_id(card.get("tcgplayer_id"))
+                finishes = card.get("finishes") if isinstance(card.get("finishes"), list) else []
+                sqlite_conn.execute(
+                    "INSERT OR REPLACE INTO card_price_mapping"
+                    "(scryfall_id,tcgplayer_id,finishes_json,card_name,set_code,collector_number,resolved_at) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    (
+                        sid, tcg_id, json.dumps(finishes, separators=(",", ":")),
+                        card.get("name"), card.get("set"), card.get("collector_number"),
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+
+            found += 1
+            if found >= len(needed):
+                break
+
+        if postgres_mode:
+            pg_conn.commit()
+        else:
+            sqlite_conn.commit()
+
+        sync_meta = {
+            "updated_at": remote_version,
+            "synced_at": datetime.now(timezone.utc).isoformat(),
+            "needed": len(needed),
+            "found": found,
+            "bulk_name": manifest.get("name"),
+        }
+        SCRYFALL_BULK_META_FILE.write_text(
+            json.dumps(sync_meta, indent=2), encoding="utf-8"
+        )
+        return {
+            "success": True, "skipped": False, "updated": found,
+            "needed": len(needed), "found": found, "updated_at": remote_version,
+        }
+    except Exception:
+        if pg_conn is not None:
+            pg_conn.rollback()
+        if sqlite_conn is not None:
+            sqlite_conn.rollback()
+        raise
+    finally:
+        if pg_conn is not None:
+            pg_conn.close()
+        if sqlite_conn is not None:
+            sqlite_conn.close()
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
 
 @app.post("/admin/refresh_scryfall_bulk")
 @admin_required
@@ -5860,12 +7741,23 @@ def api_card_rulings(scryfall_id: str):
     if not _looks_like_uuid(sid):
         return jsonify({"success": False, "error": "Invalid Scryfall card ID."}), 400
 
-    conn = connect_inventory()
+    postgres_mode = DATABASE_BACKEND == "postgres"
+    if postgres_mode:
+        from postgres_app_db import connect_app_database
+        from postgres_card_rulings import fetch_cached_rulings, save_cached_rulings
+
+        conn = connect_app_database()
+    else:
+        conn = connect_inventory()
+
     try:
-        cached_row = conn.execute(
-            "SELECT rulings_json, fetched_at FROM card_rulings_cache WHERE scryfall_id = ?",
-            (sid,),
-        ).fetchone()
+        if postgres_mode:
+            cached_row = fetch_cached_rulings(conn, sid)
+        else:
+            cached_row = conn.execute(
+                "SELECT rulings_json, fetched_at FROM card_rulings_cache WHERE scryfall_id = ?",
+                (sid,),
+            ).fetchone()
         rulings: list[dict[str, str]] = []
         fetched_at = ""
         cache_usable = False
@@ -5918,15 +7810,23 @@ def api_card_rulings(scryfall_id: str):
                     })
                 normalized.sort(key=lambda item: item["published_at"], reverse=True)
 
-                fetched_at = datetime.now(timezone.utc).isoformat()
-                conn.execute(
-                    """INSERT INTO card_rulings_cache (scryfall_id, rulings_json, fetched_at)
-                       VALUES (?, ?, ?)
-                       ON CONFLICT(scryfall_id) DO UPDATE SET
-                           rulings_json=excluded.rulings_json,
-                           fetched_at=excluded.fetched_at""",
-                    (sid, json.dumps(normalized, ensure_ascii=False), fetched_at),
-                )
+                fetched_at_value = datetime.now(timezone.utc)
+                fetched_at = fetched_at_value.isoformat()
+
+                if postgres_mode:
+                    save_cached_rulings(
+                        conn, sid, normalized, fetched_at_value
+                    )
+                else:
+                    conn.execute(
+                        """INSERT INTO card_rulings_cache
+                           (scryfall_id, rulings_json, fetched_at)
+                           VALUES (?, ?, ?)
+                           ON CONFLICT(scryfall_id) DO UPDATE SET
+                               rulings_json=excluded.rulings_json,
+                               fetched_at=excluded.fetched_at""",
+                        (sid, json.dumps(normalized, ensure_ascii=False), fetched_at),
+                    )
                 conn.commit()
                 rulings = normalized
                 cache_usable = True
@@ -5956,6 +7856,25 @@ def api_card_rulings(scryfall_id: str):
 @admin_required
 def api_card_info(scryfall_id: str):
     sid = scryfall_id.strip()
+
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_card_info import fetch_card_info
+
+        conn = connect_app_database()
+        try:
+            card = fetch_card_info(conn, sid)
+        finally:
+            conn.close()
+
+        if card is None:
+            return jsonify({
+                "success": False,
+                "error": "No cached Scryfall metadata for this card. Use Admin → Download/Refresh Scryfall Bulk Metadata.",
+            }), 404
+
+        return jsonify({"success": True, "card": card})
+
     conn = connect_inventory()
     try:
         row = conn.execute(
@@ -6034,28 +7953,79 @@ def api_card_info(scryfall_id: str):
 @admin_required
 def enrich_metadata():
     try:
-        limit=max(1,min(1000,int(request.form.get("limit") or 500)))
-    except (TypeError,ValueError):
-        limit=500
-    conn=connect_inventory()
-    ids=[r[0] for r in conn.execute(
-        "SELECT DISTINCT scryfall_id FROM inventory WHERE scryfall_id IS NOT NULL AND scryfall_id != '' AND scryfall_id NOT IN (SELECT scryfall_id FROM card_metadata) LIMIT ?",
-        (limit,),
-    ).fetchall()]
-    conn.close()
-    ok=0
-    for sid in ids:
-        c=connect_inventory()
-        if refresh_scryfall_metadata(sid, c):
-            ok += 1
-        c.close()
-        time.sleep(0.12)
-    return redirect(url_for("admin_page",message=f"Metadata enrichment finished: {ok} of {len(ids)} cards updated."))
+        limit = max(1, min(1000, int(request.form.get("limit") or 500)))
+    except (TypeError, ValueError):
+        limit = 500
 
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_scryfall_metadata import fetch_missing_scryfall_ids
+
+        conn = connect_app_database()
+        try:
+            ids = fetch_missing_scryfall_ids(conn, limit)
+        finally:
+            conn.close()
+
+        ok = 0
+        for sid in ids:
+            if refresh_scryfall_metadata(sid):
+                ok += 1
+            time.sleep(0.12)
+    else:
+        conn = connect_inventory()
+        ids = [
+            row[0] for row in conn.execute(
+                "SELECT DISTINCT scryfall_id FROM inventory "
+                "WHERE scryfall_id IS NOT NULL AND scryfall_id != '' "
+                "AND scryfall_id NOT IN (SELECT scryfall_id FROM card_metadata) "
+                "LIMIT ?",
+                (limit,),
+            ).fetchall()
+        ]
+        conn.close()
+        ok = 0
+        for sid in ids:
+            item_conn = connect_inventory()
+            if refresh_scryfall_metadata(sid, item_conn):
+                ok += 1
+            item_conn.close()
+            time.sleep(0.12)
+
+    return redirect(url_for(
+        "admin_page",
+        message=f"Metadata enrichment finished: {ok} of {len(ids)} cards updated.",
+    ))
 
 @app.post("/decks/<int:deck_id>/delete")
 @admin_required
 def delete_deck(deck_id: int):
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_deck_lifecycle import delete_deck as pg_delete_deck
+
+        conn = connect_app_database()
+        try:
+            result = pg_delete_deck(conn, deck_id)
+            if result["status"] == "deleted":
+                conn.commit()
+                if result.get("cover_filename"):
+                    _remove_deck_cover_file(result["cover_filename"])
+                moved_qty = int(result["moved_quantity"])
+                message = (
+                    f"Deck deleted. Unassigned {moved_qty} inventory copies; "
+                    "physical storage locations were preserved."
+                )
+                return redirect(url_for("decks_page", message=message))
+            conn.rollback()
+            return redirect(url_for("decks_page", message="Deck not found."))
+        except Exception as exc:
+            conn.rollback()
+            app.logger.exception("PostgreSQL deck deletion failed")
+            return redirect(url_for("decks_page", message=f"Could not delete deck: {exc}"))
+        finally:
+            conn.close()
+
     conn = connect_inventory()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -6116,11 +8086,32 @@ def vending_view():
 
     inventory,*_=inventory_rows(q,owner,"","price","desc","","","","yes")
     inventory=[i for i in inventory if i["calculated_total_value"]>=min_value] if min_value else inventory
-    conn=connect_inventory()
-    owners=active_people(conn)
-    decks=conn.execute("SELECT id,name FROM decklists ORDER BY name COLLATE NOCASE").fetchall()
-    locations=[row[0] for row in conn.execute("SELECT DISTINCT COALESCE(location,'Free') FROM inventory ORDER BY COALESCE(location,'Free') COLLATE NOCASE").fetchall()]
-    conn.close()
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_inventory import fetch_inventory_page_options
+
+        conn = connect_app_database()
+        try:
+            owners, decks, _, _, locations = fetch_inventory_page_options(conn)
+        finally:
+            conn.close()
+    else:
+        conn = connect_inventory()
+        try:
+            owners = active_people(conn)
+            decks = conn.execute(
+                "SELECT id,name FROM decklists ORDER BY name COLLATE NOCASE"
+            ).fetchall()
+            locations = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT DISTINCT COALESCE(location,'Free') "
+                    "FROM inventory "
+                    "ORDER BY COALESCE(location,'Free') COLLATE NOCASE"
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
     return render_template("vending.html",inventory=inventory,owners=owners,decks=decks,locations=locations,admin_user=current_admin(),selected_owner=owner,search=q,min_value=min_value,result_count=len(inventory),inventory_search_index=search_index)
 
 
@@ -6199,9 +8190,21 @@ if REQUIRE_LOGIN and (not SCANNER_API_KEY or len(SCANNER_API_KEY) < 32 or SCANNE
     raise RuntimeError("SECURITY: Set SCANNER_API_KEY to a random value of at least 32 characters before public scanner use.")
 if not ADMIN_INITIAL_PASSWORD:
     app.logger.info("ADMIN_PASSWORD is empty. Existing admin users will be preserved; set it only for first-time bootstrap.")
-migrate_db()
+if DATABASE_BACKEND == "sqlite":
+    migrate_db()
+else:
+    app.logger.info(
+        "PostgreSQL mode selected. SQLite startup migrations are disabled; "
+        "the PostgreSQL pool and schema are initialized by the Gunicorn worker hook. "
+        "Legacy application database routes remain blocked until migrated."
+    )
 
 if __name__ == "__main__":
+    if DATABASE_BACKEND == "postgres":
+        raise RuntimeError(
+            "PostgreSQL mode requires Gunicorn so its post-fork worker hook "
+            "can initialize the database pool."
+        )
     app.run(
         debug=os.environ.get("FLASK_DEBUG", "0") == "1",
         host=os.environ.get("APP_HOST", "0.0.0.0"),

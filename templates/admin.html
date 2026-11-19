@@ -12,7 +12,9 @@
 <header class="topbar">
   <div><h1>Admin</h1><div class="subtle">Signed in as {{ admin_user }}</div></div>
   <div class="actions">
+{% if not postgres_mode %}
     <a class="button secondary" href="{{ url_for('index') }}">Back to inventory</a><a class="button secondary" href="{{ url_for('decks_page') }}">Decks</a><a class="button secondary" href="{{ url_for('vending_view') }}">Vending</a>
+    {% endif %}
     <form method="post" action="{{ url_for('logout') }}" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary">Log out</button></form>
   </div>
 </header>
@@ -99,6 +101,7 @@
   </div>
 </div>
 
+{% if not postgres_mode %}
 <div class="admin-panel">
   <h2>Price History & Discord Alerts</h2>
   <p class="subtle">The updater records one history point per owned TCGplayer product whenever TCGCSV publishes a new build. History is retained for <strong>{{ price_history_days }} days</strong>.</p>
@@ -127,6 +130,35 @@
   <form method="post" action="{{ url_for('admin_refresh_scryfall_bulk') }}" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button" type="submit">Download / Refresh Scryfall Bulk Metadata</button></form>
   {% if scryfall_bulk_meta %}<p class="subtle">Last bulk refresh: {{ scryfall_bulk_meta.get('synced_at','—')|localdt }} · {{ scryfall_bulk_meta.get('found',0) }}/{{ scryfall_bulk_meta.get('needed',0) }} owned printings updated.</p>{% else %}<p class="subtle">No Scryfall bulk metadata snapshot has been downloaded yet.</p>{% endif %}
 </div>
+
+{% else %}
+<div class="admin-panel">
+  <h2>Scryfall card metadata</h2>
+  <p class="subtle">Refresh Oracle text, card types, colors, mana values, TCGplayer mappings, and format legality from Scryfall. Bulk refresh scans the Default Cards dataset for printings currently in your inventory; individual enrichment requests only missing printings.</p>
+  <form method="post" action="{{ url_for('enrich_metadata') }}" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Cards to enrich<input type="number" name="limit" min="1" max="1000" value="500"></label>
+    <button class="button secondary" type="submit">Enrich missing metadata (API)</button>
+  </form>
+  <form method="post" action="{{ url_for('admin_refresh_scryfall_bulk') }}" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button" type="submit">Download / Refresh Scryfall Bulk Metadata</button>
+  </form>
+  {% if scryfall_bulk_meta %}
+  <p class="subtle">Last bulk refresh: {{ scryfall_bulk_meta.get('synced_at','—')|localdt }} · {{ scryfall_bulk_meta.get('found',0) }}/{{ scryfall_bulk_meta.get('needed',0) }} owned printings updated.</p>
+  {% else %}
+  <p class="subtle">No Scryfall bulk metadata snapshot has been downloaded yet.</p>
+  {% endif %}
+  {% if discord_configured %}
+  <form method="post" action="{{ url_for('test_discord') }}" style="margin-top:14px">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button secondary" type="submit">Send Test Discord Message</button>
+  </form>
+  {% else %}
+  <p class="subtle">Discord webhook test is unavailable until <code>DISCORD_WEBHOOK_URL</code> is configured.</p>
+  {% endif %}
+</div>
+{% endif %}
 
 <div class="admin-panel">
   <h2>Web users</h2>
@@ -297,7 +329,11 @@ async function loadAliases(scryfallId, card) {
     if (!r.ok || !data.success) return;
     aliasList.innerHTML = (data.aliases || []).map(a => `<div class="alias-row"><span>${esc(a.alias)}</span><button type="button" class="button secondary alias-delete" data-id="${a.id}">Remove</button></div>`).join('');
     aliasList.querySelectorAll('.alias-delete').forEach(btn => btn.addEventListener('click', async () => {
-      const rr = await fetch('/admin/aliases/' + btn.dataset.id, {method:'DELETE'});
+      const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+      const rr = await fetch('/admin/aliases/' + btn.dataset.id, {
+        method: 'DELETE',
+        headers: {'X-CSRFToken': csrfToken}
+      });
       if (rr.ok) loadAliases(scryfallId, card);
     }));
   } catch (_) {}

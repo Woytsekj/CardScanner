@@ -10,7 +10,7 @@
 <header class="topbar">
   <div><h1>Deck Dashboard</h1><div class="subtle">Browse decks by person and tags. Open a deck to edit its cards, roles, and cover.</div></div>
   <div class="actions">
-    <a class="button secondary" href="{{ url_for('index') }}">Inventory</a>
+    {% if not postgres_mode %}<a class="button secondary" href="{{ url_for('index') }}">Inventory</a>{% endif %}
     <a class="button secondary" href="{{ url_for('vending_view') }}">Vending</a>
     {% if session.get('is_admin') %}<a class="button secondary" href="{{ url_for('admin_page') }}">Admin</a>{% endif %}
   </div>
@@ -70,7 +70,7 @@
               <div class="deck-dashboard-updated subtle">Updated {{ deck.updated_at|localdt }}</div>
               <div class="deck-dashboard-actions">
                 <a class="button" href="{{ url_for('deck_view', deck_id=deck.id) }}">Open deck</a>
-                {% if session.get('is_admin') %}<form method="post" action="{{ url_for('delete_deck', deck_id=deck.id) }}" onsubmit="return confirm('Delete this saved deck? Its assigned inventory copies will become unassigned and keep their physical storage locations. Inventory itself will not be deleted.');"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Delete</button></form>{% endif %}
+                {% if session.get('is_admin') and not postgres_mode %}<form method="post" action="{{ url_for('delete_deck', deck_id=deck.id) }}" onsubmit="return confirm('Delete this saved deck? Its assigned inventory copies will become unassigned and keep their physical storage locations. Inventory itself will not be deleted.');"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Delete</button></form>{% endif %}
               </div>
             </div>
           </article>

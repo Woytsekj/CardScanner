@@ -34,6 +34,7 @@ PRICE_ALERT_MIN_DOLLARS = max(0.0, float(os.environ.get("PRICE_ALERT_MIN_DOLLARS
 PRICE_ALERT_MIN_PERCENT = max(0.0, float(os.environ.get("PRICE_ALERT_MIN_PERCENT", "25")))
 PRICE_ALERT_MIN_OWNED_VALUE_GAIN = max(0.0, float(os.environ.get("PRICE_ALERT_MIN_OWNED_VALUE_GAIN", "10.00")))
 PRICE_ALERT_MAX_PER_SYNC = max(1, int(os.environ.get("PRICE_ALERT_MAX_PER_SYNC", "10")))
+DATABASE_BACKEND = os.environ.get("CARD_SCANNER_DATABASE_BACKEND", "sqlite").strip().lower()
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
 DISPLAY_TIMEZONE = os.environ.get("DISPLAY_TIMEZONE", "America/New_York").strip() or "America/New_York"
 
@@ -204,14 +205,24 @@ def scryfall_image_url(scryfall_id: str | None) -> str | None:
     return f"https://cards.scryfall.io/normal/front/{sid[0]}/{sid[1]}/{sid}.jpg"
 
 
-def last_history_point(conn: sqlite3.Connection, tcg_id: str, finish: str, cutoff: str) -> float | None:
+def last_history_point(
+    conn: sqlite3.Connection,
+    tcg_id: str,
+    finish: str,
+    cutoff: str,
+    *,
+    not_before: str | None = None,
+) -> float | None:
     column = "foil_price" if finish == "foil" else "normal_price"
+    not_before_filter = "AND captured_at >= ?" if not_before is not None else ""
+    params = (tcg_id, cutoff) if not_before is None else (tcg_id, cutoff, not_before)
     row = conn.execute(
         f"""SELECT {column} AS price
             FROM price_history
-            WHERE tcgplayer_id = ? AND captured_at <= ? AND {column} IS NOT NULL
+            WHERE tcgplayer_id = ? AND captured_at <= ?
+              {not_before_filter} AND {column} IS NOT NULL
             ORDER BY captured_at DESC LIMIT 1""",
-        (tcg_id, cutoff),
+        params,
     ).fetchone()
     return normalize_price(row["price"]) if row else None
 
@@ -260,7 +271,141 @@ def send_discord_alert(card: dict[str, Any], finish: str, old_price: float, new_
         return False, str(exc)
 
 
-def record_history_and_alerts(price_map: dict[str, dict[str, Any]], source_updated: str) -> tuple[int, int]:
+def record_postgres_history_and_alerts(
+    price_map: dict[str, dict[str, Any]],
+    source_updated: str,
+    source_rows: list[dict[str, Any]] | None = None,
+) -> tuple[int, int]:
+    """Write MTG price history and alerts through the normalized PostgreSQL schema."""
+    from postgres_app_db import connect_app_database
+    from postgres_db import open_pool
+    from postgres_price_history import (
+        fetch_owned_products,
+        insert_price_alert,
+        insert_price_observations,
+        insert_price_snapshot,
+        latest_history_price,
+        prune_price_history,
+        recently_alerted,
+    )
+
+    open_pool()
+    conn = connect_app_database()
+    now = datetime.now(timezone.utc)
+    captured_at = now
+    cutoff_retention = now - timedelta(days=PRICE_HISTORY_DAYS)
+    cutoff_alert = now - timedelta(days=PRICE_ALERT_LOOKBACK_DAYS)
+    cooldown_cutoff = now - timedelta(days=PRICE_ALERT_COOLDOWN_DAYS)
+    history_rows = 0
+    alerts_sent = 0
+
+    try:
+        products = fetch_owned_products(conn)
+        if source_rows:
+            insert_price_observations(conn, source_rows, source_updated, captured_at)
+
+        for card in products:
+            tcg_id = str(card.get("tcgplayer_id") or "").strip()
+            if not tcg_id:
+                continue
+            prices = price_map.get(tcg_id, {})
+            normal = normalize_price(prices.get("normal"))
+            foil = normalize_price(prices.get("foil"))
+            if normal is None and foil is None:
+                continue
+
+            # Capture the prior prices before inserting this snapshot. Otherwise
+            # the current observation could become its own comparison baseline.
+            previous_prices = {
+                finish: latest_history_price(
+                    conn, tcg_id, finish, now, not_before=cutoff_alert
+                )
+                for finish in ("normal", "foil")
+                if (normal if finish == "normal" else foil) is not None
+            }
+
+            if insert_price_snapshot(
+                conn, tcg_id, source_updated, captured_at, normal, foil
+            ):
+                history_rows += 1
+
+            for finish, current in (("normal", normal), ("foil", foil)):
+                if current is None:
+                    continue
+                old = previous_prices.get(finish)
+                if (
+                    not PRICE_ALERT_ENABLED
+                    or not DISCORD_WEBHOOK_URL
+                    or old is None
+                    or old <= 0
+                ):
+                    continue
+
+                delta = current - old
+                if delta <= 0:
+                    continue
+                percent = (delta / old) * 100.0
+                owned_qty = int(
+                    card.get("foil_qty" if finish == "foil" else "normal_qty") or 0
+                )
+                owned_gain = delta * owned_qty
+                threshold_ok = (
+                    delta >= PRICE_ALERT_MIN_DOLLARS
+                    or percent >= PRICE_ALERT_MIN_PERCENT
+                )
+                owned_ok = (
+                    PRICE_ALERT_MIN_OWNED_VALUE_GAIN <= 0
+                    or owned_gain >= PRICE_ALERT_MIN_OWNED_VALUE_GAIN
+                )
+                if not threshold_ok or not owned_ok:
+                    continue
+                if (
+                    PRICE_ALERT_COOLDOWN_DAYS > 0
+                    and recently_alerted(conn, tcg_id, finish, cooldown_cutoff)
+                ):
+                    continue
+                if alerts_sent >= PRICE_ALERT_MAX_PER_SYNC:
+                    continue
+
+                ok, message = send_discord_alert(
+                    card, finish, old, current, percent, owned_qty, owned_gain
+                )
+                if ok:
+                    insert_price_alert(
+                        conn,
+                        tcg_id=tcg_id,
+                        finish=finish,
+                        alerted_at=captured_at,
+                        old_price=old,
+                        new_price=current,
+                        percent_change=percent,
+                        owned_quantity=owned_qty,
+                        owned_value_gain=owned_gain,
+                    )
+                    alerts_sent += 1
+                    print(
+                        f"[alert] {card.get('name')} ({finish}) "
+                        f"{old:.2f} -> {current:.2f}, +{percent:.1f}%"
+                    )
+                else:
+                    print(
+                        f"[alert] failed for {card.get('name')} "
+                        f"({finish}): {message}"
+                    )
+
+        prune_price_history(conn, cutoff_retention)
+        conn.commit()
+        return history_rows, alerts_sent
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def record_history_and_alerts(price_map: dict[str, dict[str, Any]], source_updated: str, source_rows: list[dict[str, Any]] | None = None) -> tuple[int, int]:
+    if DATABASE_BACKEND == "postgres":
+        return record_postgres_history_and_alerts(price_map, source_updated, source_rows)
     if not DB_INV.exists():
         print("[history] inventory database not found; skipping price history")
         return 0, 0
@@ -286,7 +431,9 @@ def record_history_and_alerts(price_map: dict[str, dict[str, Any]], source_updat
             if current is None:
                 continue
             # Check the old price before inserting today's point so the comparison is genuinely historical.
-            old = last_history_point(conn, tcg_id, finish, cutoff_alert)
+            old = last_history_point(
+                conn, tcg_id, finish, captured_at, not_before=cutoff_alert
+            )
             cur = conn.execute(
                 """INSERT OR IGNORE INTO price_history
                    (tcgplayer_id,captured_at,source_updated,normal_price,foil_price)
@@ -353,7 +500,7 @@ def sync_prices(force: bool = False) -> bool:
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             print(f"[warn] Saved price snapshot cannot be used ({exc}); rebuilding TCGCSV build {marker}.")
         else:
-            history_rows, alerts_sent = record_history_and_alerts(build_price_map(saved_prices), marker)
+            history_rows, alerts_sent = record_history_and_alerts(build_price_map(saved_prices), marker, saved_prices)
             try:
                 meta = json.loads(META_FILE.read_text(encoding="utf-8"))
                 if not isinstance(meta, dict):
@@ -417,7 +564,7 @@ def sync_prices(force: bool = False) -> bool:
     tmp = PRICES_FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps({"success": True, "sourceUpdated": marker, "results": all_prices}, separators=(",", ":")), encoding="utf-8")
     tmp.replace(PRICES_FILE)
-    history_rows, alerts_sent = record_history_and_alerts(price_map, marker)
+    history_rows, alerts_sent = record_history_and_alerts(price_map, marker, all_prices)
     meta["history_rows_recorded"] = history_rows
     meta["alerts_sent"] = alerts_sent
     META_FILE.write_text(json.dumps(meta, indent=2), encoding="utf-8")
