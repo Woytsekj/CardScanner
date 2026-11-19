@@ -29,9 +29,7 @@
       <a class="button secondary" href="{{ url_for('export_csv') }}">Export CSV</a>
       <a class="button secondary" href="{{ url_for('export_manabox_csv', owner=selected_owner) }}" title="CSV you can import into the ManaBox app{% if selected_owner %} ({{ selected_owner }} only){% endif %}">Export ManaBox</a>
       <a class="button secondary" href="{{ url_for('admin_page') }}">Admin</a>
-{% if not postgres_mode %}
-      <button class="button" type="button" onclick="openImport()">Import CSV</button>
-      {% endif %}
+<button class="button" type="button" onclick="openImport()">Import CSV</button>
       <form method="post" action="{{ url_for('logout') }}" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Log out</button></form>
       {% else %}
       <a class="button" href="{{ url_for('login') }}">Admin Login</a>
@@ -367,6 +365,7 @@
 
   <dialog id="importDialog">
     <form id="importForm" method="dialog" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <h2>Import CSV</h2>
       <p class="subtle">Works with this app's own export or a <strong>ManaBox</strong> collection export (detected automatically). Columns can include <code>name</code>, <code>scryfall_id</code>, <code>set_code</code>, <code>rarity</code>, <code>price</code>, <code>finish</code>, <code>owner</code>, <code>quantity</code>, <code>collector_number</code>, and <code>scan_date</code>. Old CSVs without <code>finish</code> import as Normal.</p>
       <input type="file" name="file" accept=".csv,text/csv" required>
