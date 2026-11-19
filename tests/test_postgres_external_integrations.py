@@ -83,6 +83,19 @@ class PostgreSQLExternalIntegrationRouteTests(unittest.TestCase):
             patch.object(self.app_module, "PRICES_FILE", self.prices_path),
             patch.object(
                 self.app_module,
+                "_scanner_client_postgres_art_snapshot",
+                return_value=(
+                    self.art_path,
+                    {
+                        "row_count": 1,
+                        "phash_count": 1,
+                        "source_modified_at": "integration-test-source",
+                        "catalog_revision": 1,
+                    },
+                ),
+            ),
+            patch.object(
+                self.app_module,
                 "get_price_meta",
                 return_value={"source_updated": "integration-test-source"},
             ),
