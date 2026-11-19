@@ -159,7 +159,11 @@ class PostgreSQLInventoryPageHTTPTests(unittest.TestCase):
         self.assertNotIn("Download Desktop Scanner", html)
         self.assertIn("Export ManaBox", html)
         self.assertIn("Export CSV", html)
-        self.assertNotIn(">Import CSV</button>", html)
+        self.assertIn(">Import CSV</button>", html)
+        self.assertIn(
+            f'name="csrf_token" value="{self.csrf}"',
+            html,
+        )
         self.assertIn('href="/vending"', html)
 
     def test_default_owner_scope_and_pagination(self):
