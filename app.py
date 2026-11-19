@@ -824,6 +824,7 @@ def security_gate():
             "api_version",
             "api_price_by_card",
             "api_price",
+            "api_price_history",
             "deck_missing_csv",
         } and request.method == "GET":
             return None
@@ -5491,6 +5492,34 @@ def api_price_history(tcg_id: str):
         days = 90
     days = max(3, min(days, PRICE_HISTORY_DAYS))
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        from postgres_price_history import fetch_price_history, has_owned_product
+
+        conn = connect_app_database()
+        try:
+            user = current_user()
+            is_vendor_only = bool(
+                user
+                and not int(user["is_admin"])
+                and str(user["role"]).lower() == "vendor"
+            )
+            if not has_owned_product(conn, tcg_id, vending_only=is_vendor_only):
+                return jsonify({
+                    "success": False,
+                    "error": "That card is not in the inventory",
+                }), 404
+            points = fetch_price_history(conn, tcg_id, days)
+        finally:
+            conn.close()
+        return jsonify({
+            "success": True,
+            "tcgplayer_id": tcg_id,
+            "days": days,
+            "timezone": DISPLAY_TIMEZONE,
+            "points": points,
+        })
 
     conn = connect_inventory()
     join_sql = attach_art_join(conn)
