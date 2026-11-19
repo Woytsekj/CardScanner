@@ -238,10 +238,10 @@ class PostgreSQLAuthenticationTests(unittest.TestCase):
         self.assertEqual(self._rate_limit_rows(), [])
 
     def test_existing_superadmin_role_is_preserved(self):
-        user = load_current_user("stinkywar")
+        user = load_current_user("ci-superadmin")
 
         self.assertIsNotNone(user)
-        self.assertEqual(user["username"], "Stinkywar")
+        self.assertEqual(user["username"], "ci-superadmin")
         self.assertTrue(user["active"])
         self.assertTrue(user["is_admin"])
         self.assertTrue(user["is_superadmin"])
