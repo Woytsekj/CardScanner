@@ -102,22 +102,22 @@ SELECT
         face.name
     ) AS name,
     COALESCE(
-        card_set.set_code,
         printing.metadata ->> 'set_code',
+        card_set.set_code,
         printing.metadata ->> 'set'
     ) AS set_code,
     COALESCE(
-        card_set.name,
-        printing.metadata ->> 'set_name'
+        printing.metadata ->> 'set_name',
+        card_set.name
     ) AS set_name,
-    COALESCE(printing.rarity, printing.metadata ->> 'rarity') AS rarity,
+    COALESCE(printing.metadata ->> 'rarity', printing.rarity) AS rarity,
     COALESCE(
         product_mapping.target_external_product_id,
         printing.metadata ->> 'tcgplayer_id'
     ) AS tcgplayer_id,
     COALESCE(
-        printing.collector_number,
-        printing.metadata ->> 'collector_number'
+        printing.metadata ->> 'collector_number',
+        printing.collector_number
     ) AS collector_number,
     COALESCE(image_hash.hash_value, printing.metadata ->> 'phash') AS phash,
     COALESCE(
@@ -126,10 +126,11 @@ SELECT
         face.metadata ->> 'oracle_id'
     ) AS oracle_id,
     COALESCE(
-        face_illustration.external_id,
-        printing.metadata ->> 'illustration_id'
+        printing.metadata ->> 'illustration_id',
+        face_illustration.external_id
     ) AS illustration_id,
     COALESCE(
+        printing.metadata ->> 'image_uri',
         printing_image.image_uri,
         face_image.image_uri,
         printing.metadata #>> '{image_uris,normal}'
@@ -224,6 +225,7 @@ LEFT JOIN catalog.external_ids AS illustration
  AND illustration.external_id_type = 'illustration_id'
  AND illustration.illustration_id = face.illustration_id
 WHERE face.game_id = 'mtg'
+  AND COALESCE((face.metadata ->> '_synthetic')::boolean, false) = false
 ORDER BY printing_external.external_id, face.face_index
 """
 
