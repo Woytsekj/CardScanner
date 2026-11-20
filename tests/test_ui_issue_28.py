@@ -14,18 +14,61 @@ class Issue28UIFoundationTests(unittest.TestCase):
 
     def test_main_pages_use_the_same_header_partial(self):
         for name in ("index.html", "decks.html", "deck_view.html", "vending.html",
-                     "admin.html", "analytics.html", "preferences.html", "search_guide.html"):
+                     "admin.html", "analytics.html", "preferences.html", "search_guide.html",
+                     "server_info.html"):
             with self.subTest(template=name):
                 self.assertIn("{% include '_app_header.html' %}", self.read(f"templates/{name}"))
 
     def test_header_has_consistent_navigation_and_active_page_support(self):
         header = self.read("templates/_app_header.html")
         for endpoint in ("index", "decks_page", "vending_view", "analytics_page",
-                         "search_guide", "preferences_page", "admin_page"):
+                         "search_guide", "preferences_page", "admin_page", "server_info_page"):
             with self.subTest(endpoint=endpoint):
                 self.assertIn(f"url_for('{endpoint}')", header)
         self.assertIn('aria-current="page"', header)
         self.assertIn("url_for('logout')", header)
+
+    def test_shared_header_is_sticky_and_server_info_is_admin_only_navigation(self):
+        header = self.read("templates/_app_header.html")
+        css = self.read("static/app.css")
+        self.assertIn("url_for('server_info_page')", header)
+        self.assertIn("position: sticky", css)
+        self.assertIn("top: 0", css)
+        self.assertIn("@app.get(\"/admin/server-info\")", self.read("app.py"))
+
+    def test_inventory_grid_is_artwork_first_with_per_card_price(self):
+        source = self.read("templates/index.html")
+        self.assertIn('class="card-art-trigger"', source)
+        self.assertIn('class="tile-price-badge"', source)
+        self.assertIn("item.calculated_unit_price", source)
+        self.assertIn("cardDetailPriceHistoryChart", source)
+        self.assertIn('id="oracleTcgplayerLink"', source)
+        self.assertNotIn('<div class="tile-body">', source)
+        self.assertNotIn('class="meta-row"', source)
+
+    def test_inventory_transfer_actions_are_grouped_in_one_menu(self):
+        source = self.read("templates/index.html")
+        toolbar = source[:source.find('class="inventory-control-panel"')]
+        self.assertIn('class="inventory-transfer-menu"', toolbar)
+        self.assertIn("Import / Export", toolbar)
+        self.assertIn("Export ManaBox CSV", toolbar)
+
+    def test_server_status_is_separated_from_inventory(self):
+        inventory = self.read("templates/index.html")
+        server_info = self.read("templates/server_info.html")
+        self.assertNotIn("Last price sync:", inventory)
+        self.assertNotIn("Scanner API:", inventory)
+        self.assertIn("Last price sync", server_info)
+        self.assertIn("Scanner API", server_info)
+
+    def test_self_service_password_change_is_in_preferences(self):
+        preferences = self.read("templates/preferences.html")
+        admin = self.read("templates/admin.html")
+        app = self.read("app.py")
+        self.assertIn("url_for('change_password')", preferences)
+        self.assertNotIn("Admin password", admin)
+        self.assertIn('@app.post("/account/password")', app)
+        self.assertIn('@login_required\ndef change_password', app)
 
     def test_theme_selector_is_only_rendered_on_preferences_page(self):
         script = self.read("static/theme.js")
