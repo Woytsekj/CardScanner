@@ -24,6 +24,7 @@ class PostgreSQLRouteCoverageTests(unittest.TestCase):
             "login",
             "admin_page",
             "preferences_page",
+            "server_info_page",
             "analytics_page",
             "search_guide",
             "catalog_search",
