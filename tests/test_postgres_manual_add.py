@@ -215,8 +215,8 @@ class PostgreSQLManualAddTests(unittest.TestCase):
         self.assertNotIn("Price History &amp; Discord Alerts", html)
         self.assertIn("Web users</h2>", html)
         self.assertNotIn("Back to inventory", html)
-        self.assertNotIn(">Decks</a>", html)
-        self.assertNotIn(">Vending</a>", html)
+        self.assertIn(">Decks</a>", html)
+        self.assertIn(">Vending</a>", html)
 
     def test_new_manual_card_links_known_catalog_printing(self):
         sid = self.RESOLVED_SCRYFALL_ID

@@ -5,69 +5,34 @@
 <meta name="csrf-token" content="{{ csrf_token }}">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MTG Scanner Inventory</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.12.5') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.13.0') }}">
 <script src="{{ url_for('static', filename='security.js') }}" defer></script>
-<script src="{{ url_for('static', filename='theme.js', v='39.12.4') }}" defer></script>
+<script src="{{ url_for('static', filename='theme.js', v='39.13.0') }}" defer></script>
 <script src="{{ url_for('static', filename='price-history.js', v='39.12.4') }}" defer></script>
 </head>
 <body data-inventory-mode="browse">
-  <header class="topbar">
-    <div>
-      <h1>MTG Scanner Inventory</h1>
-      <div class="subtle">{{ result_count }} matching rows · {{ total_cards }} total cards</div>
-    </div>
-    <details class="site-nav-menu" id="siteNavMenu">
-      <summary class="site-nav-toggle" aria-label="Open site navigation"><span aria-hidden="true">☰</span><span>Menu</span></summary>
-      <nav class="actions" id="siteNavActions" aria-label="Site navigation">
-      {% if not postgres_mode %}
-      <a class="button" href="{{ url_for('scanner_mobile_index') }}" title="Scan cards with your phone camera">Mobile Scanner</a>
-      <a class="button secondary" href="{{ url_for('scanner_desktop_download') }}" title="Download the Linux desktop scanner source bundle">Download Desktop Scanner</a>
-      {% endif %}
-      <a class="button secondary" href="{{ url_for('decks_page') }}">Decks</a>
-      <a class="button secondary" href="{{ url_for('vending_view') }}">Vending</a>
-      {% if admin_user %}
-      <a class="button secondary" href="{{ url_for('export_csv') }}">Export CSV</a>
-      <a class="button secondary" href="{{ url_for('export_manabox_csv', owner=selected_owner) }}" title="CSV you can import into the ManaBox app{% if selected_owner %} ({{ selected_owner }} only){% endif %}">Export ManaBox</a>
-      <a class="button secondary" href="{{ url_for('admin_page') }}">Admin</a>
-<button class="button" type="button" onclick="openImport()">Import CSV</button>
-      <form method="post" action="{{ url_for('logout') }}" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Log out</button></form>
-      {% else %}
-      <a class="button" href="{{ url_for('login') }}">Admin Login</a>
-      {% endif %}
-      </nav>
-    </details>
-  </header>
+  {% set page_title = 'Inventory' %}
+{% set page_subtitle = 'Search, filter, and manage your collection.' %}
+{% set active_page = 'inventory' %}
+{% include '_app_header.html' %}
 
   <main>
-    <details class="mobile-summary-menu" id="collectionSummary">
-      <summary><span>Collection totals</span><strong>${{ '%.2f'|format(grand_total) }}</strong></summary>
-    <section class="summary-grid">
-      <div class="summary-card">
-        <span>Total collection value</span>
-        <strong>${{ '%.2f'|format(grand_total) }}</strong>
-      </div>
-      <div class="summary-card">
-        <span>Normal cards</span>
-        <strong>{{ global_finish_totals.normal }}</strong>
-      </div>
-      <div class="summary-card foil-card">
-        <span>Foil cards</span>
-        <strong>{{ global_finish_totals.foil }}</strong>
-      </div>
-      <div class="summary-card">
-        <span>Visible value</span>
-        <strong>${{ '%.2f'|format(visible_total) }}</strong>
-      </div>
-      {% for owner, total in owner_totals.items() %}
-      <div class="summary-card owner-card">
-        <span>{{ owner }}</span>
-        <strong>${{ '%.2f'|format(total) }}</strong>
-        <small>N {{ owner_counts.get(owner, {}).get('normal', 0) }} · F {{ owner_counts.get(owner, {}).get('foil', 0) }}</small>
-      </div>
-      {% endfor %}
-    </section>
-    </details>
 
+
+    <section class="page-actions-bar inventory-page-actions" aria-label="Inventory actions">
+      <div class="page-actions-group">
+        {% if admin_user %}
+        <button class="button" type="button" onclick="openImport()">Import CSV</button>
+        <a class="button secondary" href="{{ url_for('export_csv') }}">Export CSV</a>
+        <a class="button secondary" href="{{ url_for('export_manabox_csv', owner=selected_owner) }}">Export ManaBox</a>
+        {% endif %}
+        {% if not postgres_mode %}
+        <a class="button secondary" href="{{ url_for('scanner_mobile_index') }}">Mobile scanner</a>
+        <a class="button secondary" href="{{ url_for('scanner_desktop_download') }}">Desktop scanner</a>
+        {% endif %}
+        <a class="button secondary" href="{{ url_for('analytics_page') }}">Collection analytics</a>
+      </div>
+    </section>
     <section class="toolbar" id="inventoryToolbar">
       <form class="search-form" method="get" action="{{ url_for('index') }}" id="inventorySearchForm">
         <div class="inventory-search-box">
@@ -89,6 +54,7 @@
         {% endif %}
       </form>
     </section>
+    <div class="search-guide-shortcut"><a href="{{ url_for('search_guide') }}">Need help with search syntax? Open the search guide →</a></div>
 
     <details class="inventory-options-menu" id="inventoryOptions">
       <summary><span aria-hidden="true">☰</span><span>Filters, sort &amp; display</span></summary>
@@ -179,8 +145,6 @@
       {% else %}
         <span>Scryfall catalog: initial sync pending</span>
       {% endif %}
-      <span>Normal: {{ global_finish_totals.normal }}</span>
-      <span>Foil: {{ global_finish_totals.foil }}</span>
       <span>Last price sync: {{ price_meta.get('synced_at', 'not yet synced')|localdt }}</span>
       <span>History: {{ price_history_days }} days</span>
       {% if scanner_api_enabled %}<span class="api-live">Scanner API: ready</span>{% else %}<span class="api-warning">Scanner API: not configured</span>{% endif %}
@@ -930,11 +894,9 @@ document.getElementById('importForm').addEventListener('submit', async (event) =
 </script>
 <script>
 (() => {
-  // Native <details> remains collapsed even when CSS uses display: contents.
-  // On desktop, keep these sections expanded so navigation, totals, sorting,
-  // filters, and view controls remain visible. On mobile, retain dropdowns.
+  // Keep navigation and filter controls expanded on desktop; use compact menus on mobile.
   const desktopLayout = window.matchMedia('(min-width: 901px)');
-  const detailsMenus = ['siteNavMenu', 'collectionSummary', 'inventoryOptions']
+  const detailsMenus = ['siteNavMenu', 'inventoryOptions']
     .map(id => document.getElementById(id))
     .filter(Boolean);
   const syncDetailsForViewport = () => {

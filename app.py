@@ -2466,6 +2466,41 @@ def logout():
     return redirect(url_for("login"))
 
 
+@app.get("/preferences")
+@login_required
+def preferences_page():
+    """Show browser-local display preferences for any signed-in account."""
+    return render_template("preferences.html", postgres_mode=(DATABASE_BACKEND == "postgres"))
+
+
+@app.get("/analytics")
+@login_required
+def analytics_page():
+    """Show aggregate and personal totals without exposing other owners' values."""
+    owner_totals, owner_counts, grand_total, global_finish_totals, _, _ = inventory_summary(
+        "", "", "", "date", "desc"
+    )
+    user = current_user()
+    person_name = str(user["person_name"] or "").strip() if user else ""
+    personal_total = owner_totals.get(person_name) if person_name else None
+    personal_counts = owner_counts.get(person_name, {"normal": 0, "foil": 0}) if person_name else None
+    return render_template(
+        "analytics.html",
+        grand_total=grand_total,
+        global_finish_totals=global_finish_totals,
+        personal_total=personal_total,
+        personal_counts=personal_counts,
+        postgres_mode=(DATABASE_BACKEND == "postgres"),
+    )
+
+
+@app.get("/help/search")
+@login_required
+def search_guide():
+    """Show the supported local inventory and vending search syntax."""
+    return render_template("search_guide.html", postgres_mode=(DATABASE_BACKEND == "postgres"))
+
+
 @app.get("/admin")
 @admin_required
 def admin_page():

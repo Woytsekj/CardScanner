@@ -3,18 +3,14 @@
 <meta charset="utf-8">
 <meta name="csrf-token" content="{{ csrf_token }}"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Decks · MTG Scanner Inventory</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.12.4') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.13.0') }}">
 <script src="{{ url_for('static', filename='security.js') }}" defer></script>
-<script src="{{ url_for('static', filename='theme.js', v='39.12.4') }}" defer></script>
+<script src="{{ url_for('static', filename='theme.js', v='39.13.0') }}" defer></script>
 </head><body>
-<header class="topbar">
-  <div><h1>Deck Dashboard</h1><div class="subtle">Browse decks by person and tags. Open a deck to edit its cards, roles, and cover.</div></div>
-  <div class="actions">
-    {% if not postgres_mode %}<a class="button secondary" href="{{ url_for('index') }}">Inventory</a>{% endif %}
-    <a class="button secondary" href="{{ url_for('vending_view') }}">Vending</a>
-    {% if session.get('is_admin') %}<a class="button secondary" href="{{ url_for('admin_page') }}">Admin</a>{% endif %}
-  </div>
-</header>
+{% set page_title = 'Decks' %}
+{% set page_subtitle = 'Browse and organize decks by person, tags, and format.' %}
+{% set active_page = 'decks' %}
+{% include '_app_header.html' %}
 <main>
 {% if message %}<div class="status admin-message">{{ message }}</div>{% endif %}
 <section class="deck-dashboard-filters table-card">
@@ -26,10 +22,11 @@
     <a class="button secondary" href="{{ url_for('decks_page') }}">Clear</a>
   </form>
 </section>
-<section class="admin-grid deck-dashboard-layout">
-  <div class="admin-panel">
-    <h2>Import a deck</h2>
-    <p class="subtle">Import from a public Archidekt or Moxfield URL, paste a decklist, or upload a JSON/CSV/TXT export. Supported tag/category fields are retained on import.</p>
+<section class="deck-dashboard-layout">
+  <details class="deck-import-disclosure admin-panel">
+    <summary><span><strong>Import a deck</strong><small>Use an Archidekt or Moxfield URL, an export file, or a pasted decklist</small></span><span class="disclosure-action">Show import options</span></summary>
+    <div class="deck-import-content">
+    <p class="subtle">Supported tag and category fields are retained when the source format includes them.</p>
     <form method="post" action="{{ url_for('decks_import') }}" class="manual-form" enctype="multipart/form-data">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label>Deck name (optional)<input name="deck_name" id="deckNameInput" maxlength="200" placeholder="Example: Wakanda Forever - Marvel Super Heroes"></label>
@@ -49,9 +46,10 @@
       <p class="subtle">Deck tags organize the dashboard. Card-role tags are stored per deck card; a Moxfield/Archidekt export only carries tags if its format includes them.</p>
       <button class="button" type="submit">Import Deck</button>
     </form>
-  </div>
+    </div>
+  </details>
 
-  <div class="admin-panel">
+  <section class="admin-panel stored-decks-panel">
     <div class="section-heading"><div><h2>Stored decks</h2><p class="subtle">{{ decks|length }} deck(s) match the current filters. Cards are grouped by the person the deck is for.</p></div></div>
     {% if deck_groups %}
       {% for person, group_decks in deck_groups %}
@@ -79,7 +77,7 @@
       </section>
       {% endfor %}
     {% else %}<div class="empty">No saved decks match these filters.</div>{% endif %}
-  </div>
+  </section>
 </section>
 </main>
 <datalist id="location-options">{% for location in locations %}<option value="{{ location }}">{% endfor %}</datalist>

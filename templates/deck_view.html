@@ -3,17 +3,17 @@
 <meta charset="utf-8">
 <meta name="csrf-token" content="{{ csrf_token }}"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ deck.name }} · MTG Scanner Inventory</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.12.4') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.13.0') }}">
 <script src="{{ url_for('static', filename='security.js') }}" defer></script>
-<script src="{{ url_for('static', filename='theme.js', v='39.12.4') }}" defer></script>
+<script src="{{ url_for('static', filename='theme.js', v='39.13.0') }}" defer></script>
 </head><body>
-<header class="topbar">
-  <div class="deck-header-main">
-    {% if deck.cover_url %}<img class="deck-header-cover" src="{{ deck.cover_url }}" alt="Cover for {{ deck.name }}">{% endif %}
-    <div><h1>{{ deck.name }}</h1><div class="subtle">{{ deck.source|capitalize }} · Deck for {{ deck.person_name or selected_owner or 'Unassigned' }}{% if deck.source_url %} · <a href="{{ deck.source_url }}" target="_blank" rel="noopener">Source deck</a>{% endif %}</div><div class="deck-tag-list">{% for tag in deck.tags %}<span class="deck-tag">{{ tag }}</span>{% endfor %}</div></div>
-  </div>
-  <div class="actions"><a class="button secondary" href="{{ url_for('decks_page') }}">All Decks</a>{% if not postgres_mode %}<a class="button secondary" href="{{ url_for('index') }}">Inventory</a>{% endif %}</div>
-</header>
+{% set page_title = deck.name %}
+{% set page_subtitle = deck.source|capitalize ~ ' · Deck for ' ~ (deck.person_name or selected_owner or 'Unassigned') %}
+{% set page_cover_url = deck.cover_url %}
+{% set page_source_url = deck.source_url %}
+{% set page_tags = deck.tags %}
+{% set active_page = 'decks' %}
+{% include '_app_header.html' %}
 <main class="deck-view-page">
 {% if message %}<div class="status admin-message">{{ message }}</div>{% endif %}
 <section class="summary-grid">
