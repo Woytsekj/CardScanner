@@ -5,9 +5,9 @@
 <meta name="csrf-token" content="{{ csrf_token }}">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MTG Scanner Inventory</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.13.0') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.14.0') }}">
 <script src="{{ url_for('static', filename='security.js') }}" defer></script>
-<script src="{{ url_for('static', filename='theme.js', v='39.13.0') }}" defer></script>
+<script src="{{ url_for('static', filename='theme.js', v='39.14.0') }}" defer></script>
 <script src="{{ url_for('static', filename='price-history.js', v='39.12.4') }}" defer></script>
 </head>
 <body data-inventory-mode="browse">
@@ -23,13 +23,23 @@
       <div class="page-actions-group">
         {% if admin_user %}
         <button class="button" type="button" id="openManualAdd">Add card</button>
-        <button class="button secondary" type="button" onclick="openImport()">Import CSV</button>
-        <a class="button secondary" href="{{ url_for('export_csv') }}">Export CSV</a>
-        <a class="button secondary" href="{{ url_for('export_manabox_csv', owner=selected_owner) }}">Export ManaBox</a>
+        <details class="inventory-transfer-menu">
+          <summary class="button secondary">Import / Export <span aria-hidden="true">▾</span></summary>
+          <div class="inventory-transfer-dropdown">
+            <button type="button" onclick="openImport()">Import CSV</button>
+            <a href="{{ url_for('export_csv') }}">Export CardScanner CSV</a>
+            <a href="{{ url_for('export_manabox_csv', owner=selected_owner) }}">Export ManaBox CSV</a>
+          </div>
+        </details>
         {% endif %}
         {% if not postgres_mode %}
-        <a class="button secondary" href="{{ url_for('scanner_mobile_index') }}">Mobile scanner</a>
-        <a class="button secondary" href="{{ url_for('scanner_desktop_download') }}">Desktop scanner</a>
+        <details class="inventory-transfer-menu">
+          <summary class="button secondary">Scanner tools <span aria-hidden="true">▾</span></summary>
+          <div class="inventory-transfer-dropdown">
+            <a href="{{ url_for('scanner_mobile_index') }}">Mobile scanner</a>
+            <a href="{{ url_for('scanner_desktop_download') }}">Desktop scanner</a>
+          </div>
+        </details>
         {% endif %}
       </div>
     </section>
@@ -136,21 +146,7 @@
       </form>
     </section>
 
-    <section class="meta-row">
-      <span>Prices: TCGCSV</span>
-      {% if scryfall_catalog_meta %}
-        {% set catalog_stats = scryfall_catalog_meta.get('catalog', {}) %}
-        <span>Art hashes: {{ catalog_stats.get('hashed_printings', 0) }} / {{ catalog_stats.get('printings', 0) }}</span>
-        <span>Tagger: {{ catalog_stats.get('art_tag_assignments', 0) }} art · {{ catalog_stats.get('oracle_tag_assignments', 0) }} Oracle</span>
-        <span>Last Scryfall sync: {{ scryfall_catalog_meta.get('synced_at', '')|localdt }}</span>
-      {% else %}
-        <span>Scryfall catalog: initial sync pending</span>
-      {% endif %}
-      <span>Last price sync: {{ price_meta.get('synced_at', 'not yet synced')|localdt }}</span>
-      <span>History: {{ price_history_days }} days</span>
-      {% if scanner_api_enabled %}<span class="api-live">Scanner API: ready</span>{% else %}<span class="api-warning">Scanner API: not configured</span>{% endif %}
-      <span class="hint">Finish is stored separately, so normal and foil quantities no longer get mixed together.</span>
-    </section>
+
       </div>
     </details>
 
@@ -187,65 +183,45 @@
     {% endif %}
 
     {% if view == 'grid' %}
-    <section class="card-grid">
+    <section class="card-grid" aria-label="Card collection">
       {% for item in inventory %}
       <article class="card-tile" id="tile-{{ item.id }}">
         {% if admin_user %}<label class="inventory-select-label"><input class="inventory-select" type="checkbox" value="{{ item.id }}" aria-label="Select {{ item.name }} for bulk editing"> Select</label>{% endif %}
-        <div class="tile-image-wrap">
-          {% if item.image_url %}
-          <img src="{{ item.image_url }}" class="card-image oracle-image-trigger" alt="{{ item.name }}" data-scryfall="{{ item.scryfall_id or '' }}" data-name="{{ item.name|e }}" loading="lazy" onerror="imageFailed(this)">
-          {% else %}
-          <div class="image-placeholder">No card image</div>
-          {% endif %}
-          <span class="finish-badge {{ item.finish }}">{{ item.finish|capitalize }}</span>
-        </div>
-        <div class="tile-body">
-          <div class="card-title">{{ item.name }}</div>
-          {% if item.alternate_names %}<div class="alternate-name">Also: {{ item.alternate_names }}</div>{% endif %}
-          <div class="subtle">{{ item.set_code or '—' }} · #{{ item.collector_number or '—' }} · {{ item.rarity }}</div>
-          <div class="finish-counts"><span>Normal {{ item.card_normal_qty }}</span><span>Foil {{ item.card_foil_qty }}</span></div>
-          <div class="tile-meta">
-            <span>{{ item.owner }}</span>
-            <span>Qty {{ item.quantity }}</span>
+        <button type="button" class="card-art-trigger" title="{{ item.name|e }} · {{ item.set_code or '—' }} #{{ item.collector_number or '—' }}" aria-label="View details and price history for {{ item.name|e }}"
+          data-scryfall="{{ item.scryfall_id or '' }}" data-tcg="{{ item.tcgplayer_id or '' }}" data-image="{{ item.image_url or '' }}" data-name="{{ item.name|e }}"
+          data-set="{{ item.set_code or '' }}" data-collector="{{ item.collector_number or '' }}" data-rarity="{{ item.rarity or '' }}" data-finish="{{ item.finish }}"
+          data-owner="{{ item.owner|e }}" data-quantity="{{ item.quantity }}" data-location="{{ item.location|e }}" data-price="{{ '%.2f'|format(item.calculated_unit_price|float) }}">
+          <span class="tile-image-wrap">
+            {% if item.image_url %}<img src="{{ item.image_url }}" class="card-image" alt="{{ item.name }}" loading="lazy" onerror="imageFailed(this)">
+            {% else %}<span class="image-placeholder">No card image</span>{% endif %}
+            <span class="finish-badge {{ item.finish }}">{{ item.finish|capitalize }}</span>
+          </span>
+          <span class="tile-price-badge"><span>Per card</span><strong>${{ '%.2f'|format(item.calculated_unit_price|float) }}</strong></span>
+        </button>
+        {% if admin_user %}
+        <details class="tile-manage-menu edit-only-control">
+          <summary>Manage inventory row</summary>
+          <div class="tile-manage-controls">
+            <div class="inventory-management-controls">
+              <label class="check-row vending-inline-toggle"><input type="checkbox" class="vending-input" data-id="{{ item.id }}" data-field="for_vending" {% if item.for_vending %}checked{% endif %} {% if item.deck_id %}disabled{% endif %}> For vending</label>
+              <label>Deck<select class="inline-input deck-input" data-id="{{ item.id }}" data-field="deck_id"><option value="none" {% if not item.deck_id %}selected{% endif %}>Unassigned</option>{% for deck in decks %}<option value="{{ deck.id }}" {% if item.deck_id == deck.id %}selected{% endif %}>{{ deck.name }}</option>{% endfor %}</select></label>
+            </div>
+            <div class="tile-edit-controls">
+              <button class="button secondary counts-button" data-scryfall="{{ item.scryfall_id }}" data-owner="{{ item.owner|e }}" data-name="{{ item.name|e }}" data-normal="{{ item.owner_normal_qty }}" data-foil="{{ item.owner_foil_qty }}">Edit counts</button>
+              <button class="button secondary move-button" data-id="{{ item.id }}" data-name="{{ item.name|e }}" data-qty="{{ item.quantity }}" data-location="{{ item.location|e }}">Move</button>
+              <label>Finish<select class="finish-input" data-id="{{ item.id }}" data-field="finish"><option value="normal" {% if item.finish == 'normal' %}selected{% endif %}>Normal</option><option value="foil" {% if item.finish == 'foil' %}selected{% endif %}>Foil</option></select></label>
+              <label>Quantity<input class="qty-input" type="number" min="1" step="1" data-id="{{ item.id }}" data-field="quantity" value="{{ item.quantity }}" aria-label="Quantity for {{ item.name }}"></label>
+              <label>Location<input class="location-input" type="text" data-id="{{ item.id }}" data-field="location" value="{{ item.location|e }}" aria-label="Location for {{ item.name }}"></label>
+              <label>Owner<select class="inline-input owner-input" data-id="{{ item.id }}" data-field="owner" aria-label="Owner for {{ item.name }}">{% for owner in owners %}<option value="{{ owner }}" {% if owner == item.owner %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select></label>
+              <button class="icon-button delete-button" data-id="{{ item.id }}" title="Delete">×</button>
+            </div>
           </div>
-          <div class="subtle location-label">Storage: {{ item.location }}{% if item.deck_id %} · Deck assigned{% endif %}</div>
-          {% if admin_user %}
-          <div class="inventory-management-controls edit-only-control">
-            <label class="check-row vending-inline-toggle"><input type="checkbox" class="vending-input" data-id="{{ item.id }}" data-field="for_vending" {% if item.for_vending %}checked{% endif %} {% if item.deck_id %}disabled{% endif %}> For vending</label>
-            <label>Deck<select class="inline-input deck-input" data-id="{{ item.id }}" data-field="deck_id"><option value="none" {% if not item.deck_id %}selected{% endif %}>Unassigned</option>{% for deck in decks %}<option value="{{ deck.id }}" {% if item.deck_id == deck.id %}selected{% endif %}>{{ deck.name }}</option>{% endfor %}</select></label>
-          </div>
-          {% else %}<div class="subtle">{% if item.for_vending %}For vending{% endif %}</div>{% endif %}
-          <div class="price-grid">
-            <div class="price-cell price-scanned"><small>Scanned</small><strong>${{ '%.2f'|format(item.scanned_price|float) }}</strong></div>
-            <div class="price-cell price-normal"><small>Normal</small><strong>{% if item.curr_normal is not none %}${{ '%.2f'|format(item.curr_normal|float) }}{% else %}—{% endif %}</strong></div>
-            <div class="price-cell price-row"><small>Row</small><strong>${{ '%.2f'|format(item.calculated_total_value) }}</strong></div>
-            <div class="price-cell price-foil"><small>Foil</small><strong>{% if item.curr_foil is not none %}${{ '%.2f'|format(item.curr_foil|float) }}{% else %}—{% endif %}</strong></div>
-          </div>
-          <div class="tile-controls">
-            {% if item.tcgplayer_id %}<a class="button secondary tcgplayer-button" href="https://www.tcgplayer.com/product/{{ item.tcgplayer_id|urlencode }}" target="_blank" rel="noopener noreferrer" title="Open this printing on TCGplayer">TCGplayer ↗</a><button class="button secondary price-history-button" data-tcg="{{ item.tcgplayer_id }}" data-name="{{ item.name|e }}" data-finish="{{ item.finish }}">Price History</button>{% endif %}
-            {% if item.scryfall_id %}<button class="button secondary oracle-button" data-scryfall="{{ item.scryfall_id }}" data-name="{{ item.name|e }}" data-image="{{ item.image_url or '' }}">Card Details</button>{% endif %}
-            {% if admin_user %}
-            <button class="button secondary counts-button edit-only-control" data-scryfall="{{ item.scryfall_id }}" data-owner="{{ item.owner|e }}" data-name="{{ item.name|e }}" data-normal="{{ item.owner_normal_qty }}" data-foil="{{ item.owner_foil_qty }}">Edit counts</button>
-            <button class="button secondary move-button edit-only-control" data-id="{{ item.id }}" data-name="{{ item.name|e }}" data-qty="{{ item.quantity }}" data-location="{{ item.location|e }}">Move</button>
-            <select class="finish-input edit-only-control" data-id="{{ item.id }}" data-field="finish">
-              <option value="normal" {% if item.finish == 'normal' %}selected{% endif %}>Normal</option>
-              <option value="foil" {% if item.finish == 'foil' %}selected{% endif %}>Foil</option>
-            </select>
-            <input class="qty-input edit-only-control" type="number" min="1" step="1" data-id="{{ item.id }}" data-field="quantity" value="{{ item.quantity }}" aria-label="Quantity for {{ item.name }}">
-            <input class="location-input edit-only-control" type="text" data-id="{{ item.id }}" data-field="location" value="{{ item.location|e }}" aria-label="Location for {{ item.name }}">
-            <select class="inline-input owner-input edit-only-control" data-id="{{ item.id }}" data-field="owner" aria-label="Owner for {{ item.name }}">
-              {% for owner in owners %}<option value="{{ owner }}" {% if owner == item.owner %}selected{% endif %}>{{ owner }}</option>{% endfor %}
-            </select>
-            <button class="icon-button delete-button edit-only-control" data-id="{{ item.id }}" title="Delete">×</button>
-            {% endif %}
-          </div>
-        </div>
+        </details>
+        {% endif %}
       </article>
-      {% else %}
-      <div class="empty grid-empty">No cards match the current filters.</div>
+      {% else %}<div class="empty grid-empty">No cards match the current filters.</div>
       {% endfor %}
     </section>
-    {% else %}
     <section class="table-card">
       <div class="table-wrap">
         <table>
@@ -262,7 +238,7 @@
               <td class="selection-column">{% if admin_user %}<input class="inventory-select" type="checkbox" value="{{ item.id }}" aria-label="Select {{ item.name }} for bulk editing">{% endif %}</td>
               <td class="name-cell">
                 <div class="name-with-thumb">
-                  {% if item.image_url %}<img src="{{ item.image_url }}" class="thumb oracle-image-trigger" alt="" data-scryfall="{{ item.scryfall_id or '' }}" data-name="{{ item.name|e }}" loading="lazy" onerror="imageFailed(this)">{% else %}<div class="thumb placeholder-thumb">—</div>{% endif %}
+                  {% if item.image_url %}<img src="{{ item.image_url }}" class="thumb oracle-image-trigger" alt="" data-scryfall="{{ item.scryfall_id or '' }}" data-tcg="{{ item.tcgplayer_id or '' }}" data-name="{{ item.name|e }}" data-image="{{ item.image_url }}" data-set="{{ item.set_code or '' }}" data-collector="{{ item.collector_number or '' }}" data-rarity="{{ item.rarity or '' }}" data-finish="{{ item.finish }}" data-owner="{{ item.owner|e }}" data-quantity="{{ item.quantity }}" data-location="{{ item.location|e }}" data-price="{{ '%.2f'|format(item.calculated_unit_price|float) }}" loading="lazy" onerror="imageFailed(this)">{% else %}<div class="thumb placeholder-thumb">—</div>{% endif %}
                   <div>
                     <div class="card-title">{{ item.name }}</div>
                     {% if item.tcgplayer_id %}<div class="subtle"><a class="external-card-link" href="https://www.tcgplayer.com/product/{{ item.tcgplayer_id|urlencode }}" target="_blank" rel="noopener noreferrer">TCGplayer #{{ item.tcgplayer_id }} ↗</a></div>{% endif %}
@@ -443,6 +419,19 @@
       <div class="oracle-detail-image-wrap"><img id="oracleCardImage" class="oracle-detail-image" src="" alt=""></div>
       <div class="oracle-detail-content">
         <div id="oracleSubtitle" class="subtle"></div>
+        <div class="card-detail-printing">
+          <div id="oraclePrintingLine" class="subtle"></div><div id="oracleCollectionLine" class="subtle"></div>
+          <div class="card-detail-price-row"><strong id="oracleUnitPrice">Per-card price: —</strong><a id="oracleTcgplayerLink" class="button secondary" href="#" target="_blank" rel="noopener noreferrer" hidden>View on TCGplayer ↗</a></div>
+        </div>
+        <section class="card-detail-history-panel" aria-label="Card price history">
+          <div class="card-detail-history-heading"><h3>Price history</h3><span class="subtle">TCGCSV market observations</span></div>
+          <div class="history-range-buttons" id="cardDetailHistoryRanges">
+            <button type="button" class="button secondary card-detail-history-range" data-days="3">3 Days</button><button type="button" class="button secondary card-detail-history-range" data-days="7">1 Week</button><button type="button" class="button secondary card-detail-history-range" data-days="30">1 Month</button><button type="button" class="button secondary card-detail-history-range active" data-days="90">3 Months</button><button type="button" class="button secondary card-detail-history-range" data-days="180">6 Months</button><button type="button" class="button secondary card-detail-history-range" data-days="365">1 Year</button>
+          </div>
+          <div id="cardDetailHistoryStats" class="history-stats"></div><div id="cardDetailHistoryStatus" class="status" role="status" aria-live="polite"></div>
+          <div class="history-chart-wrap"><svg id="cardDetailPriceHistoryChart" viewBox="0 0 820 360" role="img" aria-label="Selected card price history chart"></svg></div>
+          <div class="chart-legend"><span class="legend-normal">Normal</span><span class="legend-foil">Foil</span></div>
+        </section>
         <div id="oracleTypeLine" class="oracle-type-line"></div>
         <div id="oracleManaCost" class="oracle-mana-cost"></div>
         <pre id="oracleText" class="oracle-text"></pre>
@@ -741,7 +730,7 @@ oracleRulingsSection.addEventListener('toggle', () => {
     void loadOracleRulings(activeOracleScryfallId);
   }
 });
-async function openOracle(sid, name, imageUrl = '') {
+async function openOracle(sid, name, imageUrl = '', cardMeta = {}) {
   activeOracleScryfallId = sid || '';
   loadedOracleRulingsSid = '';
   oracleRulingsSection.open = false;
@@ -751,6 +740,14 @@ async function openOracle(sid, name, imageUrl = '') {
     : '<div class="subtle">No Scryfall ID is available for this printing.</div>';
   oracleTitle.textContent = name || 'Card Details';
   oracleSubtitle.textContent = 'Loading cached metadata…';
+  const printingBits = [cardMeta.set, cardMeta.collector ? '#' + cardMeta.collector : '', cardMeta.rarity, cardMeta.finish].filter(Boolean);
+  document.getElementById('oraclePrintingLine').textContent = printingBits.join(' · ') || 'Printing details unavailable';
+  const collectionBits = [cardMeta.owner, cardMeta.quantity ? 'Qty ' + cardMeta.quantity : '', cardMeta.location ? 'Storage: ' + cardMeta.location : ''].filter(Boolean);
+  document.getElementById('oracleCollectionLine').textContent = collectionBits.join(' · ');
+  document.getElementById('oracleUnitPrice').textContent = cardMeta.price ? 'Per-card price: $' + Number(cardMeta.price).toFixed(2) : 'Per-card price unavailable';
+  const tcgLink = document.getElementById('oracleTcgplayerLink');
+  if (cardMeta.tcg) { tcgLink.href = 'https://www.tcgplayer.com/product/' + encodeURIComponent(cardMeta.tcg); tcgLink.hidden = false; }
+  else { tcgLink.href = '#'; tcgLink.hidden = true; }
   oracleTypeLine.textContent = ''; oracleManaCost.textContent = ''; oracleTextEl.textContent = '';
   oracleLegalities.innerHTML = ''; oracleArtTags.innerHTML = ''; oracleOracleTags.innerHTML = '';
   oracleUpdated.textContent = ''; oracleStatus.textContent = '';
@@ -758,6 +755,7 @@ async function openOracle(sid, name, imageUrl = '') {
   oracleCardImage.src = activeOracleImageUrl;
   oracleCardImage.alt = name || '';
   oracleDialog.showModal();
+  if (window.openCardDetailPriceHistory) window.openCardDetailPriceHistory(cardMeta.tcg || '', name || 'Card');
   if (!sid) { oracleSubtitle.textContent = 'No Scryfall ID is available for this printing.'; return; }
   try {
     const r = await fetch('/api/card-info/' + encodeURIComponent(sid));
@@ -777,7 +775,20 @@ async function openOracle(sid, name, imageUrl = '') {
 document.querySelectorAll('.oracle-button').forEach(btn => btn.addEventListener('click', () => openOracle(btn.dataset.scryfall, btn.dataset.name, btn.dataset.image || '')));
 document.querySelectorAll('.oracle-image-trigger').forEach(img => img.addEventListener('click', () => {
   if (document.body.dataset.inventoryMode === 'select') return;
-  openOracle(img.dataset.scryfall || '', img.dataset.name || img.alt, img.currentSrc || img.src);
+  openOracle(img.dataset.scryfall || '', img.dataset.name || img.alt, img.dataset.image || img.currentSrc || img.src, {
+    tcg: img.dataset.tcg || '', set: img.dataset.set || '', collector: img.dataset.collector || '',
+    rarity: img.dataset.rarity || '', finish: img.dataset.finish || '', owner: img.dataset.owner || '',
+    quantity: img.dataset.quantity || '', location: img.dataset.location || '', price: img.dataset.price || ''
+  });
+}));
+
+document.querySelectorAll('.card-art-trigger').forEach(button => button.addEventListener('click', () => {
+  if (document.body.dataset.inventoryMode === 'select') return;
+  openOracle(button.dataset.scryfall || '', button.dataset.name || button.title, button.dataset.image || '', {
+    tcg: button.dataset.tcg || '', set: button.dataset.set || '', collector: button.dataset.collector || '',
+    rarity: button.dataset.rarity || '', finish: button.dataset.finish || '', owner: button.dataset.owner || '',
+    quantity: button.dataset.quantity || '', location: button.dataset.location || '', price: button.dataset.price || ''
+  });
 }));
 
 async function saveField(input) {
