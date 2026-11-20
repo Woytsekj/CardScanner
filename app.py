@@ -789,6 +789,7 @@ def security_gate():
         # generated filenames and are served read-only.
         if request.endpoint in {
             "preferences_page",
+            "server_info_page",
             "analytics_page",
             "search_guide",
             "index",
@@ -2504,6 +2505,24 @@ def search_guide():
     return render_template("search_guide.html", postgres_mode=(DATABASE_BACKEND == "postgres"))
 
 
+@app.get("/admin/server-info")
+@admin_required
+def server_info_page():
+    """Show operational metadata to administrators without exposing secrets or hosts."""
+    return render_template(
+        "server_info.html",
+        price_meta=get_price_meta(),
+        scryfall_catalog_meta=get_scryfall_catalog_meta(),
+        scryfall_bulk_meta=get_scryfall_bulk_meta(),
+        price_history_days=PRICE_HISTORY_DAYS,
+        scanner_api_enabled=bool(SCANNER_API_KEY),
+        postgres_mode=(DATABASE_BACKEND == "postgres"),
+        display_timezone=DISPLAY_TIMEZONE,
+        discord_configured=bool(DISCORD_WEBHOOK_URL),
+        price_alert_enabled=PRICE_ALERT_ENABLED,
+    )
+
+
 @app.get("/admin")
 @admin_required
 def admin_page():
@@ -3560,8 +3579,8 @@ def delete_user(username):
         conn.close()
 
 
-@app.post("/admin/password")
-@admin_required
+@app.post("/account/password")
+@login_required
 def change_password():
     if DATABASE_BACKEND == "postgres":
         from postgres_user_admin import handle_change_password
@@ -3569,12 +3588,18 @@ def change_password():
 
     password = str(request.form.get("password") or "")
     if len(password) < 12:
-        return redirect(url_for("admin_page", message="Password must be at least 12 characters."))
+        return redirect(url_for("preferences_page", message="Password must be at least 12 characters."))
+    user = current_user()
+    if not user:
+        return redirect(url_for("login"))
     conn = connect_inventory()
-    conn.execute("UPDATE users SET password_hash = ? WHERE username = ?", (generate_password_hash(password), current_admin()))
+    conn.execute(
+        "UPDATE users SET password_hash = ? WHERE username = ?",
+        (generate_password_hash(password), str(user["username"])),
+    )
     conn.commit()
     conn.close()
-    return redirect(url_for("admin_page", message="Password updated."))
+    return redirect(url_for("preferences_page", message="Password updated."))
 
 
 @app.post("/admin/set_counts")
@@ -3778,10 +3803,6 @@ def index():
         page_count=page_count,
         total_rows=total_rows,
         total_cards=total_cards,
-        price_meta=get_price_meta(),
-        scryfall_catalog_meta=get_scryfall_catalog_meta(),
-        price_history_days=PRICE_HISTORY_DAYS,
-        scanner_api_enabled=bool(SCANNER_API_KEY),
         postgres_mode=(DATABASE_BACKEND == 'postgres'),
         admin_user=current_admin(),
         admin_is_superadmin=is_superadmin_user(current_user()),
