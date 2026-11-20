@@ -205,7 +205,9 @@ class PostgreSQLManualAddTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         html = response.get_data(as_text=True)
 
-        self.assertIn("Add Card Manually", html)
+        self.assertNotIn("Add Card Manually", html)
+        self.assertNotIn("manualAddForm", html)
+        self.assertIn("Catalog search aliases", html)
         self.assertIn("catalogSearch", html)
         self.assertIn("aliasForm", html)
         self.assertIn(self.owner_name, html)
