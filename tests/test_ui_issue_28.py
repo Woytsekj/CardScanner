@@ -41,7 +41,17 @@ class Issue28UIFoundationTests(unittest.TestCase):
         source = self.read("templates/index.html")
         self.assertNotIn("mobile-summary-menu", source)
         self.assertNotIn("owner_totals.items()", source)
-        self.assertIn("url_for('analytics_page')", source)
+        self.assertNotIn("Collection analytics", source)
+        self.assertIn("url_for('analytics_page')", self.read("templates/_app_header.html"))
+
+    def test_inventory_owns_the_manual_add_workflow(self):
+        inventory = self.read("templates/index.html")
+        admin = self.read("templates/admin.html")
+        self.assertIn('id="openManualAdd"', inventory)
+        self.assertIn('id="manualAddDialog"', inventory)
+        self.assertIn("url_for('manual_add')", inventory)
+        self.assertNotIn("Add Card Manually", admin)
+        self.assertIn("Catalog search aliases", admin)
 
     def test_deck_import_form_is_collapsed_above_full_width_deck_list(self):
         source = self.read("templates/decks.html")
