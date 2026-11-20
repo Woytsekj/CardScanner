@@ -1,5 +1,5 @@
 {% set app_user_role = (current_user["role"]|default("", true)|lower) if current_user else "" %}
-{% set app_is_admin = current_user and ((current_user["is_admin"]|default(0)|int == 1) or app_user_role == "admin") %}
+{% set app_is_admin = current_user and ((current_user["is_admin"]|default(0)|int == 1) or app_user_role in ["admin", "superadmin"] or (current_user["is_superadmin"]|default(0)|int == 1)) %}
 {% set app_can_vend = current_user and (app_is_admin or app_user_role == "vendor") %}
 <header class="topbar app-topbar">
   <div class="app-brand-block">
@@ -24,7 +24,8 @@
       {% if app_can_vend %}<a class="app-nav-link{% if active_page == 'vending' %} is-active{% endif %}" href="{{ url_for('vending_view') }}"{% if active_page == 'vending' %} aria-current="page"{% endif %}>Vending</a>{% endif %}
       <a class="app-nav-link{% if active_page == 'analytics' %} is-active{% endif %}" href="{{ url_for('analytics_page') }}"{% if active_page == 'analytics' %} aria-current="page"{% endif %}>Collection analytics</a>
       <a class="app-nav-link{% if active_page == 'search-guide' %} is-active{% endif %}" href="{{ url_for('search_guide') }}"{% if active_page == 'search-guide' %} aria-current="page"{% endif %}>Search guide</a>
-      {% if app_is_admin %}<a class="app-nav-link{% if active_page == 'admin' %} is-active{% endif %}" href="{{ url_for('admin_page') }}"{% if active_page == 'admin' %} aria-current="page"{% endif %}>Administration</a>{% endif %}
+      {% if app_is_admin %}<a class="app-nav-link{% if active_page == 'admin' %} is-active{% endif %}" href="{{ url_for('admin_page') }}"{% if active_page == 'admin' %} aria-current="page"{% endif %}>Administration</a>
+      <a class="app-nav-link{% if active_page == 'server-info' %} is-active{% endif %}" href="{{ url_for('server_info_page') }}"{% if active_page == 'server-info' %} aria-current="page"{% endif %}>Server info</a>{% endif %}
     </nav>
   </details>
   <div class="app-account-actions">
