@@ -788,6 +788,9 @@ def security_gate():
         # Deck pages use PostgreSQL read helpers. Cover files are validated
         # generated filenames and are served read-only.
         if request.endpoint in {
+            "preferences_page",
+            "analytics_page",
+            "search_guide",
             "index",
             "decks_page",
             "deck_view",
