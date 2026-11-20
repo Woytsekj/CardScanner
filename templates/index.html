@@ -22,7 +22,8 @@
     <section class="page-actions-bar inventory-page-actions" aria-label="Inventory actions">
       <div class="page-actions-group">
         {% if admin_user %}
-        <button class="button" type="button" onclick="openImport()">Import CSV</button>
+        <button class="button" type="button" id="openManualAdd">Add card</button>
+        <button class="button secondary" type="button" onclick="openImport()">Import CSV</button>
         <a class="button secondary" href="{{ url_for('export_csv') }}">Export CSV</a>
         <a class="button secondary" href="{{ url_for('export_manabox_csv', owner=selected_owner) }}">Export ManaBox</a>
         {% endif %}
@@ -30,9 +31,9 @@
         <a class="button secondary" href="{{ url_for('scanner_mobile_index') }}">Mobile scanner</a>
         <a class="button secondary" href="{{ url_for('scanner_desktop_download') }}">Desktop scanner</a>
         {% endif %}
-        <a class="button secondary" href="{{ url_for('analytics_page') }}">Collection analytics</a>
       </div>
     </section>
+    <section class="inventory-control-panel" aria-label="Inventory search and filters">
     <section class="toolbar" id="inventoryToolbar">
       <form class="search-form" method="get" action="{{ url_for('index') }}" id="inventorySearchForm">
         <div class="inventory-search-box">
@@ -152,6 +153,8 @@
     </section>
       </div>
     </details>
+
+    </section>
 
     {% if admin_user %}
     <section class="bulk-edit-bar" id="bulkEditBar">
@@ -326,6 +329,38 @@
     {% endif %}
   </main>
   <datalist id="location-options">{% for location in locations %}<option value="{{ location }}">{% endfor %}</datalist>
+
+  <dialog id="manualAddDialog" class="manual-add-dialog">
+    <form method="post" action="{{ url_for('manual_add') }}" class="manual-form" id="manualAddForm">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="dialog-heading-row"><div><p class="panel-eyebrow">Inventory</p><h2>Add a card</h2><p class="subtle">Search the local catalog to select the exact printing, then confirm the collection details.</p></div><button class="dialog-close" type="button" id="closeManualAdd" aria-label="Close add card dialog">×</button></div>
+      <div class="manual-search">
+        <label>Search card catalog
+          <div class="search-inline catalog-search-box">
+            <input id="inventoryCatalogSearch" type="search" placeholder="Card name, set code, or collector number" autocomplete="off">
+            <button class="button secondary" type="button" id="inventoryCatalogSearchButton">Search</button>
+          </div>
+        </label>
+        <div id="inventoryCatalogStatus" class="status" role="status" aria-live="polite"></div>
+        <div id="inventoryCatalogResults" class="catalog-results"></div>
+      </div>
+      <div class="form-grid-2">
+        <label>Card name<input id="inventoryManualName" name="name" maxlength="200" required></label>
+        <label>Set code<input id="inventoryManualSet" name="set_code" maxlength="20" placeholder="Set code"></label>
+        <label>Collector number<input id="inventoryManualCollector" name="collector_number" maxlength="40" placeholder="Collector number"></label>
+        <label>Rarity<input id="inventoryManualRarity" name="rarity" maxlength="40" placeholder="Rarity"></label>
+        <label>Scryfall ID<input id="inventoryManualScryfall" name="scryfall_id" maxlength="80" placeholder="Optional"></label>
+        <label>TCGplayer ID<input id="inventoryManualTCG" name="tcgplayer_id" maxlength="40" placeholder="Optional"></label>
+        <label>Scanned / acquisition price<input id="inventoryManualPrice" name="price" value="0.00" inputmode="decimal"></label>
+        <label>Quantity<input name="quantity" type="number" min="1" step="1" value="1" required></label>
+        <label>Collection owner<select name="owner" required>{% for owner in owners %}<option value="{{ owner }}"{% if selected_owner == owner %} selected{% endif %}>{{ owner }}</option>{% endfor %}</select></label>
+        <label>Finish<select name="finish"><option value="normal">Normal</option><option value="foil">Foil</option></select></label>
+        <label>Storage location<input name="location" value="Free" list="location-options" placeholder="Free or a storage place"></label>
+      </div>
+      <div class="manual-preview"><img id="inventoryManualPreview" src="" alt="" hidden><span id="inventoryManualPreviewText">Select a catalog printing to preview its image.</span></div>
+      <div class="dialog-actions"><button class="button secondary" type="button" id="cancelManualAdd">Cancel</button><button class="button" type="submit">Add to inventory</button></div>
+    </form>
+  </dialog>
 
   <dialog id="importDialog">
     <form id="importForm" method="dialog" enctype="multipart/form-data">
@@ -904,6 +939,66 @@ document.getElementById('importForm').addEventListener('submit', async (event) =
   };
   syncDetailsForViewport();
   desktopLayout.addEventListener('change', syncDetailsForViewport);
+})();
+</script>
+
+<script>
+(() => {
+  const dialog = document.getElementById('manualAddDialog');
+  const open = document.getElementById('openManualAdd');
+  const close = document.getElementById('closeManualAdd');
+  const cancel = document.getElementById('cancelManualAdd');
+  if (!dialog || !open) return;
+  open.addEventListener('click', () => dialog.showModal());
+  [close, cancel].forEach(button => button && button.addEventListener('click', () => dialog.close()));
+  const search = document.getElementById('inventoryCatalogSearch');
+  const results = document.getElementById('inventoryCatalogResults');
+  const status = document.getElementById('inventoryCatalogStatus');
+  const fields = {
+    name: document.getElementById('inventoryManualName'),
+    set: document.getElementById('inventoryManualSet'),
+    collector: document.getElementById('inventoryManualCollector'),
+    rarity: document.getElementById('inventoryManualRarity'),
+    scryfall: document.getElementById('inventoryManualScryfall'),
+    tcg: document.getElementById('inventoryManualTCG')
+  };
+  const preview = document.getElementById('inventoryManualPreview');
+  const previewText = document.getElementById('inventoryManualPreviewText');
+  const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  async function searchCatalog() {
+    const term = search.value.trim();
+    if (!term) { status.textContent = 'Enter a card name, set code, or collector number.'; results.innerHTML = ''; return; }
+    status.textContent = 'Searching the local catalog…';
+    results.innerHTML = '';
+    try {
+      const response = await fetch('{{ url_for('catalog_search') }}?q=' + encodeURIComponent(term));
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.success) { status.textContent = data.error || 'Catalog search failed.'; return; }
+      if (!data.results || !data.results.length) { status.textContent = 'No matching printings found.'; return; }
+      status.textContent = data.results.length + ' matching printing(s). Select the exact one you own.';
+      results.innerHTML = data.results.map((card, index) =>
+        '<button type="button" class="catalog-result" data-index="' + index + '">' +
+        (card.image_url ? '<img src="' + escapeHtml(card.image_url) + '" alt="">' : '<div class="catalog-thumb-placeholder">—</div>') +
+        '<span><strong>' + escapeHtml(card.name) + '</strong><small>' +
+        escapeHtml(card.set_code || '—') + ' · #' + escapeHtml(card.collector_number || '—') + ' · ' + escapeHtml(card.rarity || '') +
+        '</small></span></button>'
+      ).join('');
+      results.querySelectorAll('.catalog-result').forEach(button => button.addEventListener('click', () => {
+        const card = data.results[Number(button.dataset.index)];
+        fields.name.value = card.name || '';
+        fields.set.value = card.set_code || '';
+        fields.collector.value = card.collector_number || '';
+        fields.rarity.value = card.rarity || '';
+        fields.scryfall.value = card.scryfall_id || '';
+        fields.tcg.value = card.tcgplayer_id || '';
+        if (card.image_url) { preview.src = card.image_url; preview.hidden = false; previewText.hidden = true; }
+        else { preview.hidden = true; previewText.hidden = false; }
+        status.textContent = 'Selected ' + card.name + ' · ' + (card.set_code || '—') + ' #' + (card.collector_number || '—') + '.';
+      }));
+    } catch (_) { status.textContent = 'Could not reach the local catalog search.'; }
+  }
+  document.getElementById('inventoryCatalogSearchButton').addEventListener('click', searchCatalog);
+  search.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); searchCatalog(); } });
 })();
 </script>
 </body>
