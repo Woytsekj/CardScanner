@@ -24,13 +24,23 @@
       {% if app_can_vend %}<a class="app-nav-link{% if active_page == 'vending' %} is-active{% endif %}" href="{{ url_for('vending_view') }}"{% if active_page == 'vending' %} aria-current="page"{% endif %}>Vending</a>{% endif %}
       <a class="app-nav-link{% if active_page == 'analytics' %} is-active{% endif %}" href="{{ url_for('analytics_page') }}"{% if active_page == 'analytics' %} aria-current="page"{% endif %}>Collection analytics</a>
       <a class="app-nav-link{% if active_page == 'search-guide' %} is-active{% endif %}" href="{{ url_for('search_guide') }}"{% if active_page == 'search-guide' %} aria-current="page"{% endif %}>Search guide</a>
-      <a class="app-nav-link{% if active_page == 'preferences' %} is-active{% endif %}" href="{{ url_for('preferences_page') }}"{% if active_page == 'preferences' %} aria-current="page"{% endif %}>Preferences</a>
       {% if app_is_admin %}<a class="app-nav-link{% if active_page == 'admin' %} is-active{% endif %}" href="{{ url_for('admin_page') }}"{% if active_page == 'admin' %} aria-current="page"{% endif %}>Administration</a>{% endif %}
     </nav>
   </details>
-  <div class="app-account-actions"><span class="app-account-name">{{ current_user["username"] }}</span>
-    <form method="post" action="{{ url_for('logout') }}" class="inline-form">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Log out</button>
-    </form>
+  <div class="app-account-actions">
+    <details class="app-profile-menu">
+      <summary aria-label="Open account menu">
+        <span class="app-avatar" aria-hidden="true">{{ current_user["username"][:1]|upper }}</span>
+        <span class="app-profile-name">{{ current_user["username"] }}</span>
+        <span class="app-profile-caret" aria-hidden="true">▾</span>
+      </summary>
+      <div class="app-profile-dropdown">
+        <div class="app-profile-identity"><strong>{{ current_user["username"] }}</strong><small>{{ current_user["role"]|capitalize }}</small></div>
+        <a href="{{ url_for('preferences_page') }}"{% if active_page == 'preferences' %} aria-current="page"{% endif %}>Preferences</a>
+        <form method="post" action="{{ url_for('logout') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Log out</button>
+        </form>
+      </div>
+    </details>
   </div>
 </header>
