@@ -2473,8 +2473,12 @@ def logout():
 @app.get("/preferences")
 @login_required
 def preferences_page():
-    """Show browser-local display preferences for any signed-in account."""
-    return render_template("preferences.html", postgres_mode=(DATABASE_BACKEND == "postgres"))
+    """Show account and browser-local display preferences."""
+    return render_template(
+        "preferences.html",
+        postgres_mode=(DATABASE_BACKEND == "postgres"),
+        message=request.args.get("message", ""),
+    )
 
 
 @app.get("/analytics")
