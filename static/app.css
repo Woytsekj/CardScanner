@@ -1398,3 +1398,28 @@ body[data-inventory-mode="select"] .card-tile { cursor: crosshair; }
 .card-detail-history-panel .history-stats { margin: 8px 0; }
 .card-detail-history-panel .status { margin: 7px 0; }
 @media (max-width: 760px) { .card-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 132px), 1fr)); gap: 12px 8px; } .card-tile { padding: 3px; } .tile-price-badge { min-height: 29px; padding: 0 8px; } .inventory-transfer-dropdown { right: auto; left: 0; } .card-detail-price-row { align-items: flex-start; flex-direction: column; } .card-detail-history-panel { padding: 9px; } body { scroll-padding-top: 120px; } }
+
+
+/* Preferences security form and administrator-only server information. */
+.preference-security-panel { grid-column: 1 / -1; min-height: 0; }
+.preference-password-form { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; max-width: 760px; margin-top: 14px; }
+.preference-password-form label { flex: 1 1 320px; margin: 0; }
+.preference-password-form input { width: 100%; }
+.server-info-page { max-width: 1440px; margin: 0 auto; }
+.server-info-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); align-items: start; gap: 16px; }
+.server-info-panel { min-width: 0; }
+.server-info-panel h2 { margin-bottom: 12px; }
+.settings-list { display: grid; gap: 0; }
+.settings-list > div { display: grid; grid-template-columns: minmax(140px,.8fr) minmax(0,1.2fr); align-items: start; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.settings-list > div:last-child { border-bottom: 0; }
+.settings-list > div > span { color: var(--muted); font-size: 13px; }
+.settings-list > div > strong { min-width: 0; color: var(--text); font-size: 13px; text-align: right; overflow-wrap: anywhere; }
+.api-live { color: var(--green) !important; }
+.api-warning { color: var(--gold) !important; }
+.server-info-note { margin: 14px 3px; font-size: 12px; }
+@media (max-width: 760px) {
+  .server-info-grid { grid-template-columns: minmax(0,1fr); }
+  .settings-list > div { grid-template-columns: minmax(0,1fr); gap: 4px; }
+  .settings-list > div > strong { text-align: left; }
+  .preference-password-form { align-items: stretch; flex-direction: column; }
+}
