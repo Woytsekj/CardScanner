@@ -436,14 +436,14 @@ def handle_delete_user(username: str):
     return _redirect(_run(operation, lock=True))
 
 def handle_change_password():
-    """Change the password of the currently authenticated admin account."""
+    """Change the password of the currently authenticated account."""
     password = str(request.form.get("password") or "")
     if len(password) < 12:
-        return _redirect("Password must be at least 12 characters.")
+        return redirect(url_for("preferences_page", message="Password must be at least 12 characters."))
 
     username = str(session.get("username") or "").strip()
     if not username:
-        return _redirect("User not found.")
+        return redirect(url_for("preferences_page", message="User not found."))
 
     password_hash = generate_password_hash(password)
 
@@ -460,7 +460,7 @@ def handle_change_password():
         return updated is not None
 
     if not _run(operation):
-        return _redirect("User not found.")
+        return redirect(url_for("preferences_page", message="User not found."))
 
-    return _redirect("Password updated.")
+    return redirect(url_for("preferences_page", message="Password updated."))
 
