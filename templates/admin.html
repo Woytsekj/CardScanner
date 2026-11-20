@@ -18,52 +18,31 @@
 <section class="admin-grid">
 
 <div class="admin-panel">
-  <h2>Add Card Manually</h2>
-  <p class="subtle">Search your local card catalog first. Selecting a result fills the metadata automatically. You can still type everything by hand for a card that is not in the catalog.</p>
-
+  <h2>Catalog search aliases</h2>
+  <p class="subtle">Manage alternate names that should find a catalog printing in Inventory search. This is useful for Secret Lair and re-themed cards.</p>
   <div class="manual-search">
     <label>Search card catalog
       <div class="search-inline catalog-search-box">
-        <input id="catalogSearch" type="search" placeholder="Start typing a card name, set, or collector #" autocomplete="off" aria-autocomplete="list" aria-controls="catalogSuggestions">
+        <input id="catalogSearch" type="search" placeholder="Card name, set code, or collector number" autocomplete="off" aria-autocomplete="list" aria-controls="catalogSuggestions">
         <button class="button secondary" type="button" id="catalogSearchButton">Search</button>
         <div id="catalogSuggestions" class="autocomplete-menu" role="listbox" hidden></div>
       </div>
     </label>
-    <div id="catalogStatus" class="status"></div>
+    <div id="catalogStatus" class="status" role="status" aria-live="polite"></div>
     <div id="catalogResults" class="catalog-results"></div>
   </div>
-
-  <form method="post" action="{{ url_for('manual_add') }}" class="manual-form" id="manualAddForm"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <div class="form-grid-2">
-      <label>Card name<input id="manualName" name="name" maxlength="200" required></label>
-      <label>Set code<input id="manualSet" name="set_code" maxlength="20" placeholder="SPG"></label>
-      <label>Collector number<input id="manualCollector" name="collector_number" maxlength="40" placeholder="106"></label>
-      <label>Rarity<input id="manualRarity" name="rarity" maxlength="40" placeholder="Mythic"></label>
-      <label>Scryfall ID<input id="manualScryfall" name="scryfall_id" maxlength="80" placeholder="Optional"></label>
-      <label>TCGplayer ID<input id="manualTCG" name="tcgplayer_id" maxlength="40" placeholder="Optional"></label>
-      <label>Scanned price<input id="manualPrice" name="price" value="0.00" inputmode="decimal"></label>
-      <label>Quantity<input name="quantity" type="number" min="1" step="1" value="1" required></label>
-      <label>Owner<select name="owner" required>{% for owner in people if owner.active %}<option value="{{ owner.name }}">{{ owner.name }}</option>{% endfor %}</select></label>
-      <label>Finish<select name="finish"><option value="normal">Normal</option><option value="foil">Foil</option></select></label>
-      <label>Location<input name="location" value="Free" placeholder="Free or deck name"></label>
-    </div>
-    <div class="manual-preview"><img id="manualPreviewImage" src="" alt="" hidden><span id="manualPreviewText">Select a catalog card to preview its image.</span></div>
-    <button class="button" type="submit">Add to Inventory</button>
-  </form>
-
   <div class="alias-manager">
     <h3>Alternate names / search aliases</h3>
-    <p class="subtle">Give a card another name that should find it on the main inventory search. This is useful for Secret Lair or other re-themed cards, such as <strong>Miku, Child of Song</strong> → <strong>Child of Alara</strong>.</p>
+    <p class="subtle">Select a printing above, then add aliases that should resolve to it in the main inventory search.</p>
     <div class="alias-selected" id="aliasSelected">Select a catalog card above to manage its aliases.</div>
     <form method="post" action="{{ url_for('add_alias') }}" id="aliasForm" class="search-inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="scryfall_id" id="aliasScryfall">
-      <input type="text" name="alias" id="aliasInput" maxlength="200" placeholder="Alternate name, e.g. Miku, Child of Song" disabled required>
+      <input type="text" name="alias" id="aliasInput" maxlength="200" placeholder="Alternate card name" disabled required>
       <button class="button secondary" id="aliasAddButton" type="submit" disabled>Add alias</button>
     </form>
     <div id="aliasList" class="alias-list"></div>
   </div>
 </div>
-
 <div class="admin-panel">
   <h2>People</h2>
   <p class="subtle">These names appear in every scanner's owner dropdown. You can deactivate a person, or permanently delete them. Deleting a person never silently destroys inventory: if they still own cards, choose another active owner to receive those cards.</p>
@@ -255,13 +234,6 @@ const q = document.getElementById('catalogSearch');
 const suggestions = document.getElementById('catalogSuggestions');
 const results = document.getElementById('catalogResults');
 const status = document.getElementById('catalogStatus');
-const fields = {
-  name: document.getElementById('manualName'), set: document.getElementById('manualSet'),
-  collector: document.getElementById('manualCollector'), rarity: document.getElementById('manualRarity'),
-  scryfall: document.getElementById('manualScryfall'), tcg: document.getElementById('manualTCG')
-};
-const preview = document.getElementById('manualPreviewImage');
-const previewText = document.getElementById('manualPreviewText');
 const aliasScryfall = document.getElementById('aliasScryfall');
 const aliasInput = document.getElementById('aliasInput');
 const aliasAddButton = document.getElementById('aliasAddButton');
@@ -334,16 +306,8 @@ async function loadAliases(scryfallId, card) {
   } catch (_) {}
 }
 function selectCatalogCard(card) {
-  fields.name.value = card.name || '';
-  fields.set.value = card.set_code || '';
-  fields.collector.value = card.collector_number || '';
-  fields.rarity.value = card.rarity || '';
-  fields.scryfall.value = card.scryfall_id || '';
-  fields.tcg.value = card.tcgplayer_id || '';
   q.value = card.name || q.value;
-  if (card.image_url) { preview.src = card.image_url; preview.hidden = false; previewText.hidden = true; }
-  else { preview.hidden = true; previewText.hidden = false; }
-  status.textContent = 'Selected ' + card.name + ' [' + (card.set_code || '—') + ' #' + (card.collector_number || '—') + '].';
+  status.textContent = 'Selected ' + card.name + ' [' + (card.set_code || '—') + ' #' + (card.collector_number || '—') + '] for alias management.';
   hideSuggestions();
   loadAliases(card.scryfall_id || '', card);
 }
