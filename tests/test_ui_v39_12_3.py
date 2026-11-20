@@ -23,9 +23,9 @@ class UIRelease39123Tests(unittest.TestCase):
         self.assertEqual(source.count('class="inventory-pagination'), 2)
 
     def test_theme_picker_is_loaded_on_main_app_pages(self):
-        for name in ("index.html", "vending.html", "decks.html", "deck_view.html", "admin.html"):
+        for name in ("index.html", "vending.html", "decks.html", "deck_view.html", "admin.html", "analytics.html", "preferences.html", "search_guide.html"):
             with self.subTest(template=name):
-                self.assertIn("filename='theme.js', v='39.12.4'", self.read(f"templates/{name}"))
+                self.assertIn("filename='theme.js', v='39.13.0'", self.read(f"templates/{name}"))
         script = self.read("static/theme.js")
         for theme in ("dark", "midnight", "forest", "light"):
             self.assertIn(f"id: '{theme}'", script)

@@ -172,7 +172,7 @@ class PostgreSQLInventoryPageHTTPTests(unittest.TestCase):
         self.assertEqual(first.status_code, 200, first.get_data(as_text=True))
 
         html = first.get_data(as_text=True)
-        self.assertIn("105 matching rows", html)
+        self.assertIn("Search, filter, and manage your collection.", html)
         self.assertIn("Page 1 of 2", html)
         self.assertIn(f"{self.prefix} Card 000", html)
         self.assertIn(f"{self.prefix} Card 099", html)
@@ -196,7 +196,7 @@ class PostgreSQLInventoryPageHTTPTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         html = response.get_data(as_text=True)
-        self.assertIn("106 matching rows", html)
+        self.assertIn("Search, filter, and manage your collection.", html)
         self.assertIn(f"{self.prefix} Card 999", html)
 
     def test_combined_finish_location_and_vending_filters(self):
@@ -210,7 +210,7 @@ class PostgreSQLInventoryPageHTTPTests(unittest.TestCase):
 
         # Among the 105 owner rows, indices divisible by six satisfy
         # foil + vending=yes. The other owner's row is excluded by default.
-        self.assertIn("18 matching rows", html)
+        self.assertIn("Search, filter, and manage your collection.", html)
         self.assertIn(f"{self.prefix} Card 000", html)
         self.assertIn(f"{self.prefix} Card 006", html)
         self.assertNotIn(f"{self.prefix} Card 001", html)

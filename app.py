@@ -788,6 +788,10 @@ def security_gate():
         # Deck pages use PostgreSQL read helpers. Cover files are validated
         # generated filenames and are served read-only.
         if request.endpoint in {
+            "preferences_page",
+            "server_info_page",
+            "analytics_page",
+            "search_guide",
             "index",
             "decks_page",
             "deck_view",
@@ -2466,6 +2470,63 @@ def logout():
     return redirect(url_for("login"))
 
 
+@app.get("/preferences")
+@login_required
+def preferences_page():
+    """Show account and browser-local display preferences."""
+    return render_template(
+        "preferences.html",
+        postgres_mode=(DATABASE_BACKEND == "postgres"),
+        message=request.args.get("message", ""),
+    )
+
+
+@app.get("/analytics")
+@login_required
+def analytics_page():
+    """Show aggregate and personal totals without exposing other owners' values."""
+    owner_totals, owner_counts, grand_total, global_finish_totals, _, _ = inventory_summary(
+        "", "", "", "date", "desc"
+    )
+    user = current_user()
+    person_name = str(user["person_name"] or "").strip() if user else ""
+    personal_total = owner_totals.get(person_name) if person_name else None
+    personal_counts = owner_counts.get(person_name, {"normal": 0, "foil": 0}) if person_name else None
+    return render_template(
+        "analytics.html",
+        grand_total=grand_total,
+        global_finish_totals=global_finish_totals,
+        personal_total=personal_total,
+        personal_counts=personal_counts,
+        postgres_mode=(DATABASE_BACKEND == "postgres"),
+    )
+
+
+@app.get("/help/search")
+@login_required
+def search_guide():
+    """Show the supported local inventory and vending search syntax."""
+    return render_template("search_guide.html", postgres_mode=(DATABASE_BACKEND == "postgres"))
+
+
+@app.get("/admin/server-info")
+@admin_required
+def server_info_page():
+    """Show operational metadata to administrators without exposing secrets or hosts."""
+    return render_template(
+        "server_info.html",
+        price_meta=get_price_meta(),
+        scryfall_catalog_meta=get_scryfall_catalog_meta(),
+        scryfall_bulk_meta=get_scryfall_bulk_meta(),
+        price_history_days=PRICE_HISTORY_DAYS,
+        scanner_api_enabled=bool(SCANNER_API_KEY),
+        postgres_mode=(DATABASE_BACKEND == "postgres"),
+        display_timezone=DISPLAY_TIMEZONE,
+        discord_configured=bool(DISCORD_WEBHOOK_URL),
+        price_alert_enabled=PRICE_ALERT_ENABLED,
+    )
+
+
 @app.get("/admin")
 @admin_required
 def admin_page():
@@ -3522,8 +3583,8 @@ def delete_user(username):
         conn.close()
 
 
-@app.post("/admin/password")
-@admin_required
+@app.post("/account/password")
+@login_required
 def change_password():
     if DATABASE_BACKEND == "postgres":
         from postgres_user_admin import handle_change_password
@@ -3531,12 +3592,18 @@ def change_password():
 
     password = str(request.form.get("password") or "")
     if len(password) < 12:
-        return redirect(url_for("admin_page", message="Password must be at least 12 characters."))
+        return redirect(url_for("preferences_page", message="Password must be at least 12 characters."))
+    user = current_user()
+    if not user:
+        return redirect(url_for("login"))
     conn = connect_inventory()
-    conn.execute("UPDATE users SET password_hash = ? WHERE username = ?", (generate_password_hash(password), current_admin()))
+    conn.execute(
+        "UPDATE users SET password_hash = ? WHERE username = ?",
+        (generate_password_hash(password), str(user["username"])),
+    )
     conn.commit()
     conn.close()
-    return redirect(url_for("admin_page", message="Password updated."))
+    return redirect(url_for("preferences_page", message="Password updated."))
 
 
 @app.post("/admin/set_counts")
@@ -3740,10 +3807,6 @@ def index():
         page_count=page_count,
         total_rows=total_rows,
         total_cards=total_cards,
-        price_meta=get_price_meta(),
-        scryfall_catalog_meta=get_scryfall_catalog_meta(),
-        price_history_days=PRICE_HISTORY_DAYS,
-        scanner_api_enabled=bool(SCANNER_API_KEY),
         postgres_mode=(DATABASE_BACKEND == 'postgres'),
         admin_user=current_admin(),
         admin_is_superadmin=is_superadmin_user(current_user()),

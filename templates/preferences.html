@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Preferences · CardScanner</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.14.0') }}">
+  <script src="{{ url_for('static', filename='security.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='theme.js', v='39.14.0') }}" defer></script>
+</head>
+<body>
+  {% set page_title = 'Preferences' %}
+  {% set page_subtitle = 'Choose how CardScanner looks and behaves in this browser.' %}
+  {% set active_page = 'preferences' %}
+  {% include '_app_header.html' %}
+  <main class="preferences-page">
+    {% if message %}<div class="status admin-message">{{ message }}</div>{% endif %}
+    <section class="preferences-grid">
+      <article class="admin-panel preference-panel">
+        <div class="panel-eyebrow">Appearance</div>
+        <h2>Color theme</h2>
+        <p class="subtle">Choose a theme for this browser. Your selection is stored locally and does not change another user's display.</p>
+        <label for="themeChoice">Application theme
+          <select id="themeChoice" data-theme-select aria-label="Choose CardScanner color theme"></select>
+        </label>
+        <p class="subtle preference-note">Midnight Blue preserves the existing CardScanner look.</p>
+      </article>
+      <article class="admin-panel preference-panel">
+        <div class="panel-eyebrow">Account</div>
+        <h2>Profile and privacy</h2>
+        <p class="subtle">Account-linked preferences and collection-value sharing controls will be managed here. Collection values are not publicly shared by this page.</p>
+      </article>
+      <article class="admin-panel preference-panel">
+        <div class="panel-eyebrow">Security</div>
+        <h2>Change your password</h2>
+        <p class="subtle">Change the password for the account you are currently signed in with. Passwords must be at least 12 characters.</p>
+        <form method="post" action="{{ url_for('change_password') }}" class="manual-form preference-password-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label>New password<input type="password" name="password" minlength="12" autocomplete="new-password" required></label>
+          <button class="button" type="submit">Update password</button>
+        </form>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

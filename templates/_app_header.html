@@ -1,0 +1,47 @@
+{% set app_user_role = (current_user["role"]|default("", true)|lower) if current_user else "" %}
+{% set app_is_admin = current_user and ((current_user["is_admin"]|default(0)|int == 1) or app_user_role in ["admin", "superadmin"] or (current_user["is_superadmin"]|default(0)|int == 1)) %}
+{% set app_can_vend = current_user and (app_is_admin or app_user_role == "vendor") %}
+<header class="topbar app-topbar">
+  <div class="app-brand-block">
+    {% if app_is_admin %}<a class="app-brand" href="{{ url_for('index') }}" aria-label="CardScanner home">CardScanner</a>
+    {% elif app_can_vend %}<a class="app-brand" href="{{ url_for('vending_view') }}" aria-label="CardScanner home">CardScanner</a>
+    {% else %}<a class="app-brand" href="{{ url_for('preferences_page') }}" aria-label="CardScanner home">CardScanner</a>{% endif %}
+    {% if page_cover_url %}<img class="app-page-cover" src="{{ page_cover_url }}" alt="">{% endif %}
+    <div class="app-page-heading">
+      <h1>{{ page_title }}</h1>
+      {% if page_subtitle %}<div class="subtle">{{ page_subtitle }}</div>{% endif %}
+      {% if page_source_url %}<div class="subtle"><a href="{{ page_source_url }}" target="_blank" rel="noopener noreferrer">Open source deck</a></div>{% endif %}
+      {% if page_tags %}<div class="deck-tag-list">{% for tag in page_tags %}<span class="deck-tag">{{ tag }}</span>{% endfor %}</div>{% endif %}
+    </div>
+  </div>
+  <details class="app-nav-menu" id="siteNavMenu">
+    <summary class="app-nav-toggle" aria-label="Open application navigation"><span aria-hidden="true">☰</span><span>Navigate</span></summary>
+    <nav class="app-primary-nav" aria-label="Site navigation">
+      {% if app_is_admin %}
+      <a class="app-nav-link{% if active_page == 'inventory' %} is-active{% endif %}" href="{{ url_for('index') }}"{% if active_page == 'inventory' %} aria-current="page"{% endif %}>Inventory</a>
+      <a class="app-nav-link{% if active_page == 'decks' %} is-active{% endif %}" href="{{ url_for('decks_page') }}"{% if active_page == 'decks' %} aria-current="page"{% endif %}>Decks</a>
+      {% endif %}
+      {% if app_can_vend %}<a class="app-nav-link{% if active_page == 'vending' %} is-active{% endif %}" href="{{ url_for('vending_view') }}"{% if active_page == 'vending' %} aria-current="page"{% endif %}>Vending</a>{% endif %}
+      <a class="app-nav-link{% if active_page == 'analytics' %} is-active{% endif %}" href="{{ url_for('analytics_page') }}"{% if active_page == 'analytics' %} aria-current="page"{% endif %}>Collection analytics</a>
+      <a class="app-nav-link{% if active_page == 'search-guide' %} is-active{% endif %}" href="{{ url_for('search_guide') }}"{% if active_page == 'search-guide' %} aria-current="page"{% endif %}>Search guide</a>
+      {% if app_is_admin %}<a class="app-nav-link{% if active_page == 'admin' %} is-active{% endif %}" href="{{ url_for('admin_page') }}"{% if active_page == 'admin' %} aria-current="page"{% endif %}>Administration</a>
+      <a class="app-nav-link{% if active_page == 'server-info' %} is-active{% endif %}" href="{{ url_for('server_info_page') }}"{% if active_page == 'server-info' %} aria-current="page"{% endif %}>Server info</a>{% endif %}
+    </nav>
+  </details>
+  <div class="app-account-actions">
+    <details class="app-profile-menu">
+      <summary aria-label="Open account menu">
+        <span class="app-avatar" aria-hidden="true">{{ current_user["username"][:1]|upper }}</span>
+        <span class="app-profile-name">{{ current_user["username"] }}</span>
+        <span class="app-profile-caret" aria-hidden="true">▾</span>
+      </summary>
+      <div class="app-profile-dropdown">
+        <div class="app-profile-identity"><strong>{{ current_user["username"] }}</strong><small>{{ current_user["role"]|capitalize }}</small></div>
+        <a href="{{ url_for('preferences_page') }}"{% if active_page == 'preferences' %} aria-current="page"{% endif %}>Preferences</a>
+        <form method="post" action="{{ url_for('logout') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Log out</button>
+        </form>
+      </div>
+    </details>
+  </div>
+</header>

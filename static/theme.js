@@ -7,17 +7,19 @@
     { id: 'light', label: 'Light' },
   ];
   const valid = new Set(themes.map(theme => theme.id));
-  let saved = 'dark';
+  let saved = 'midnight';
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored && valid.has(stored)) saved = stored;
   } catch (_) { /* Storage can be unavailable in private browsing. */ }
+  const applyTheme = theme => {
+    const value = valid.has(theme) ? theme : 'midnight';
+    document.body.dataset.theme = value;
+    try { localStorage.setItem(STORAGE_KEY, value); } catch (_) { /* Keep the current-page selection. */ }
+  };
   document.body.dataset.theme = saved;
-
-  const picker = document.createElement('div');
-  picker.className = 'theme-picker';
-  picker.innerHTML = '<label for="cardScannerTheme"><span>Theme</span><select id="cardScannerTheme" aria-label="Choose color theme"></select></label>';
-  const select = picker.querySelector('select');
+  const select = document.querySelector('[data-theme-select]');
+  if (!select) return;
   themes.forEach(theme => {
     const option = document.createElement('option');
     option.value = theme.id;
@@ -25,16 +27,5 @@
     select.appendChild(option);
   });
   select.value = saved;
-  select.addEventListener('change', () => {
-    const theme = valid.has(select.value) ? select.value : 'dark';
-    document.body.dataset.theme = theme;
-    try { localStorage.setItem(STORAGE_KEY, theme); } catch (_) { /* Keep the current-page selection. */ }
-  });
-
-  const topbar = document.querySelector('.topbar');
-  if (topbar) {
-    const actions = topbar.querySelector(':scope > .actions, :scope > .site-nav-menu');
-    if (actions) topbar.insertBefore(picker, actions);
-    else topbar.appendChild(picker);
-  }
+  select.addEventListener('change', () => applyTheme(select.value));
 })();

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Collection analytics · CardScanner</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.14.0') }}">
+  <script src="{{ url_for('static', filename='security.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='theme.js', v='39.14.0') }}" defer></script>
+</head>
+<body>
+  {% set page_title = 'Collection analytics' %}
+  {% set page_subtitle = 'Collection value and finish breakdown.' %}
+  {% set active_page = 'analytics' %}
+  {% include '_app_header.html' %}
+  <main class="analytics-page">
+    <section class="analytics-current-grid">
+      <article class="analytics-total-card">
+        <div class="panel-eyebrow">All collections</div>
+        <span class="analytics-label">Current combined value</span>
+        <strong class="analytics-value">${{ '%.2f'|format(grand_total) }}</strong>
+        <div class="analytics-breakdown">{{ global_finish_totals.normal }} normal · {{ global_finish_totals.foil }} foil cards</div>
+      </article>
+      {% if personal_total is not none %}
+      <article class="analytics-personal-card">
+        <div class="panel-eyebrow">Your collection</div>
+        <span class="analytics-label">Current collection value</span>
+        <strong class="analytics-value">${{ '%.2f'|format(personal_total) }}</strong>
+        <div class="analytics-breakdown">{{ personal_counts.normal }} normal · {{ personal_counts.foil }} foil cards</div>
+      </article>
+      {% endif %}
+    </section>
+    <section class="analytics-chart-panel admin-panel">
+      <div class="analytics-chart-heading">
+        <div><h2>Combined collection value</h2><p class="subtle">Historical value across all collections in the database.</p></div>
+        <div class="analytics-ranges">Planned ranges: 3D · 1W · 1M · 3M · 6M · 1Y · ALL</div>
+      </div>
+      <div class="analytics-empty-chart" role="status">
+        <div class="chart-placeholder-line" aria-hidden="true"></div>
+        <strong>Historical snapshots are not available yet</strong>
+        <p class="subtle">A trustworthy graph needs periodic collection-value snapshots. Current totals are available above; the graph will appear after snapshot recording is introduced.</p>
+      </div>
+    </section>
+    {% if personal_total is not none %}
+    <section class="analytics-chart-panel admin-panel">
+      <div class="analytics-chart-heading">
+        <div><h2>Your collection value</h2><p class="subtle">Only your own collection is shown here.</p></div>
+        <div class="analytics-ranges">Planned ranges: 3D · 1W · 1M · 3M · 6M · 1Y · ALL</div>
+      </div>
+      <div class="analytics-empty-chart" role="status">
+        <div class="chart-placeholder-line" aria-hidden="true"></div>
+        <strong>Personal history will appear after snapshot recording is introduced</strong>
+        <p class="subtle">This page does not display another collector's personal value or history.</p>
+      </div>
+    </section>
+    {% endif %}
+  </main>
+</body>
+</html>
