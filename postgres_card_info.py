@@ -43,7 +43,14 @@ def fetch_card_info(conn, scryfall_id: str) -> dict | None:
             pf.name,
             pf.type_line,
             pf.rules_text,
-            face_image.image_uri,
+            CASE
+                WHEN jsonb_exists(pf.metadata, 'image_uri')
+                    THEN pf.metadata ->> 'image_uri'
+                ELSE COALESCE(
+                    face_image.image_uri,
+                    pf.metadata #>> '{image_uris,normal}'
+                )
+            END AS image_uri,
             pf.metadata
         FROM catalog.printing_faces AS pf
         LEFT JOIN catalog.images AS face_image
@@ -51,6 +58,7 @@ def fetch_card_info(conn, scryfall_id: str) -> dict | None:
          AND face_image.game_id = pf.game_id
         WHERE pf.game_id = 'mtg'
           AND pf.printing_id = ?
+          AND COALESCE((pf.metadata ->> '_synthetic')::boolean, false) = false
         ORDER BY pf.face_index
         """,
         (row["printing_id"],),
