@@ -5690,8 +5690,10 @@ def api_price(tcg_id: str):
                     row = conn.execute(
                         """
                         SELECT
-                            MAX(market_price) FILTER (WHERE subtype_name = 'Normal') AS normal_price,
-                            MAX(market_price) FILTER (WHERE subtype_name = 'Foil') AS foil_price
+                            MAX(COALESCE(market_price, mid_price, low_price))
+                                FILTER (WHERE subtype_name = 'Normal') AS normal_price,
+                            MAX(COALESCE(market_price, mid_price, low_price))
+                                FILTER (WHERE subtype_name = 'Foil') AS foil_price
                         FROM catalog.provider_price_current
                         WHERE game_id = 'mtg'
                           AND provider_id = 'tcgcsv'
