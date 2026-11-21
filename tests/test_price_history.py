@@ -295,6 +295,43 @@ class PriceHistoryTests(unittest.TestCase):
         self.assertEqual(meta["price_rows"], len(self.sample_price_rows()))
         self.assertEqual(meta["failures"][0]["groupId"], 78)
 
+    def test_unchanged_postgres_feed_skips_full_catalog_replay(self) -> None:
+        snapshot = {
+            "success": True,
+            "sourceUpdated": TCGCSV_MARKER,
+            "results": self.sample_price_rows(),
+        }
+        snapshot_text = json.dumps(snapshot, separators=(",", ":"))
+        self.prices_file.write_text(snapshot_text, encoding="utf-8")
+        self.last_seen_file.write_text(TCGCSV_MARKER + "\n", encoding="utf-8")
+        self.meta_file.write_text(
+            json.dumps({"source": "TCGCSV", "source_updated": TCGCSV_MARKER}),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(updater, "DATABASE_BACKEND", "postgres"),
+            patch.object(updater, "get_last_updated", return_value=TCGCSV_MARKER),
+            patch.object(
+                updater,
+                "get_json",
+                side_effect=AssertionError("unchanged PostgreSQL marker must not download feeds"),
+            ),
+            patch.object(
+                updater,
+                "record_history_and_alerts",
+                side_effect=AssertionError("global PostgreSQL history must not be replayed"),
+            ),
+        ):
+            updated = updater.sync_prices(force=False)
+
+        self.assertFalse(updated)
+        self.assertEqual(self.prices_file.read_text(encoding="utf-8"), snapshot_text)
+        meta = json.loads(self.meta_file.read_text(encoding="utf-8"))
+        self.assertEqual(meta["history_rows_recorded"], 0)
+        self.assertEqual(meta["alerts_sent"], 0)
+        self.assertEqual(meta["history_scope"], "full_provider_catalog")
+
     def test_forced_sync_downloads_mock_data_and_records_history(self) -> None:
         """Exercise the full sync path without a network call."""
         self.prices_file.write_text("{}", encoding="utf-8")
