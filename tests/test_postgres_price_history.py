@@ -252,6 +252,10 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
             self.assertEqual(float(normal["high_price"]), 1.50)
             self.assertEqual(float(normal["direct_low_price"]), 0.95)
             self.assertTrue(normal["is_available"])
+            # A physical Etched finish must not be assigned a generic Foil price.
+            self.assertIsNone(
+                latest_history_price(conn, self.product_id, "etched", captured)
+            )
 
             # One changed metric stores a complete new state for the subtype.
             changed_at = captured + timedelta(days=2)
