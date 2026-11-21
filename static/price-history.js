@@ -340,6 +340,15 @@ window.openCardDetailPriceHistory = function(tcg, name) {
   if (status) status.textContent = tcg
     ? 'Preparing price history…'
     : 'No TCGplayer product is linked to this printing, so price history is unavailable.';
+  if (!tcg) {
+    inlineHistorySeries = [];
+    const stats = document.getElementById('cardDetailHistoryStats');
+    const chart = document.getElementById('cardDetailPriceHistoryChart');
+    const legend = document.getElementById('cardDetailHistoryLegend');
+    if (stats) stats.innerHTML = '';
+    if (chart) chart.innerHTML = '';
+    if (legend) legend.innerHTML = '';
+  }
   if (expandedHistoryDialog?.open) expandedHistoryDialog.close();
   document.querySelectorAll('.card-detail-history-range, .card-detail-expanded-range').forEach(button =>
     button.classList.toggle('active', Number(button.dataset.days) === 90)
