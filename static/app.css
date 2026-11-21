@@ -1501,3 +1501,19 @@ body[data-inventory-mode="select"] .card-tile { cursor: crosshair; }
     inset: 0; width: calc(100vw - 16px); max-height: 94dvh; padding: 20px 12px;
   }
 }
+
+
+/* Keep the details drawer and zoom viewer within the viewport including padding. */
+.oracle-dialog[open][data-display-mode="sidebar"],
+.oracle-dialog[open][data-display-mode="popup"] { box-sizing: border-box; }
+.image-dialog {
+  box-sizing: border-box;
+  width: auto;
+  max-width: min(96vw, 1100px);
+  max-height: 96dvh;
+}
+.image-dialog img {
+  max-width: min(92vw, 1000px);
+  max-height: 90dvh;
+  cursor: zoom-out;
+}
