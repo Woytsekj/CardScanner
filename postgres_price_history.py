@@ -226,12 +226,13 @@ def fetch_latest_price_trends(
                 products.external_product_id,
                 samples.sample_rank,
                 samples.sample_at AS captured_at,
-                CASE WHEN normal_price.is_available THEN normal_price.market_price END AS normal_price,
-                CASE WHEN foil_price.is_available THEN foil_price.market_price END AS foil_price
+                CASE WHEN normal_price.is_available THEN normal_price.trend_price END AS normal_price,
+                CASE WHEN foil_price.is_available THEN foil_price.trend_price END AS foil_price
             FROM selected_products AS products
             CROSS JOIN sample_times AS samples
             LEFT JOIN LATERAL (
-                SELECT market_price, is_available
+                SELECT COALESCE(market_price, mid_price, low_price) AS trend_price,
+                       is_available
                 FROM catalog.provider_price_observations
                 WHERE game_id = 'mtg'
                   AND provider_id = 'tcgcsv'
@@ -242,7 +243,8 @@ def fetch_latest_price_trends(
                 LIMIT 1
             ) AS normal_price ON TRUE
             LEFT JOIN LATERAL (
-                SELECT market_price, is_available
+                SELECT COALESCE(market_price, mid_price, low_price) AS trend_price,
+                       is_available
                 FROM catalog.provider_price_observations
                 WHERE game_id = 'mtg'
                   AND provider_id = 'tcgcsv'
@@ -285,7 +287,7 @@ def latest_history_price(
     params = [_tcg_product_id(tcg_id), _subtype_for_finish(finish), as_of]
     row = conn.execute(
         f"""
-        SELECT market_price AS price, is_available
+        SELECT COALESCE(market_price, mid_price, low_price) AS price, is_available
         FROM catalog.provider_price_observations
         WHERE game_id = 'mtg'
           AND provider_id = 'tcgcsv'
