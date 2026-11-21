@@ -5,7 +5,7 @@
 <meta name="csrf-token" content="{{ csrf_token }}">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MTG Scanner Inventory</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.17.0') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.18.0') }}">
 <script src="{{ url_for('static', filename='security.js') }}" defer></script>
 <script src="{{ url_for('static', filename='theme.js', v='39.13.0') }}" defer></script>
 <script src="{{ url_for('static', filename='price-history.js', v='39.14.0') }}" defer></script>
@@ -16,7 +16,7 @@
 {% set active_page = 'inventory' %}
 {% include '_app_header.html' %}
 
-  <main>
+  <main id="inventoryPageLayout" class="inventory-page-layout">
 
 
     <section class="inventory-control-panel" aria-label="Inventory search and filters">
@@ -728,8 +728,24 @@ let activeOracleRotation = 0;
 let activeOracleRequest = 0;
 const oracleFaceControls = document.getElementById('oracleFaceControls');
 const cardDetailBackdrop = document.getElementById('cardDetailBackdrop');
-const inventoryResultsLayout = document.getElementById('inventoryResultsLayout');
+const inventoryPageLayout = document.getElementById('inventoryPageLayout');
+const inventoryHeader = document.querySelector('.app-topbar');
 const largeCardImage = document.getElementById('largeCardImage');
+
+function updateInventoryHeaderOffset() {
+  const headerHeight = inventoryHeader
+    ? Math.ceil(inventoryHeader.getBoundingClientRect().height)
+    : 54;
+  document.documentElement.style.setProperty('--inventory-header-offset', headerHeight + 'px');
+}
+updateInventoryHeaderOffset();
+if (inventoryHeader && 'ResizeObserver' in window) {
+  new ResizeObserver(updateInventoryHeaderOffset).observe(inventoryHeader);
+}
+window.addEventListener('resize', () => {
+  updateInventoryHeaderOffset();
+  if (!oracleDialog.hidden) applyCardDetailMode();
+}, { passive: true });
 
 function applyOracleRotation() {
   oracleCardImage.style.transform = `rotate(${activeOracleRotation}deg)`;
@@ -778,7 +794,7 @@ document.getElementById('oracleRotateReset').addEventListener('click', () => set
 cardDetailBackdrop.addEventListener('click', closeOraclePanel);
 document.getElementById('closeCardDetail').addEventListener('click', closeOraclePanel);
 document.addEventListener('keydown', event => {
-  if (event.key === 'Escape' && !oracleDialog.hidden && cardDetailDisplayMode === 'sidebar') closeOraclePanel();
+  if (event.key === 'Escape' && !oracleDialog.hidden) closeOraclePanel();
 });
 let loadedOracleRulingsSid = '';
 function escOracle(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -871,8 +887,15 @@ async function openOracle(sid, name, imageUrl = '', cardMeta = {}) {
   oracleCardImage.alt = name || '';
   renderOracleFaces([]);
   setOracleRotation(0);
+  const needsEntrance = !oracleDialog.classList.contains('is-visible');
   applyCardDetailMode();
   oracleDialog.hidden = false;
+  if (needsEntrance) {
+    oracleDialog.classList.remove('is-visible');
+    window.requestAnimationFrame(() => {
+      if (!oracleDialog.hidden) oracleDialog.classList.add('is-visible');
+    });
+  }
   document.querySelectorAll('.card-tile.is-active, tr.is-active').forEach(row => row.classList.remove('is-active'));
   const tile = document.querySelector(`.card-art-trigger[data-scryfall="${CSS.escape(sid || '')}"]`)?.closest('.card-tile');
   const tableRow = document.querySelector(`.oracle-image-trigger[data-scryfall="${CSS.escape(sid || '')}"]`)?.closest('tr');
@@ -903,18 +926,22 @@ async function openOracle(sid, name, imageUrl = '', cardMeta = {}) {
   }
 }
 function applyCardDetailMode() {
+  updateInventoryHeaderOffset();
   const popup = cardDetailDisplayMode === 'popup';
-  oracleDialog.dataset.displayMode = popup ? 'popup' : 'sidebar';
+  const mobileDrawer = !popup && window.matchMedia('(max-width: 760px)').matches;
+  oracleDialog.dataset.displayMode = popup ? 'popup' : (mobileDrawer ? 'drawer' : 'sidebar');
   oracleDialog.classList.toggle('is-popup', popup);
-  inventoryResultsLayout.classList.toggle('has-card-details', !popup);
-  cardDetailBackdrop.hidden = !popup;
+  inventoryPageLayout.classList.toggle('has-card-details', !popup && !mobileDrawer);
+  cardDetailBackdrop.hidden = !(popup || mobileDrawer);
 }
 function closeOraclePanel() {
-  oracleDialog.hidden = true;
-  oracleDialog.classList.remove('is-popup');
-  inventoryResultsLayout.classList.remove('has-card-details');
+  oracleDialog.classList.remove('is-visible', 'is-popup');
+  inventoryPageLayout.classList.remove('has-card-details');
   cardDetailBackdrop.hidden = true;
   document.querySelectorAll('.card-tile.is-active, tr.is-active').forEach(row => row.classList.remove('is-active'));
+  window.setTimeout(() => {
+    if (!oracleDialog.classList.contains('is-visible')) oracleDialog.hidden = true;
+  }, 320);
 }
 document.querySelectorAll('.oracle-button').forEach(btn => btn.addEventListener('click', () => openOracle(btn.dataset.scryfall, btn.dataset.name, btn.dataset.image || '')));
 document.querySelectorAll('.oracle-image-trigger').forEach(img => img.addEventListener('click', () => {
