@@ -115,6 +115,26 @@ class PriceHistoryTests(unittest.TestCase):
             {"productId": 3003, "subTypeName": "Normal", "marketPrice": 4.50},
         ]
 
+    def test_current_price_map_does_not_guess_unknown_foil_subtypes(self) -> None:
+        rows = [
+            {"productId": 9001, "subTypeName": "Normal", "marketPrice": 1.00},
+            {"productId": 9001, "subTypeName": "Foil", "marketPrice": 3.00},
+            {"productId": 9001, "subTypeName": "Etched", "marketPrice": 4.00},
+            {"productId": 9001, "subTypeName": "Reverse Holofoil", "marketPrice": 5.00},
+        ]
+        prices = updater.build_price_map(rows)["9001"]
+        self.assertEqual(prices["normal"], 1.00)
+        self.assertEqual(prices["foil"], 3.00)
+        self.assertEqual(
+            prices["subtypes"],
+            {
+                "Normal": 1.00,
+                "Foil": 3.00,
+                "Etched": 4.00,
+                "Reverse Holofoil": 5.00,
+            },
+        )
+
     def test_records_history_using_inventory_art_database_and_mapping_ids(self) -> None:
         """All three supported TCGplayer-ID sources must produce history."""
         price_map = updater.build_price_map(self.sample_price_rows())
