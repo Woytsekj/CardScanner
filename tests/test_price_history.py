@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import price_updater as updater
 
@@ -309,9 +309,21 @@ class PriceHistoryTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+        import postgres_app_db
+        import postgres_db
+
+        db_cursor = Mock()
+        db_cursor.fetchone.return_value = {"has_history": True}
+        db_conn = Mock()
+        db_conn.execute.return_value = db_cursor
+
         with (
             patch.object(updater, "DATABASE_BACKEND", "postgres"),
             patch.object(updater, "get_last_updated", return_value=TCGCSV_MARKER),
+            patch.object(postgres_db, "open_pool"),
+            patch.object(
+                postgres_app_db, "connect_app_database", return_value=db_conn
+            ),
             patch.object(
                 updater,
                 "get_json",
@@ -331,6 +343,51 @@ class PriceHistoryTests(unittest.TestCase):
         self.assertEqual(meta["history_rows_recorded"], 0)
         self.assertEqual(meta["alerts_sent"], 0)
         self.assertEqual(meta["history_scope"], "full_provider_catalog")
+        db_conn.close.assert_called_once()
+
+    def test_empty_postgres_catalog_seeds_from_saved_snapshot(self) -> None:
+        snapshot = {
+            "success": True,
+            "sourceUpdated": TCGCSV_MARKER,
+            "results": self.sample_price_rows(),
+        }
+        snapshot_text = json.dumps(snapshot, separators=(",", ":"))
+        self.prices_file.write_text(snapshot_text, encoding="utf-8")
+        self.last_seen_file.write_text(TCGCSV_MARKER + "\n", encoding="utf-8")
+        self.meta_file.write_text(
+            json.dumps({"source": "TCGCSV", "source_updated": TCGCSV_MARKER}),
+            encoding="utf-8",
+        )
+
+        import postgres_app_db
+        import postgres_db
+
+        db_cursor = Mock()
+        db_cursor.fetchone.return_value = {"has_history": False}
+        db_conn = Mock()
+        db_conn.execute.return_value = db_cursor
+        with (
+            patch.object(updater, "DATABASE_BACKEND", "postgres"),
+            patch.object(updater, "get_last_updated", return_value=TCGCSV_MARKER),
+            patch.object(postgres_db, "open_pool"),
+            patch.object(
+                postgres_app_db, "connect_app_database", return_value=db_conn
+            ),
+            patch.object(
+                updater, "record_history_and_alerts", return_value=(4, 0)
+            ) as record_history,
+        ):
+            updated = updater.sync_prices(force=False)
+
+        self.assertFalse(updated)
+        self.assertEqual(self.prices_file.read_text(encoding="utf-8"), snapshot_text)
+        record_history.assert_called_once()
+        self.assertEqual(record_history.call_args.args[1], TCGCSV_MARKER)
+        self.assertEqual(len(record_history.call_args.args[2]), 4)
+        meta = json.loads(self.meta_file.read_text(encoding="utf-8"))
+        self.assertEqual(meta["history_rows_recorded"], 4)
+        self.assertEqual(meta["history_scope"], None) if "history_scope" in meta else None
+        db_conn.close.assert_called_once()
 
     def test_forced_sync_downloads_mock_data_and_records_history(self) -> None:
         """Exercise the full sync path without a network call."""
