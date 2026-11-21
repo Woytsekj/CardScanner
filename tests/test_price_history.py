@@ -248,7 +248,7 @@ class PriceHistoryTests(unittest.TestCase):
         }
         previous_text = json.dumps(previous_snapshot, separators=(",", ":"))
         self.prices_file.write_text(previous_text, encoding="utf-8")
-        self.last_seen_file.write_text("previous-good-build\\n", encoding="utf-8")
+        self.last_seen_file.write_text("previous-good-build\n", encoding="utf-8")
 
         def fake_get_json(path: str) -> dict[str, object]:
             if path.endswith("/groups"):
@@ -287,7 +287,7 @@ class PriceHistoryTests(unittest.TestCase):
         self.assertEqual(self.prices_file.read_text(encoding="utf-8"), previous_text)
         self.assertEqual(
             self.last_seen_file.read_text(encoding="utf-8"),
-            "previous-good-build\\n",
+            "previous-good-build\n",
         )
         meta = json.loads(self.meta_file.read_text(encoding="utf-8"))
         self.assertEqual(meta["groups"], 2)
