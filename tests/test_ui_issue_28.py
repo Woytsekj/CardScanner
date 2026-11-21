@@ -49,20 +49,21 @@ class Issue28UIFoundationTests(unittest.TestCase):
     def test_inventory_transfer_actions_are_grouped_inside_the_control_panel(self):
         source = self.read("templates/index.html")
         panel_start = source.index('class="inventory-control-panel"')
-        panel_end = source.index('</section>', source.index('<section class="filter-bar">', panel_start))
-        panel = source[panel_start:panel_end]
-        self.assertIn('class="inventory-transfer-menu"', panel)
-        self.assertIn("Import / Export", panel)
-        self.assertIn("Export ManaBox CSV", panel)
-        self.assertLess(panel.index('class="page-actions-bar inventory-page-actions"'), panel.index('class="toolbar"'))
+        actions_start = source.index('class="page-actions-bar inventory-page-actions"')
+        toolbar_start = source.index('class="toolbar"')
+        self.assertLess(panel_start, actions_start)
+        self.assertLess(actions_start, toolbar_start)
+        self.assertIn('class="inventory-transfer-menu"', source[panel_start:toolbar_start])
+        self.assertIn("Import / Export", source[panel_start:toolbar_start])
+        self.assertIn("Export ManaBox CSV", source[panel_start:toolbar_start])
 
     def test_grid_and_list_views_are_mutually_exclusive(self):
         source = self.read("templates/index.html")
         self.assertIn(
-            '    </section>\\n    {% else %}\\n    <section class="table-card">',
+            '    </section>\n    {% else %}\n    <section class="table-card">',
             source,
         )
-        self.assertEqual(source.count("{% if view == 'grid' %}"), 2)
+        self.assertEqual(source.count("{% if view == 'grid' %}"), 1)
 
     def test_superbar_is_open_on_desktop_and_collapses_on_small_screens(self):
         header = self.read("templates/_app_header.html")
