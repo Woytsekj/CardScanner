@@ -568,7 +568,7 @@ def price_records(prices):
             decimal_value(item.get("midPrice"), f"price row {index} midPrice"),
             decimal_value(item.get("highPrice"), f"price row {index} highPrice"),
             decimal_value(item.get("directLowPrice"), f"price row {index} directLowPrice"),
-            Jsonb(item),
+            True,
         )
 
 
@@ -666,8 +666,25 @@ def import_snapshot(args):
             INSERT INTO catalog.provider_price_observations (
                 game_id, provider_id, external_product_id, subtype_name,
                 source_updated, captured_at, market_price, low_price,
-                mid_price, high_price, direct_low_price, source_payload
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                mid_price, high_price, direct_low_price, is_available
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+        """
+        current_price_statement = """
+            INSERT INTO catalog.provider_price_current (
+                game_id, provider_id, external_product_id, subtype_name,
+                source_updated, captured_at, market_price, low_price,
+                mid_price, high_price, direct_low_price, is_available
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+            ON CONFLICT (game_id, provider_id, external_product_id, subtype_name)
+            DO UPDATE SET
+                source_updated = EXCLUDED.source_updated,
+                captured_at = EXCLUDED.captured_at,
+                market_price = EXCLUDED.market_price,
+                low_price = EXCLUDED.low_price,
+                mid_price = EXCLUDED.mid_price,
+                high_price = EXCLUDED.high_price,
+                direct_low_price = EXCLUDED.direct_low_price,
+                is_available = TRUE
         """
 
         print("\nInserting TCGCSV product groups...")
@@ -687,6 +704,12 @@ def import_snapshot(args):
             pg, price_statement, price_records(prices)
         )
         print(f"  Inserted: {observation_count:,}")
+
+        print("Updating TCGCSV current-price state...")
+        current_count = insert_batches(
+            pg, current_price_statement, price_records(prices)
+        )
+        print(f"  Refreshed: {current_count:,}")
 
         wanted = {
             "catalog.provider_product_groups": len(groups),
