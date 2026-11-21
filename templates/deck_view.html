@@ -5,7 +5,7 @@
 <title>{{ deck.name }} · MTG Scanner Inventory</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.16.0') }}">
 <script src="{{ url_for('static', filename='security.js') }}" defer></script>
-<script src="{{ url_for('static', filename='theme.js', v='39.14.0') }}" defer></script>
+<script src="{{ url_for('static', filename='theme.js', v='39.13.0') }}" defer></script>
 </head><body>
 {% set page_title = deck.name %}
 {% set page_subtitle = deck.source|capitalize ~ ' · Deck for ' ~ (deck.person_name or selected_owner or 'Unassigned') %}
