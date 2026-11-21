@@ -998,7 +998,11 @@ function setCardDetailWidth(requestedWidth, persist = false) {
   const width = Math.round(Math.min(bounds.max, Math.max(bounds.min, Number(requestedWidth) || 520)));
   document.documentElement.style.setProperty('--inventory-inspector-width', width + 'px');
   cardDetailResizeWidth = width;
-  if (cardDetailResizeHandle) cardDetailResizeHandle.setAttribute('aria-valuenow', String(width));
+  if (cardDetailResizeHandle) {
+    cardDetailResizeHandle.setAttribute('aria-valuemin', String(bounds.min));
+    cardDetailResizeHandle.setAttribute('aria-valuemax', String(bounds.max));
+    cardDetailResizeHandle.setAttribute('aria-valuenow', String(width));
+  }
   if (persist) {
     try { localStorage.setItem('cardscanner-card-detail-width', String(width)); } catch (_) {}
   }
