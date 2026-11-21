@@ -49,6 +49,10 @@ class PostgreSQLCardInfoTests(unittest.TestCase):
 
         self.assertTrue(card["art_tags"])
         self.assertTrue(card["oracle_tags"])
+        self.assertGreaterEqual(len(card["faces"]), 2)
+        self.assertTrue(card["layout"])
+        self.assertTrue(all(face["image_url"] for face in card["faces"]))
+        self.assertIn("Avacyn, the Purifier", card["faces"][1]["name"])
 
         for key in ("art_tags", "oracle_tags"):
             tags = card[key]
