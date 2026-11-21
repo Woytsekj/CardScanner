@@ -14,7 +14,7 @@
       {% if page_tags %}<div class="deck-tag-list">{% for tag in page_tags %}<span class="deck-tag">{{ tag }}</span>{% endfor %}</div>{% endif %}
     </div>
   </div>
-  <details class="app-nav-menu" id="siteNavMenu">
+  <details class="app-nav-menu" id="siteNavMenu" open>
     <summary class="app-nav-toggle" aria-label="Open application navigation"><span aria-hidden="true">☰</span><span>Navigate</span></summary>
     <nav class="app-primary-nav" aria-label="Site navigation">
       {% if app_is_admin %}
@@ -45,3 +45,17 @@
     </details>
   </div>
 </header>
+<script>
+(() => {
+  const menu = document.getElementById('siteNavMenu');
+  if (!menu || !window.matchMedia) return;
+  const smallScreen = window.matchMedia('(max-width: 760px)');
+  const syncMenu = () => {
+    if (smallScreen.matches) menu.removeAttribute('open');
+    else menu.setAttribute('open', '');
+  };
+  syncMenu();
+  if (smallScreen.addEventListener) smallScreen.addEventListener('change', syncMenu);
+  else if (smallScreen.addListener) smallScreen.addListener(syncMenu);
+})();
+</script>
