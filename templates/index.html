@@ -28,7 +28,7 @@
           <summary class="button secondary">Import / Export <span aria-hidden="true">▾</span></summary>
           <div class="inventory-transfer-dropdown">
             <button type="button" onclick="openImport()">Import CSV</button>
-            <a href="{{ url_for('export_csv') }}">Export CardScanner CSV</a>
+            <a href="{{ url_for('export_csv') }}">Export CSV</a>
             <a href="{{ url_for('export_manabox_csv', owner=selected_owner) }}">Export ManaBox CSV</a>
           </div>
         </details>
