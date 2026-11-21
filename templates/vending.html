@@ -104,10 +104,19 @@
     <button type="button" class="button secondary history-range" data-days="180">6 Months</button>
     <button type="button" class="button secondary history-range" data-days="365">1 Year</button>
   </div>
+  <label class="history-metric-control">Price metric
+    <select id="priceHistoryMetric">
+      <option value="market" selected>Market</option>
+      <option value="low">Low</option>
+      <option value="mid">Mid</option>
+      <option value="high">High</option>
+      <option value="direct_low">Direct low</option>
+    </select>
+  </label>
   <div id="priceHistoryStats" class="history-stats"></div>
   <div id="priceHistoryStatus" class="status"></div>
   <div class="history-chart-wrap"><svg id="priceHistoryChart" viewBox="0 0 820 360" role="img" aria-label="Card price history chart"></svg></div>
-  <div class="chart-legend"><span class="legend-normal">Normal</span><span class="legend-foil">Foil</span></div>
+  <div id="priceHistoryLegend" class="chart-legend"></div>
 </dialog>
 <script src="{{ url_for('static', filename='multi-select.js') }}"></script>
 <script>
