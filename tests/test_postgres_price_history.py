@@ -284,6 +284,40 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
             self.assertEqual(current["source_updated"], "changed-build")
             self.assertTrue(current["is_available"])
 
+            # A single metric becoming NULL is a real change, but the subtype
+            # remains available and its other four metrics are preserved.
+            null_changed_at = changed_at + timedelta(hours=1)
+            null_rows = [
+                self._normal_row(
+                    market=1.35, low=1.05, mid=1.15, high=1.60, direct=None
+                ),
+                *source_rows[1:],
+            ]
+            self.assertEqual(
+                insert_price_observations(
+                    conn, null_rows, "direct-low-removed-build", null_changed_at
+                ),
+                1,
+            )
+            null_state = conn.execute(
+                """
+                SELECT market_price, low_price, mid_price, high_price,
+                       direct_low_price, is_available
+                FROM catalog.provider_price_current
+                WHERE game_id = 'mtg'
+                  AND provider_id = 'tcgcsv'
+                  AND external_product_id = ?
+                  AND subtype_name = 'Normal'
+                """,
+                (self.product_id,),
+            ).fetchone()
+            self.assertTrue(null_state["is_available"])
+            self.assertIsNone(null_state["direct_low_price"])
+            self.assertEqual(float(null_state["market_price"]), 1.35)
+            self.assertEqual(float(null_state["low_price"]), 1.05)
+            self.assertEqual(float(null_state["mid_price"]), 1.15)
+            self.assertEqual(float(null_state["high_price"]), 1.60)
+
             # Missing from a complete feed writes an explicit unavailable event.
             self.assertEqual(
                 insert_price_observations(
