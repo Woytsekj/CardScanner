@@ -130,18 +130,25 @@ function renderHistoryChart(series, targetChart = historyChart, metric = 'market
     if (d) {
       // A small marker with a native SVG title exposes the exact date and
       // price on hover/focus without adding a permanent tooltip over the line.
+      let previousValue = null;
       points.forEach((point, pointIndex) => {
         const value = point[metric];
-        if (!point.available || value == null || !Number.isFinite(Number(value))) return;
-        const date = new Date(point.captured_at);
-        const dateText = Number.isNaN(date.getTime()) ? String(point.captured_at || '') : date.toLocaleString();
-        const pointTitle = `${item.subtype_name} · ${dateText} · ${metricLabel(metric)}: ${formatMoney(value)}`;
-        const marker = appendSvg(targetChart, 'circle', {
-          cx:xFn(pointIndex), cy:yFn(Number(value)),
-          r:points.length > 180 ? '1.8' : '2.8', fill:color,
-          opacity:points.length > 180 ? '0.48' : '0.82'
-        });
-        appendSvg(marker, 'title', {}, pointTitle);
+        if (!point.available || value == null || !Number.isFinite(Number(value))) {
+          previousValue = null;
+          return;
+        }
+        const numericValue = Number(value);
+        const isLastPoint = pointIndex === points.length - 1;
+        if (numericValue !== previousValue || isLastPoint) {
+          const date = new Date(point.captured_at);
+          const dateText = Number.isNaN(date.getTime()) ? String(point.captured_at || '') : date.toLocaleString();
+          const pointTitle = `${item.subtype_name} · ${dateText} · ${metricLabel(metric)}: ${formatMoney(value)}`;
+          const marker = appendSvg(targetChart, 'circle', {
+            cx:xFn(pointIndex), cy:yFn(numericValue), r:'3.2', fill:color, opacity:'0.9'
+          });
+          appendSvg(marker, 'title', {}, pointTitle);
+        }
+        previousValue = numericValue;
       });
       appendSvg(targetChart, 'path', {
         d, fill:'none', stroke:color, 'stroke-width':'2.8',
