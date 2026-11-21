@@ -69,6 +69,7 @@ def fetch_card_info(conn, scryfall_id: str) -> dict | None:
             "name": face["name"] or "",
             "type_line": face["type_line"] or "",
             "oracle_text": face["rules_text"] or "",
+            "mana_cost": metadata.get("mana_cost") or "",
             "image_url": image_url or "",
         })
 
