@@ -226,30 +226,28 @@ def fetch_latest_price_trends(
                 products.external_product_id,
                 samples.sample_rank,
                 samples.sample_at AS captured_at,
-                normal_price.market_price AS normal_price,
-                foil_price.market_price AS foil_price
+                CASE WHEN normal_price.is_available THEN normal_price.market_price END AS normal_price,
+                CASE WHEN foil_price.is_available THEN foil_price.market_price END AS foil_price
             FROM selected_products AS products
             CROSS JOIN sample_times AS samples
             LEFT JOIN LATERAL (
-                SELECT market_price
+                SELECT market_price, is_available
                 FROM catalog.provider_price_observations
                 WHERE game_id = 'mtg'
                   AND provider_id = 'tcgcsv'
                   AND external_product_id = products.external_product_id
                   AND subtype_name = 'Normal'
-                  AND is_available IS TRUE
                   AND captured_at <= samples.sample_at
                 ORDER BY captured_at DESC, source_updated DESC
                 LIMIT 1
             ) AS normal_price ON TRUE
             LEFT JOIN LATERAL (
-                SELECT market_price
+                SELECT market_price, is_available
                 FROM catalog.provider_price_observations
                 WHERE game_id = 'mtg'
                   AND provider_id = 'tcgcsv'
                   AND external_product_id = products.external_product_id
                   AND subtype_name = 'Foil'
-                  AND is_available IS TRUE
                   AND captured_at <= samples.sample_at
                 ORDER BY captured_at DESC, source_updated DESC
                 LIMIT 1
@@ -287,21 +285,21 @@ def latest_history_price(
     params = [_tcg_product_id(tcg_id), _subtype_for_finish(finish), as_of]
     row = conn.execute(
         f"""
-        SELECT market_price AS price
+        SELECT market_price AS price, is_available
         FROM catalog.provider_price_observations
         WHERE game_id = 'mtg'
           AND provider_id = 'tcgcsv'
           AND external_product_id = ?
           AND subtype_name = ?
-          AND is_available IS TRUE
           AND captured_at <= ?
-          AND market_price IS NOT NULL
         ORDER BY captured_at DESC, source_updated DESC
         LIMIT 1
         """,
         tuple(params),
     ).fetchone()
-    return float(row["price"]) if row and row["price"] is not None else None
+    if not row or not row["is_available"] or row["price"] is None:
+        return None
+    return float(row["price"])
 
 
 def recently_alerted(conn, tcg_id: str, finish: str, cutoff: datetime) -> bool:
