@@ -204,5 +204,22 @@ class Issue28UIFoundationTests(unittest.TestCase):
         self.assertIn("Historical snapshots are not available yet", template)
 
 
+    def test_card_detail_price_history_is_full_width_resizable_and_expandable(self):
+        template = self.read("templates/index.html")
+        css = self.read("static/app.css")
+        history = self.read("static/price-history.js")
+        self.assertIn('id="cardDetailResizeHandle"', template)
+        self.assertIn('id="cardDetailHistoryExpanded"', template)
+        self.assertIn('id="cardDetailExpandedPriceHistoryChart"', template)
+        self.assertIn("card-detail-history-panel", css)
+        self.assertIn("--inventory-inspector-width", css)
+        self.assertIn(".history-expanded-dialog", css)
+        self.assertIn("pointerdown", template)
+        self.assertIn("ArrowLeft", template)
+        self.assertIn("refreshExpandedCardHistory", history)
+        self.assertIn("card-detail-expanded-range", history)
+        self.assertIn("pointTitle", history)
+
+
 if __name__ == "__main__":
     unittest.main()
