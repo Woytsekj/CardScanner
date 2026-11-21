@@ -533,22 +533,58 @@ def sync_prices(force: bool = False) -> bool:
         print(f"Price snapshot is missing; rebuilding TCGCSV build {marker}.")
 
     groups_payload = get_json(f"/tcgplayer/{CATEGORY_ID}/groups")
-    groups = groups_payload.get("results", [])
+    failures = []
+    if (
+        not isinstance(groups_payload, dict)
+        or groups_payload.get("success") is not True
+        or groups_payload.get("errors")
+        or not isinstance(groups_payload.get("results"), list)
+    ):
+        failures.append({
+            "groupId": None,
+            "error": "TCGCSV group catalog response was not a successful result list",
+        })
+        groups = []
+    else:
+        groups = groups_payload["results"]
+
     all_prices = []
     synced_groups = 0
-    failures = []
 
     print(f"TCGCSV build {marker}: syncing {len(groups)} MTG groups")
     for idx, group in enumerate(groups, start=1):
-        group_id = group.get("groupId")
+        group_id = group.get("groupId") if isinstance(group, dict) else None
         if not group_id:
+            failures.append({
+                "groupId": None,
+                "error": f"TCGCSV group entry {idx} has no valid groupId",
+            })
             continue
         try:
             payload = get_json(f"/tcgplayer/{CATEGORY_ID}/{group_id}/prices")
-            for item in payload.get("results", []):
-                if item.get("productId"):
-                    all_prices.append(item)
-            synced_groups += 1
+            if (
+                not isinstance(payload, dict)
+                or payload.get("success") is not True
+                or payload.get("errors")
+                or not isinstance(payload.get("results"), list)
+            ):
+                failures.append({
+                    "groupId": group_id,
+                    "error": "TCGCSV price response was not a successful result list",
+                })
+            elif any(
+                not isinstance(item, dict)
+                or not item.get("productId")
+                or not str(item.get("subTypeName") or "").strip()
+                for item in payload["results"]
+            ):
+                failures.append({
+                    "groupId": group_id,
+                    "error": "TCGCSV price response contains a malformed product/subtype row",
+                })
+            else:
+                all_prices.extend(payload["results"])
+                synced_groups += 1
         except requests.RequestException as exc:
             failures.append({"groupId": group_id, "error": str(exc)})
             print(f"[warn] group {group_id} failed: {exc}")
