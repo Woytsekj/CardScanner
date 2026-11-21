@@ -75,7 +75,7 @@ def get_last_updated() -> str:
 
 
 def build_price_map(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Normalize TCGCSV rows into TCGplayer ID -> normal/foil prices."""
+    """Build legacy finish prices without collapsing unknown provider subtypes."""
     price_map: dict[str, dict[str, Any]] = {}
     for item in items:
         pid_raw = item.get("productId")
@@ -85,16 +85,27 @@ def build_price_map(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
             pid = str(int(float(pid_raw)))
         except (TypeError, ValueError):
             continue
-        entry = price_map.setdefault(pid, {"normal": None, "foil": None})
-        subtype = str(item.get("subTypeName") or "").lower()
-        variant = "foil" if ("foil" in subtype or "etched" in subtype) else "normal"
+        entry = price_map.setdefault(
+            pid, {"normal": None, "foil": None, "subtypes": {}}
+        )
+        subtype_name = str(item.get("subTypeName") or "").strip()
+        if not subtype_name:
+            continue
         value = item.get("marketPrice")
         if value is None:
             value = item.get("midPrice")
         if value is None:
             value = item.get("lowPrice")
-        if value is not None and entry[variant] is None:
-            entry[variant] = value
+        entry["subtypes"][subtype_name] = value
+        # The application inventory's legacy normal/foil valuation fields may
+        # consume only exact provider labels they actually understand. Keep
+        # other labels intact in "subtypes" rather than guessing that Etched,
+        # Reverse Holofoil, or an unfamiliar provider subtype is generic Foil.
+        normalized_subtype = subtype_name.casefold()
+        if value is not None and normalized_subtype == "normal" and entry["normal"] is None:
+            entry["normal"] = value
+        elif value is not None and normalized_subtype == "foil" and entry["foil"] is None:
+            entry["foil"] = value
     return price_map
 
 
