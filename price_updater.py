@@ -575,6 +575,8 @@ def sync_prices(force: bool = False) -> bool:
             meta["history_rows_recorded"] = history_rows
             meta["alerts_sent"] = alerts_sent
             meta["history_checked_at"] = datetime.now(timezone.utc).isoformat()
+            if DATABASE_BACKEND == "postgres":
+                meta["history_scope"] = "full_provider_catalog"
             META_FILE.write_text(json.dumps(meta, indent=2), encoding="utf-8")
             print(f"No TCGCSV update detected ({marker}); recorded {history_rows:,} new history point(s) from the saved snapshot.")
             return False
