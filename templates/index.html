@@ -886,10 +886,12 @@ async function openOracle(sid, name, imageUrl = '', cardMeta = {}) {
     if (requestId !== activeOracleRequest) return;
     if (!r.ok || !data.success) { oracleStatus.textContent = data.error || 'No cached metadata.'; return; }
     const c = data.card || {};
+    oracleSubtitle.textContent = [c.colors ? 'Colors: ' + c.colors : '', c.layout || ''].filter(Boolean).join(' · ');
+    oracleTypeLine.textContent = c.type_line || '';
+    oracleManaCost.textContent = c.mana_cost || '';
+    oracleTextEl.textContent = c.oracle_text || 'No oracle text.';
     renderOracleFaces(c.faces || []);
     if (activeOracleFaces.length) setOracleFace(0);
-    oracleSubtitle.textContent = [c.colors ? 'Colors: ' + c.colors : '', c.layout || ''].filter(Boolean).join(' · ');
-    oracleTypeLine.textContent = c.type_line || ''; oracleManaCost.textContent = c.mana_cost || ''; oracleTextEl.textContent = c.oracle_text || 'No oracle text.';
     renderOracleTagList(oracleArtTags, c.art_tags, 'art');
     renderOracleTagList(oracleOracleTags, c.oracle_tags, 'oracle');
     const legal = c.legalities || {};
