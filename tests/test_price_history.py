@@ -212,9 +212,9 @@ class PriceHistoryTests(unittest.TestCase):
 
         def fake_get_json(path: str) -> dict[str, object]:
             if path.endswith("/groups"):
-                return {"results": [{"groupId": 77}]}
+                return {"success": True, "errors": [], "results": [{"groupId": 77}]}
             if path.endswith("/77/prices"):
-                return {"results": []}
+                return {"success": True, "errors": [], "results": []}
             raise AssertionError(f"Unexpected TCGCSV path: {path}")
 
         with (
@@ -240,6 +240,61 @@ class PriceHistoryTests(unittest.TestCase):
         self.assertTrue(meta["failures"])
         self.assertIn("zero price rows", meta["failures"][-1]["error"])
 
+    def test_failed_group_response_does_not_reconcile_partial_catalog(self) -> None:
+        previous_snapshot = {
+            "success": True,
+            "sourceUpdated": "previous-good-build",
+            "results": self.sample_price_rows(),
+        }
+        previous_text = json.dumps(previous_snapshot, separators=(",", ":"))
+        self.prices_file.write_text(previous_text, encoding="utf-8")
+        self.last_seen_file.write_text("previous-good-build\\n", encoding="utf-8")
+
+        def fake_get_json(path: str) -> dict[str, object]:
+            if path.endswith("/groups"):
+                return {
+                    "success": True,
+                    "errors": [],
+                    "results": [{"groupId": 77}, {"groupId": 78}],
+                }
+            if path.endswith("/77/prices"):
+                return {
+                    "success": True,
+                    "errors": [],
+                    "results": self.sample_price_rows(),
+                }
+            if path.endswith("/78/prices"):
+                return {
+                    "success": False,
+                    "errors": ["temporary provider error"],
+                    "results": [],
+                }
+            raise AssertionError(f"Unexpected TCGCSV path: {path}")
+
+        with (
+            patch.object(updater, "get_last_updated", return_value=TCGCSV_MARKER),
+            patch.object(updater, "get_json", side_effect=fake_get_json),
+            patch.object(updater.time, "sleep"),
+            patch.object(
+                updater,
+                "record_history_and_alerts",
+                side_effect=AssertionError("partial feed must not reconcile price history"),
+            ),
+        ):
+            updated = updater.sync_prices(force=True)
+
+        self.assertFalse(updated)
+        self.assertEqual(self.prices_file.read_text(encoding="utf-8"), previous_text)
+        self.assertEqual(
+            self.last_seen_file.read_text(encoding="utf-8"),
+            "previous-good-build\\n",
+        )
+        meta = json.loads(self.meta_file.read_text(encoding="utf-8"))
+        self.assertEqual(meta["groups"], 2)
+        self.assertEqual(meta["groups_synced"], 1)
+        self.assertEqual(meta["price_rows"], len(self.sample_price_rows()))
+        self.assertEqual(meta["failures"][0]["groupId"], 78)
+
     def test_forced_sync_downloads_mock_data_and_records_history(self) -> None:
         """Exercise the full sync path without a network call."""
         self.prices_file.write_text("{}", encoding="utf-8")
@@ -247,9 +302,9 @@ class PriceHistoryTests(unittest.TestCase):
 
         def fake_get_json(path: str) -> dict[str, object]:
             if path.endswith("/groups"):
-                return {"results": [{"groupId": 77}]}
+                return {"success": True, "errors": [], "results": [{"groupId": 77}]}
             if path.endswith("/77/prices"):
-                return {"results": self.sample_price_rows()}
+                return {"success": True, "errors": [], "results": self.sample_price_rows()}
             raise AssertionError(f"Unexpected TCGCSV path: {path}")
 
         with patch.object(updater, "get_last_updated", return_value=TCGCSV_MARKER), patch.object(
