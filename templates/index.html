@@ -831,6 +831,32 @@ document.querySelectorAll('.card-art-trigger').forEach(button => button.addEvent
   });
 }));
 
+(() => {
+  const grid = document.querySelector('.card-grid');
+  const slider = document.getElementById('gridCardSize');
+  const output = document.getElementById('gridCardSizeValue');
+  if (!grid || !slider || !output) return;
+
+  let size = 180;
+  try {
+    const stored = Number(localStorage.getItem('cardscanner-grid-card-size'));
+    if (Number.isFinite(stored) && stored >= 120 && stored <= 330) size = stored;
+  } catch (_) {}
+
+  const applySize = () => {
+    grid.style.setProperty('--inventory-card-min-width', size + 'px');
+    slider.value = String(size);
+    output.value = size + ' px';
+    output.textContent = size + ' px';
+  };
+  slider.addEventListener('input', () => {
+    size = Math.min(330, Math.max(120, Number(slider.value) || 180));
+    applySize();
+    try { localStorage.setItem('cardscanner-grid-card-size', String(size)); } catch (_) {}
+  });
+  applySize();
+})();
+
 async function saveField(input) {
   let value = input.dataset.field === 'for_vending' ? input.checked : input.value;
   if (input.dataset.field === 'deck_id' && value === 'none') value = null;
