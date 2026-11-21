@@ -114,12 +114,10 @@ class PostgreSQLTCGCSVTests(unittest.TestCase):
                         INSERT INTO catalog.provider_price_observations
                             (game_id, provider_id, external_product_id,
                              subtype_name, source_updated, market_price,
-                             low_price, mid_price, high_price, direct_low_price,
-                             source_payload)
+                             low_price, mid_price, high_price, direct_low_price)
                         VALUES
                             ('mtg', 'tcgcsv', %s, 'Normal', %s,
-                             1.25, 1.00, 1.10, 1.50, NULL,
-                             '{"marketPrice":1.25}'::JSONB)
+                             1.25, 1.00, 1.10, 1.50, NULL)
                         """,
                         (product_id, source_time),
                     )
@@ -144,9 +142,9 @@ class PostgreSQLTCGCSVTests(unittest.TestCase):
                         """
                         INSERT INTO catalog.provider_price_observations
                             (game_id, provider_id, external_product_id,
-                             subtype_name, source_updated, source_payload)
+                             subtype_name, source_updated)
                         VALUES
-                            ('mtg', 'tcgcsv', %s, 'Foil', %s, '{}'::JSONB)
+                            ('mtg', 'tcgcsv', %s, 'Foil', %s)
                         """,
                         (product_id, source_time),
                     )
@@ -156,10 +154,10 @@ class PostgreSQLTCGCSVTests(unittest.TestCase):
                         """
                         INSERT INTO catalog.provider_price_observations
                             (game_id, provider_id, external_product_id,
-                             subtype_name, source_updated, source_payload)
+                             subtype_name, source_updated)
                         VALUES
                             ('mtg', 'tcgcsv', %s, 'Normal',
-                             '2026-11-13T20:05:52+00:00', '{}'::JSONB)
+                             '2026-11-13T20:05:52+00:00')
                         """,
                         (product_id,),
                     )
@@ -170,9 +168,9 @@ class PostgreSQLTCGCSVTests(unittest.TestCase):
                                 """
                                 INSERT INTO catalog.provider_price_observations
                                     (game_id, provider_id, external_product_id,
-                                     subtype_name, source_updated, source_payload)
+                                     subtype_name, source_updated)
                                 VALUES
-                                    ('mtg', 'tcgcsv', %s, 'Normal', %s, '{}'::JSONB)
+                                    ('mtg', 'tcgcsv', %s, 'Normal', %s)
                                 """,
                                 (product_id, source_time),
                             )
@@ -182,9 +180,9 @@ class PostgreSQLTCGCSVTests(unittest.TestCase):
                         """
                         INSERT INTO catalog.provider_price_observations
                             (game_id, provider_id, external_product_id,
-                             subtype_name, source_updated, source_payload)
+                             subtype_name, source_updated)
                         VALUES
-                            ('pokemon', 'tcgcsv', %s, 'Holofoil', %s, '{}'::JSONB)
+                            ('pokemon', 'tcgcsv', %s, 'Holofoil', %s)
                         """,
                         (f"unresolved-{token}", source_time),
                     )
