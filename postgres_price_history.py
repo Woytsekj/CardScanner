@@ -362,10 +362,9 @@ def insert_price_observations(
     Historical observations are added only for an initial state, a change in
     any of the five metrics, or an unavailable/available transition.
     """
-    conn.execute("DROP TABLE IF EXISTS pg_temp.incoming_tcgcsv_prices")
     conn.execute(
         """
-        CREATE TEMP TABLE incoming_tcgcsv_prices (
+        CREATE TEMP TABLE IF NOT EXISTS incoming_tcgcsv_prices (
             external_product_id TEXT NOT NULL,
             subtype_name TEXT NOT NULL,
             market_price NUMERIC,
@@ -376,6 +375,7 @@ def insert_price_observations(
         ) ON COMMIT DROP
         """
     )
+    conn.execute("TRUNCATE TABLE incoming_tcgcsv_prices")
 
     staged = []
     for item in source_rows or []:
