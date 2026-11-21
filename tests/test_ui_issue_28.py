@@ -63,7 +63,7 @@ class Issue28UIFoundationTests(unittest.TestCase):
             '    </section>\n    {% else %}\n    <section class="table-card">',
             source,
         )
-        self.assertEqual(source.count("{% if view == 'grid' %}"), 1)
+        self.assertEqual(source.count("{% if view == 'grid' %}"), 3)
 
     def test_superbar_is_open_on_desktop_and_collapses_on_small_screens(self):
         header = self.read("templates/_app_header.html")
