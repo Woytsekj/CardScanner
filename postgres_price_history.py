@@ -202,7 +202,7 @@ def fetch_latest_price_trends(
     conn,
     product_ids: list[str] | tuple[str, ...],
 ) -> dict[str, list[dict]]:
-    """Return the two latest changed market-price states for Normal/Foil per product."""
+    """Return today's and yesterday's reconstructed Normal/Foil market prices."""
     normalized = sorted({
         _tcg_product_id(value)
         for value in product_ids
@@ -211,37 +211,50 @@ def fetch_latest_price_trends(
     trends: dict[str, list[dict]] = {}
     for start in range(0, len(normalized), 400):
         chunk = normalized[start:start + 400]
-        placeholders = ", ".join("?" for _ in chunk)
+        product_values = ", ".join("?::text" for _ in chunk)
         rows = conn.execute(
             f"""
-            WITH ranked AS (
-                SELECT
-                    external_product_id, captured_at, subtype_name,
-                    market_price, is_available,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY external_product_id, subtype_name
-                        ORDER BY captured_at DESC, source_updated DESC
-                    ) AS history_rank
+            WITH selected_products AS (
+                SELECT unnest(ARRAY[{product_values}]) AS external_product_id
+            ),
+            sample_times AS (
+                SELECT 1 AS sample_rank, now() AS sample_at
+                UNION ALL
+                SELECT 2 AS sample_rank, now() - INTERVAL '1 day' AS sample_at
+            )
+            SELECT
+                products.external_product_id,
+                samples.sample_rank,
+                samples.sample_at AS captured_at,
+                normal_price.market_price AS normal_price,
+                foil_price.market_price AS foil_price
+            FROM selected_products AS products
+            CROSS JOIN sample_times AS samples
+            LEFT JOIN LATERAL (
+                SELECT market_price
                 FROM catalog.provider_price_observations
                 WHERE game_id = 'mtg'
                   AND provider_id = 'tcgcsv'
-                  AND subtype_name IN ('Normal', 'Foil')
-                  AND external_product_id IN ({placeholders})
-            )
-            SELECT
-                external_product_id,
-                history_rank,
-                MAX(captured_at) AS captured_at,
-                MAX(market_price) FILTER (
-                    WHERE subtype_name = 'Normal' AND is_available
-                ) AS normal_price,
-                MAX(market_price) FILTER (
-                    WHERE subtype_name = 'Foil' AND is_available
-                ) AS foil_price
-            FROM ranked
-            WHERE history_rank <= 2
-            GROUP BY external_product_id, history_rank
-            ORDER BY external_product_id, history_rank
+                  AND external_product_id = products.external_product_id
+                  AND subtype_name = 'Normal'
+                  AND is_available IS TRUE
+                  AND captured_at <= samples.sample_at
+                ORDER BY captured_at DESC, source_updated DESC
+                LIMIT 1
+            ) AS normal_price ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT market_price
+                FROM catalog.provider_price_observations
+                WHERE game_id = 'mtg'
+                  AND provider_id = 'tcgcsv'
+                  AND external_product_id = products.external_product_id
+                  AND subtype_name = 'Foil'
+                  AND is_available IS TRUE
+                  AND captured_at <= samples.sample_at
+                ORDER BY captured_at DESC, source_updated DESC
+                LIMIT 1
+            ) AS foil_price ON TRUE
+            ORDER BY products.external_product_id, samples.sample_rank
             """,
             tuple(chunk),
         ).fetchall()
@@ -258,7 +271,6 @@ def fetch_latest_price_trends(
             })
     return trends
 
-
 def latest_history_price(
     conn,
     tcg_id: str,
@@ -268,10 +280,11 @@ def latest_history_price(
     not_before: datetime | None = None,
 ):
     """Get the latest available market price for a finish before a cutoff."""
-    not_before_filter = "AND captured_at >= ?" if not_before is not None else ""
-    params = [_tcg_product_id(tcg_id), _subtype_for_finish(finish), cutoff]
-    if not_before is not None:
-        params.append(not_before)
+    # For change-event history, a lookback reference asks for the state at
+    # the start of the window. The last change may be much older than the
+    # window when a price has remained stable, so do not require a recent row.
+    as_of = not_before if not_before is not None else cutoff
+    params = [_tcg_product_id(tcg_id), _subtype_for_finish(finish), as_of]
     row = conn.execute(
         f"""
         SELECT market_price AS price
@@ -282,7 +295,6 @@ def latest_history_price(
           AND subtype_name = ?
           AND is_available IS TRUE
           AND captured_at <= ?
-          {not_before_filter}
           AND market_price IS NOT NULL
         ORDER BY captured_at DESC, source_updated DESC
         LIMIT 1
