@@ -425,6 +425,11 @@ def insert_price_observations(
             staged,
         )
 
+    # Temp tables do not receive useful autovacuum statistics. The two
+    # reconciliation statements join against the full incoming feed, so
+    # collect stats before planning them to avoid poor nested-loop estimates.
+    conn.execute("ANALYZE incoming_tcgcsv_prices")
+
     changed = conn.execute(
         """
         WITH incoming AS (
