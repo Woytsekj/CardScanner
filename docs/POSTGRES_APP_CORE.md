@@ -80,6 +80,21 @@ Migration 0007 adds generic TCGCSV provider catalog structures:
 - `catalog.provider_price_observations` stores exact provider subtype names
   and all five TCGCSV price fields independently.
 
+Migration 0008 evolves provider price history into a compact change-event log:
+
+- `catalog.provider_price_current` stores the latest state and last-seen source
+  build for each product/subtype.
+- `catalog.provider_price_observations` stores the initial price state,
+  subsequent five-metric changes, and explicit unavailable/removal events.
+- Historical charts reconstruct daily values by carrying the last state
+  forward. Retention keeps the last pre-window baseline plus events within
+  the configured one-year window.
+- The redundant source JSON payload is removed from observation rows because
+  the measured payload fields are represented by normalized columns.
+- The legacy `catalog.product_price_history` table remains temporarily for
+  migration compatibility; active PostgreSQL chart, scanner fallback, trend,
+  and alert reads use the exact-subtype provider observations instead.
+
 The 0005–0007 migrations are schema-only. Their application to development
 PostgreSQL did not import production SQLite rows or replace the production
 databases. The separate artwork database tables remain represented in the
