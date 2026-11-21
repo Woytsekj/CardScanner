@@ -539,10 +539,10 @@ def sync_prices(force: bool = False) -> bool:
             else:
                 try:
                     meta = json.loads(META_FILE.read_text(encoding="utf-8"))
-                if not isinstance(meta, dict):
+                    if not isinstance(meta, dict):
+                        meta = {}
+                except (OSError, json.JSONDecodeError):
                     meta = {}
-            except (OSError, json.JSONDecodeError):
-                meta = {}
                 meta["history_rows_recorded"] = 0
                 meta["alerts_sent"] = 0
                 meta["history_checked_at"] = datetime.now(timezone.utc).isoformat()
@@ -557,8 +557,6 @@ def sync_prices(force: bool = False) -> bool:
         # SQLite still keeps owned-product-only history, and an empty
         # PostgreSQL catalog needs its first full-catalog seed. Reuse the
         # saved snapshot for either case rather than downloading it again.
-        # saved snapshot to backfill cards that became trackable after the
-        # provider's last source update.
         try:
             saved_snapshot = json.loads(PRICES_FILE.read_text(encoding="utf-8"))
             saved_prices = saved_snapshot.get("results") if isinstance(saved_snapshot, dict) else None
