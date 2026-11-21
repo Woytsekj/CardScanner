@@ -276,14 +276,13 @@ def record_postgres_history_and_alerts(
     source_updated: str,
     source_rows: list[dict[str, Any]] | None = None,
 ) -> tuple[int, int]:
-    """Write MTG price history and alerts through the normalized PostgreSQL schema."""
+    """Write compact full-catalog history and inventory-based price alerts."""
     from postgres_app_db import connect_app_database
     from postgres_db import open_pool
     from postgres_price_history import (
         fetch_owned_products,
         insert_price_alert,
         insert_price_observations,
-        insert_price_snapshot,
         latest_history_price,
         prune_price_history,
         recently_alerted,
@@ -292,7 +291,6 @@ def record_postgres_history_and_alerts(
     open_pool()
     conn = connect_app_database()
     now = datetime.now(timezone.utc)
-    captured_at = now
     cutoff_retention = now - timedelta(days=PRICE_HISTORY_DAYS)
     cutoff_alert = now - timedelta(days=PRICE_ALERT_LOOKBACK_DAYS)
     cooldown_cutoff = now - timedelta(days=PRICE_ALERT_COOLDOWN_DAYS)
@@ -301,8 +299,33 @@ def record_postgres_history_and_alerts(
 
     try:
         products = fetch_owned_products(conn)
-        if source_rows:
-            insert_price_observations(conn, source_rows, source_updated, captured_at)
+
+        # Capture historical baselines before applying the incoming source
+        # build. Otherwise the newly inserted change event could compare
+        # against itself and suppress a legitimate alert.
+        previous_by_product: dict[str, dict[str, float | None]] = {}
+        for card in products:
+            tcg_id = str(card.get("tcgplayer_id") or "").strip()
+            if not tcg_id:
+                continue
+            prices = price_map.get(tcg_id, {})
+            normal = normalize_price(prices.get("normal"))
+            foil = normalize_price(prices.get("foil"))
+            previous_by_product[tcg_id] = {
+                finish: latest_history_price(
+                    conn, tcg_id, finish, now, not_before=cutoff_alert
+                )
+                for finish, current in (("normal", normal), ("foil", foil))
+                if current is not None
+            }
+
+        # Every successful complete feed is reconciled, including an empty
+        # list. This refreshes unchanged current-state markers and records
+        # explicit unavailability transitions for rows missing from the feed.
+        if source_rows is not None:
+            history_rows = insert_price_observations(
+                conn, source_rows, source_updated, now
+            )
 
         for card in products:
             tcg_id = str(card.get("tcgplayer_id") or "").strip()
@@ -311,28 +334,11 @@ def record_postgres_history_and_alerts(
             prices = price_map.get(tcg_id, {})
             normal = normalize_price(prices.get("normal"))
             foil = normalize_price(prices.get("foil"))
-            if normal is None and foil is None:
-                continue
-
-            # Capture the prior prices before inserting this snapshot. Otherwise
-            # the current observation could become its own comparison baseline.
-            previous_prices = {
-                finish: latest_history_price(
-                    conn, tcg_id, finish, now, not_before=cutoff_alert
-                )
-                for finish in ("normal", "foil")
-                if (normal if finish == "normal" else foil) is not None
-            }
-
-            if insert_price_snapshot(
-                conn, tcg_id, source_updated, captured_at, normal, foil
-            ):
-                history_rows += 1
 
             for finish, current in (("normal", normal), ("foil", foil)):
                 if current is None:
                     continue
-                old = previous_prices.get(finish)
+                old = previous_by_product.get(tcg_id, {}).get(finish)
                 if (
                     not PRICE_ALERT_ENABLED
                     or not DISCORD_WEBHOOK_URL
@@ -375,7 +381,7 @@ def record_postgres_history_and_alerts(
                         conn,
                         tcg_id=tcg_id,
                         finish=finish,
-                        alerted_at=captured_at,
+                        alerted_at=now,
                         old_price=old,
                         new_price=current,
                         percent_change=percent,
@@ -401,7 +407,6 @@ def record_postgres_history_and_alerts(
         raise
     finally:
         conn.close()
-
 
 def record_history_and_alerts(price_map: dict[str, dict[str, Any]], source_updated: str, source_rows: list[dict[str, Any]] | None = None) -> tuple[int, int]:
     if DATABASE_BACKEND == "postgres":
