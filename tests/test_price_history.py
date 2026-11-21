@@ -386,7 +386,7 @@ class PriceHistoryTests(unittest.TestCase):
         self.assertEqual(len(record_history.call_args.args[2]), 4)
         meta = json.loads(self.meta_file.read_text(encoding="utf-8"))
         self.assertEqual(meta["history_rows_recorded"], 4)
-        self.assertEqual(meta["history_scope"], None) if "history_scope" in meta else None
+        self.assertEqual(meta["history_scope"], "full_provider_catalog")
         db_conn.close.assert_called_once()
 
     def test_forced_sync_downloads_mock_data_and_records_history(self) -> None:
