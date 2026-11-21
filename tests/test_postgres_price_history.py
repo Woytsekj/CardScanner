@@ -314,7 +314,9 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
             # Reappearance with the same value is a new event after unavailability.
             self.assertEqual(
                 insert_price_observations(
-                    conn, changed_rows, "reappeared-build",
+                    conn, [self._normal_row(
+                        market=1.35, low=1.05, mid=1.15, high=1.60, direct=1.00
+                    )], "reappeared-build",
                     changed_at + timedelta(days=2),
                 ),
                 1,
