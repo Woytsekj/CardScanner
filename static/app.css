@@ -1398,7 +1398,14 @@ body[data-inventory-mode="select"] .card-tile { cursor: crosshair; }
 .card-detail-history-panel .history-range-buttons { margin: 10px 0; }
 .card-detail-history-panel .history-range-buttons .button { min-height: 31px; padding: 0 9px; font-size: 11px; }
 .card-detail-history-range.active { border-color: var(--green); box-shadow: inset 0 0 0 1px var(--green); }
-.card-detail-history-panel .history-chart-wrap { min-height: 180px; }
+.card-detail-history-panel { width: 100%; box-sizing: border-box; }
+.card-detail-history-panel .history-chart-wrap {
+  width: 100%; min-height: 0; overflow-x: auto; border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-2) 55%, transparent);
+}
+.card-detail-history-panel .history-chart-wrap svg {
+  display: block; width: 100%; min-width: 0; height: auto;
+}
 .card-detail-history-panel .history-stats { margin: 8px 0; }
 .card-detail-history-panel .status { margin: 7px 0; }
 @media (max-width: 760px) { .card-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 132px), 1fr)); gap: 12px 8px; } .card-tile { padding: 3px; } .tile-price-badge { min-height: 29px; padding: 0 8px; } .inventory-transfer-dropdown { right: auto; left: 0; } .card-detail-price-row { align-items: flex-start; flex-direction: column; } .card-detail-history-panel { padding: 9px; } body { scroll-padding-top: 120px; } }
@@ -1525,7 +1532,7 @@ body[data-inventory-mode="select"] .card-tile { cursor: crosshair; }
 
 /* Docked card inspector: full-height rail below the sticky app header. */
 :root {
-  --inventory-inspector-width: clamp(360px, 23vw, 460px);
+  --inventory-inspector-width: clamp(420px, 28vw, 560px);
   --inventory-panel-motion: 300ms cubic-bezier(.2,.75,.25,1);
 }
 main.inventory-page-layout {
@@ -1578,6 +1585,48 @@ main.inventory-page-layout.has-card-details {
   pointer-events: auto;
   transform: translateX(0);
 }
+
+.card-detail-resize-handle {
+  display: block; position: absolute; z-index: 8; top: 0; bottom: 0; left: 0;
+  width: 14px; cursor: col-resize; touch-action: pan-y; user-select: none;
+  outline-offset: -2px;
+}
+.card-detail-resize-handle::after {
+  content: ""; position: absolute; top: 50%; left: 5px; width: 3px; height: 42px;
+  border-radius: 999px; background: var(--muted); opacity: .48; transform: translateY(-50%);
+  transition: background .15s ease, opacity .15s ease, height .15s ease;
+}
+.card-detail-resize-handle:hover::after,
+.card-detail-resize-handle:focus-visible::after {
+  height: 58px; background: var(--cyan); opacity: 1;
+}
+.oracle-dialog[data-display-mode="popup"] .card-detail-resize-handle,
+.oracle-dialog[data-display-mode="drawer"] .card-detail-resize-handle { display: none; }
+html.is-resizing-card-detail,
+html.is-resizing-card-detail * { cursor: col-resize !important; user-select: none !important; }
+html.is-resizing-card-detail .inventory-page-layout,
+html.is-resizing-card-detail .oracle-dialog { transition: none !important; }
+.history-expand-button { flex: none; white-space: nowrap; }
+.history-expanded-dialog {
+  position: fixed; inset: 3vh 0 auto; width: min(1200px, calc(100vw - 48px));
+  max-width: 1200px; max-height: 94dvh; margin: 0 auto; padding: 24px;
+  overflow: auto; border: 1px solid var(--border); border-radius: 14px;
+  background: var(--panel); color: var(--text);
+  box-shadow: 0 24px 70px rgba(0,0,0,.48);
+}
+.history-expanded-dialog::backdrop { background: rgba(3,8,18,.78); backdrop-filter: blur(3px); }
+.history-expanded-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:14px; }
+.history-expanded-heading h2 { margin:2px 0 0; }
+.history-expanded-heading .dialog-close { position:static; flex:none; }
+.history-expanded-controls { display:flex; align-items:flex-end; justify-content:space-between; flex-wrap:wrap; gap:12px; }
+.history-expanded-controls .history-range-buttons { display:flex; flex-wrap:wrap; gap:7px; margin:10px 0; }
+.card-detail-expanded-range.active { border-color:var(--green); box-shadow:inset 0 0 0 1px var(--green); }
+.history-expanded-dialog .history-chart-wrap {
+  width:100%; min-height:0; overflow:visible; border:1px solid var(--border);
+  border-radius:9px; background:color-mix(in srgb, var(--panel-2) 55%, transparent);
+}
+.history-expanded-dialog .history-chart-wrap svg { display:block; width:100%; height:auto; min-width:0; }
+.history-expanded-dialog .chart-legend { margin-top:10px; }
 .card-detail-panel-heading {
   position: sticky;
   top: -15px;
@@ -1713,6 +1762,8 @@ tr.is-active { outline: 2px solid var(--cyan); outline-offset: 1px; border-radiu
   .oracle-detail-image-column { position: static; }
 }
 @media (max-width: 760px) {
+  .card-detail-resize-handle { display: none; }
+  .history-expanded-dialog { inset: 3vh 0 auto; width: calc(100vw - 16px); max-height: 94dvh; padding: 18px 12px; }
   main.inventory-page-layout.has-card-details { margin-right: 0; }
   .oracle-dialog { padding: 12px; }
   .card-detail-panel-heading { top: -12px; margin: -12px -12px 11px; padding: 11px 12px 9px; }
