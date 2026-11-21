@@ -1688,12 +1688,96 @@ def inventory_summary(
     return owner_totals, owner_counts, grand_total, finish_totals, row_count, owner_row_counts
 
 
+def _fetch_inventory_price_trends(conn, rows) -> dict[str, list[dict[str, Any]]]:
+    """Load at most the two most recent history points for visible inventory products."""
+    product_ids: set[str] = set()
+    for row in rows:
+        raw = str(row["tcgplayer_id"] or "").strip()
+        if not raw:
+            continue
+        try:
+            raw = str(int(float(raw)))
+        except (TypeError, ValueError, OverflowError):
+            pass
+        product_ids.add(raw)
+
+    if not product_ids:
+        return {}
+
+    ordered_ids = sorted(product_ids)
+    if DATABASE_BACKEND == "postgres":
+        from postgres_price_history import fetch_latest_price_trends
+        return fetch_latest_price_trends(conn, ordered_ids)
+
+    trends: dict[str, list[dict[str, Any]]] = {}
+    for start in range(0, len(ordered_ids), 400):
+        chunk = ordered_ids[start:start + 400]
+        placeholders = ", ".join("?" for _ in chunk)
+        try:
+            result = conn.execute(
+                f"""
+                SELECT tcgplayer_id, captured_at, normal_price, foil_price
+                FROM (
+                    SELECT
+                        tcgplayer_id, captured_at, normal_price, foil_price,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY tcgplayer_id
+                            ORDER BY captured_at DESC, id DESC
+                        ) AS history_rank
+                    FROM price_history
+                    WHERE tcgplayer_id IN ({placeholders})
+                ) recent
+                WHERE history_rank <= 2
+                ORDER BY tcgplayer_id, history_rank
+                """,
+                chunk,
+            ).fetchall()
+        except Exception as exc:
+            app.logger.debug("Could not load inventory price trends: %s", exc)
+            return {}
+
+        for row in result:
+            product_id = str(row["tcgplayer_id"] or "").strip()
+            if product_id:
+                trends.setdefault(product_id, []).append({
+                    "normal_price": row["normal_price"],
+                    "foil_price": row["foil_price"],
+                    "captured_at": row["captured_at"],
+                })
+    return trends
+
+
+def _calculate_price_trend(
+    history: list[dict[str, Any]],
+    finish: str,
+) -> tuple[str, float | None]:
+    """Compare the latest two values for a finish; changes under 1% are flat."""
+    key = "foil_price" if normalize_finish(finish) == "foil" else "normal_price"
+    if len(history) < 2:
+        return "unknown", None
+
+    try:
+        latest = float(history[0].get(key))
+        previous = float(history[1].get(key))
+    except (TypeError, ValueError, OverflowError):
+        return "unknown", None
+
+    if previous <= 0:
+        return "unknown", None
+
+    percent = ((latest - previous) / previous) * 100
+    if abs(percent) < 1.0:
+        return "flat", percent
+    return ("up" if percent > 0 else "down"), percent
+
+
 def inventory_rows(
     search: str, owner_filter: str, finish_filter: str, sort_key: str, direction: str,
     type_filter: str = "", color_filter: str = "", location_filter: str = "", vending_filter: str = "",
     limit: int | None = None, offset: int = 0,
 ):
     prices = get_tcg_prices()
+    price_trend_history: dict[str, list[dict[str, Any]]] = {}
     _, _, query_order, query_direction = parse_scryfall_search(search)
     if query_order:
         sort_key = query_order
@@ -1721,6 +1805,7 @@ def inventory_rows(
                 limit=limit,
                 offset=offset,
             )
+            price_trend_history = _fetch_inventory_price_trends(conn, rows)
         finally:
             conn.close()
     else:
@@ -1836,6 +1921,7 @@ def inventory_rows(
                           SUM(IFNULL(quantity,1)) qty
                    FROM inventory GROUP BY scryfall_id, owner, finish"""
             ).fetchall()
+        price_trend_history = _fetch_inventory_price_trends(conn, rows)
         conn.close()
 
     owner_finish: dict[tuple[str, str], dict[str, int]] = {}
@@ -1863,6 +1949,16 @@ def inventory_rows(
         item["curr_normal"] = normal_price if normal_price else None
         item["curr_foil"] = foil_price if foil_price else None
         item["calculated_unit_price"] = unit_value
+        history_key = str(item.get("tcgplayer_id") or "").strip()
+        if history_key:
+            try:
+                history_key = str(int(float(history_key)))
+            except (TypeError, ValueError, OverflowError):
+                pass
+        item["price_trend"], item["price_trend_pct"] = _calculate_price_trend(
+            price_trend_history.get(history_key, []),
+            item["finish"],
+        )
         item["calculated_total_value"] = unit_value * item["quantity"]
         item["image_url"] = scryfall_image_url(item.get("scryfall_id"))
         item["alternate_names"] = str(item.get("alternate_names") or "")
