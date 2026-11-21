@@ -46,12 +46,55 @@ class Issue28UIFoundationTests(unittest.TestCase):
         self.assertNotIn('<div class="tile-body">', source)
         self.assertNotIn('class="meta-row"', source)
 
-    def test_inventory_transfer_actions_are_grouped_in_one_menu(self):
+    def test_inventory_transfer_actions_are_grouped_inside_the_control_panel(self):
         source = self.read("templates/index.html")
-        toolbar = source[:source.find('class="inventory-control-panel"')]
-        self.assertIn('class="inventory-transfer-menu"', toolbar)
-        self.assertIn("Import / Export", toolbar)
-        self.assertIn("Export ManaBox CSV", toolbar)
+        panel_start = source.index('class="inventory-control-panel"')
+        panel_end = source.index('</section>', source.index('<section class="filter-bar">', panel_start))
+        panel = source[panel_start:panel_end]
+        self.assertIn('class="inventory-transfer-menu"', panel)
+        self.assertIn("Import / Export", panel)
+        self.assertIn("Export ManaBox CSV", panel)
+        self.assertLess(panel.index('class="page-actions-bar inventory-page-actions"'), panel.index('class="toolbar"'))
+
+    def test_grid_and_list_views_are_mutually_exclusive(self):
+        source = self.read("templates/index.html")
+        self.assertIn(
+            '    </section>\\n    {% else %}\\n    <section class="table-card">',
+            source,
+        )
+        self.assertEqual(source.count("{% if view == 'grid' %}"), 2)
+
+    def test_superbar_is_open_on_desktop_and_collapses_on_small_screens(self):
+        header = self.read("templates/_app_header.html")
+        self.assertIn('id="siteNavMenu" open', header)
+        self.assertIn("smallScreen.matches", header)
+        for label in ("Inventory", "Decks", "Vending", "Collection analytics", "Search guide", "Administration", "Server info"):
+            with self.subTest(label=label):
+                self.assertIn(f">{label}</a>", header)
+
+    def test_grid_sizing_card_details_mode_and_image_zoom_are_available(self):
+        source = self.read("templates/index.html")
+        css = self.read("static/app.css")
+        self.assertIn('id="gridCardSize"', source)
+        self.assertIn("cardscanner-grid-card-size", source)
+        self.assertIn('id="cardDetailMode"', source)
+        self.assertIn('option value="sidebar"', source)
+        self.assertIn('option value="popup"', source)
+        self.assertIn("openImage(activeOracleImageUrl", source)
+        self.assertIn('data-display-mode="sidebar"', css)
+        self.assertIn('data-display-mode="popup"', css)
+
+    def test_inventory_price_trends_use_last_two_saved_prices(self):
+        app = self.read("app.py")
+        pg_history = self.read("postgres_price_history.py")
+        inventory = self.read("templates/index.html")
+        self.assertIn("def _calculate_price_trend", app)
+        self.assertIn("ROW_NUMBER()", app)
+        self.assertIn("fetch_latest_price_trends", pg_history)
+        self.assertIn("price-trend-indicator", inventory)
+        self.assertIn("trend-up", self.read("static/app.css"))
+        self.assertIn("trend-down", self.read("static/app.css"))
+        self.assertIn("trend-flat", self.read("static/app.css"))
 
     def test_server_status_is_separated_from_inventory(self):
         inventory = self.read("templates/index.html")
