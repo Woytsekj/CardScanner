@@ -9,9 +9,10 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from types import ModuleType
 from contextlib import ExitStack
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import price_updater as updater
 
@@ -115,6 +116,26 @@ class PriceHistoryTests(unittest.TestCase):
             {"productId": 3003, "subTypeName": "Normal", "marketPrice": 4.50},
         ]
 
+    def test_current_price_map_does_not_guess_unknown_foil_subtypes(self) -> None:
+        rows = [
+            {"productId": 9001, "subTypeName": "Normal", "marketPrice": 1.00},
+            {"productId": 9001, "subTypeName": "Foil", "marketPrice": 3.00},
+            {"productId": 9001, "subTypeName": "Etched", "marketPrice": 4.00},
+            {"productId": 9001, "subTypeName": "Reverse Holofoil", "marketPrice": 5.00},
+        ]
+        prices = updater.build_price_map(rows)["9001"]
+        self.assertEqual(prices["normal"], 1.00)
+        self.assertEqual(prices["foil"], 3.00)
+        self.assertEqual(
+            prices["subtypes"],
+            {
+                "Normal": 1.00,
+                "Foil": 3.00,
+                "Etched": 4.00,
+                "Reverse Holofoil": 5.00,
+            },
+        )
+
     def test_records_history_using_inventory_art_database_and_mapping_ids(self) -> None:
         """All three supported TCGplayer-ID sources must produce history."""
         price_map = updater.build_price_map(self.sample_price_rows())
@@ -180,6 +201,203 @@ class PriceHistoryTests(unittest.TestCase):
         meta = json.loads(self.meta_file.read_text(encoding="utf-8"))
         self.assertEqual(meta["history_rows_recorded"], 3)
 
+    def test_empty_provider_feed_does_not_replace_snapshot_or_reconcile_history(self) -> None:
+        previous_snapshot = {
+            "success": True,
+            "sourceUpdated": "previous-good-build",
+            "results": self.sample_price_rows(),
+        }
+        previous_text = json.dumps(previous_snapshot, separators=(",", ":"))
+        self.prices_file.write_text(previous_text, encoding="utf-8")
+        self.last_seen_file.write_text("previous-good-build\n", encoding="utf-8")
+
+        def fake_get_json(path: str) -> dict[str, object]:
+            if path.endswith("/groups"):
+                return {"success": True, "errors": [], "results": [{"groupId": 77}]}
+            if path.endswith("/77/prices"):
+                return {"success": True, "errors": [], "results": []}
+            raise AssertionError(f"Unexpected TCGCSV path: {path}")
+
+        with (
+            patch.object(updater, "get_last_updated", return_value=TCGCSV_MARKER),
+            patch.object(updater, "get_json", side_effect=fake_get_json),
+            patch.object(updater.time, "sleep"),
+            patch.object(
+                updater,
+                "record_history_and_alerts",
+                side_effect=AssertionError("empty feed must not reconcile price history"),
+            ),
+        ):
+            updated = updater.sync_prices(force=True)
+
+        self.assertFalse(updated)
+        self.assertEqual(self.prices_file.read_text(encoding="utf-8"), previous_text)
+        self.assertEqual(
+            self.last_seen_file.read_text(encoding="utf-8"),
+            "previous-good-build\n",
+        )
+        meta = json.loads(self.meta_file.read_text(encoding="utf-8"))
+        self.assertEqual(meta["price_rows"], 0)
+        self.assertTrue(meta["failures"])
+        self.assertIn("zero price rows", meta["failures"][-1]["error"])
+
+    def test_failed_group_response_does_not_reconcile_partial_catalog(self) -> None:
+        previous_snapshot = {
+            "success": True,
+            "sourceUpdated": "previous-good-build",
+            "results": self.sample_price_rows(),
+        }
+        previous_text = json.dumps(previous_snapshot, separators=(",", ":"))
+        self.prices_file.write_text(previous_text, encoding="utf-8")
+        self.last_seen_file.write_text("previous-good-build\n", encoding="utf-8")
+
+        def fake_get_json(path: str) -> dict[str, object]:
+            if path.endswith("/groups"):
+                return {
+                    "success": True,
+                    "errors": [],
+                    "results": [{"groupId": 77}, {"groupId": 78}],
+                }
+            if path.endswith("/77/prices"):
+                return {
+                    "success": True,
+                    "errors": [],
+                    "results": self.sample_price_rows(),
+                }
+            if path.endswith("/78/prices"):
+                return {
+                    "success": False,
+                    "errors": ["temporary provider error"],
+                    "results": [],
+                }
+            raise AssertionError(f"Unexpected TCGCSV path: {path}")
+
+        with (
+            patch.object(updater, "get_last_updated", return_value=TCGCSV_MARKER),
+            patch.object(updater, "get_json", side_effect=fake_get_json),
+            patch.object(updater.time, "sleep"),
+            patch.object(
+                updater,
+                "record_history_and_alerts",
+                side_effect=AssertionError("partial feed must not reconcile price history"),
+            ),
+        ):
+            updated = updater.sync_prices(force=True)
+
+        self.assertFalse(updated)
+        self.assertEqual(self.prices_file.read_text(encoding="utf-8"), previous_text)
+        self.assertEqual(
+            self.last_seen_file.read_text(encoding="utf-8"),
+            "previous-good-build\n",
+        )
+        meta = json.loads(self.meta_file.read_text(encoding="utf-8"))
+        self.assertEqual(meta["groups"], 2)
+        self.assertEqual(meta["groups_synced"], 1)
+        self.assertEqual(meta["price_rows"], len(self.sample_price_rows()))
+        self.assertEqual(meta["failures"][0]["groupId"], 78)
+
+    def test_unchanged_postgres_feed_skips_full_catalog_replay(self) -> None:
+        snapshot = {
+            "success": True,
+            "sourceUpdated": TCGCSV_MARKER,
+            "results": self.sample_price_rows(),
+        }
+        snapshot_text = json.dumps(snapshot, separators=(",", ":"))
+        self.prices_file.write_text(snapshot_text, encoding="utf-8")
+        self.last_seen_file.write_text(TCGCSV_MARKER + "\n", encoding="utf-8")
+        self.meta_file.write_text(
+            json.dumps({"source": "TCGCSV", "source_updated": TCGCSV_MARKER}),
+            encoding="utf-8",
+        )
+
+        db_cursor = Mock()
+        db_cursor.fetchone.return_value = {"has_history": True}
+        db_conn = Mock()
+        db_conn.execute.return_value = db_cursor
+        fake_app_db = ModuleType("postgres_app_db")
+        fake_app_db.connect_app_database = Mock(return_value=db_conn)
+        fake_postgres_db = ModuleType("postgres_db")
+        fake_postgres_db.open_pool = Mock()
+
+        with (
+            patch.dict(
+                "sys.modules",
+                {
+                    "postgres_app_db": fake_app_db,
+                    "postgres_db": fake_postgres_db,
+                },
+            ),
+            patch.object(updater, "DATABASE_BACKEND", "postgres"),
+            patch.object(updater, "get_last_updated", return_value=TCGCSV_MARKER),
+            patch.object(
+                updater,
+                "get_json",
+                side_effect=AssertionError("unchanged PostgreSQL marker must not download feeds"),
+            ),
+            patch.object(
+                updater,
+                "record_history_and_alerts",
+                side_effect=AssertionError("global PostgreSQL history must not be replayed"),
+            ),
+        ):
+            updated = updater.sync_prices(force=False)
+
+        self.assertFalse(updated)
+        self.assertEqual(self.prices_file.read_text(encoding="utf-8"), snapshot_text)
+        meta = json.loads(self.meta_file.read_text(encoding="utf-8"))
+        self.assertEqual(meta["history_rows_recorded"], 0)
+        self.assertEqual(meta["alerts_sent"], 0)
+        self.assertEqual(meta["history_scope"], "full_provider_catalog")
+        db_conn.close.assert_called_once()
+
+    def test_empty_postgres_catalog_seeds_from_saved_snapshot(self) -> None:
+        snapshot = {
+            "success": True,
+            "sourceUpdated": TCGCSV_MARKER,
+            "results": self.sample_price_rows(),
+        }
+        snapshot_text = json.dumps(snapshot, separators=(",", ":"))
+        self.prices_file.write_text(snapshot_text, encoding="utf-8")
+        self.last_seen_file.write_text(TCGCSV_MARKER + "\n", encoding="utf-8")
+        self.meta_file.write_text(
+            json.dumps({"source": "TCGCSV", "source_updated": TCGCSV_MARKER}),
+            encoding="utf-8",
+        )
+
+        db_cursor = Mock()
+        db_cursor.fetchone.return_value = {"has_history": False}
+        db_conn = Mock()
+        db_conn.execute.return_value = db_cursor
+        fake_app_db = ModuleType("postgres_app_db")
+        fake_app_db.connect_app_database = Mock(return_value=db_conn)
+        fake_postgres_db = ModuleType("postgres_db")
+        fake_postgres_db.open_pool = Mock()
+        with (
+            patch.dict(
+                "sys.modules",
+                {
+                    "postgres_app_db": fake_app_db,
+                    "postgres_db": fake_postgres_db,
+                },
+            ),
+            patch.object(updater, "DATABASE_BACKEND", "postgres"),
+            patch.object(updater, "get_last_updated", return_value=TCGCSV_MARKER),
+            patch.object(
+                updater, "record_history_and_alerts", return_value=(4, 0)
+            ) as record_history,
+        ):
+            updated = updater.sync_prices(force=False)
+
+        self.assertFalse(updated)
+        self.assertEqual(self.prices_file.read_text(encoding="utf-8"), snapshot_text)
+        record_history.assert_called_once()
+        self.assertEqual(record_history.call_args.args[1], TCGCSV_MARKER)
+        self.assertEqual(len(record_history.call_args.args[2]), 4)
+        meta = json.loads(self.meta_file.read_text(encoding="utf-8"))
+        self.assertEqual(meta["history_rows_recorded"], 4)
+        self.assertEqual(meta["history_scope"], "full_provider_catalog")
+        db_conn.close.assert_called_once()
+
     def test_forced_sync_downloads_mock_data_and_records_history(self) -> None:
         """Exercise the full sync path without a network call."""
         self.prices_file.write_text("{}", encoding="utf-8")
@@ -187,9 +405,9 @@ class PriceHistoryTests(unittest.TestCase):
 
         def fake_get_json(path: str) -> dict[str, object]:
             if path.endswith("/groups"):
-                return {"results": [{"groupId": 77}]}
+                return {"success": True, "errors": [], "results": [{"groupId": 77}]}
             if path.endswith("/77/prices"):
-                return {"results": self.sample_price_rows()}
+                return {"success": True, "errors": [], "results": self.sample_price_rows()}
             raise AssertionError(f"Unexpected TCGCSV path: {path}")
 
         with patch.object(updater, "get_last_updated", return_value=TCGCSV_MARKER), patch.object(

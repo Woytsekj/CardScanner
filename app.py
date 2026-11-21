@@ -5689,13 +5689,16 @@ def api_price(tcg_id: str):
                 try:
                     row = conn.execute(
                         """
-                        SELECT normal_price, foil_price
-                        FROM catalog.product_price_history
+                        SELECT
+                            MAX(COALESCE(market_price, mid_price, low_price))
+                                FILTER (WHERE subtype_name = 'Normal') AS normal_price,
+                            MAX(COALESCE(market_price, mid_price, low_price))
+                                FILTER (WHERE subtype_name = 'Foil') AS foil_price
+                        FROM catalog.provider_price_current
                         WHERE game_id = 'mtg'
                           AND provider_id = 'tcgcsv'
                           AND external_product_id = ?
-                        ORDER BY captured_at DESC, id DESC
-                        LIMIT 1
+                          AND is_available IS TRUE
                         """,
                         (key,),
                     ).fetchone()
@@ -5797,7 +5800,7 @@ def api_price_history(tcg_id: str):
                     "success": False,
                     "error": "That card is not in the inventory",
                 }), 404
-            points = fetch_price_history(conn, tcg_id, days)
+            series = fetch_price_history(conn, tcg_id, days)
         finally:
             conn.close()
         return jsonify({
@@ -5805,7 +5808,7 @@ def api_price_history(tcg_id: str):
             "tcgplayer_id": tcg_id,
             "days": days,
             "timezone": DISPLAY_TIMEZONE,
-            "points": points,
+            "series": series,
         })
 
     conn = connect_inventory()
@@ -5840,20 +5843,43 @@ def api_price_history(tcg_id: str):
         (tcg_id, since),
     ).fetchall()
     conn.close()
+    normal_points = [
+        {
+            "captured_at": r["captured_at"],
+            "source_updated": r["source_updated"],
+            "available": r["normal_price"] is not None,
+            "market": r["normal_price"],
+            "low": None,
+            "mid": None,
+            "high": None,
+            "direct_low": None,
+        }
+        for r in rows
+    ]
+    foil_points = [
+        {
+            "captured_at": r["captured_at"],
+            "source_updated": r["source_updated"],
+            "available": r["foil_price"] is not None,
+            "market": r["foil_price"],
+            "low": None,
+            "mid": None,
+            "high": None,
+            "direct_low": None,
+        }
+        for r in rows
+    ]
+    series = []
+    if any(point["available"] for point in normal_points):
+        series.append({"subtype_name": "Normal", "points": normal_points})
+    if any(point["available"] for point in foil_points):
+        series.append({"subtype_name": "Foil", "points": foil_points})
     return jsonify({
         "success": True,
         "tcgplayer_id": tcg_id,
         "days": days,
         "timezone": DISPLAY_TIMEZONE,
-        "points": [
-            {
-                "captured_at": r["captured_at"],
-                "normal": r["normal_price"],
-                "foil": r["foil_price"],
-                "source_updated": r["source_updated"],
-            }
-            for r in rows
-        ],
+        "series": series,
     })
 
 

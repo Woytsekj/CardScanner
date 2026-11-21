@@ -162,7 +162,7 @@ class TCGCSVPriceSnapshotTests(unittest.TestCase):
         self.assertEqual(records[0][2:5], ("123", "Normal", "2026-11-18T20:05:56+0000"))
         self.assertEqual(records[0][6], decimal_value("1.25", "test"))
         self.assertIsNone(records[0][10])
-        self.assertEqual(records[0][11].obj["subTypeName"], "Normal")
+        self.assertIs(records[0][11], True)
         self.assertEqual(records[1][3], "Foil")
 
     def test_duplicate_observation_keys_are_rejected(self):

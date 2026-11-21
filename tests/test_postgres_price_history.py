@@ -1,11 +1,11 @@
-"""PostgreSQL integration tests for TCGCSV price history and chart access."""
+"""PostgreSQL integration tests for compact TCGCSV price history."""
 
 from __future__ import annotations
 
 import os
 import unittest
-from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 from uuid import uuid4
 
 from postgres_app_db import connect_app_database
@@ -14,11 +14,11 @@ import price_updater
 
 from postgres_price_history import (
     fetch_owned_products,
+    fetch_latest_price_trends,
     fetch_price_history,
     has_owned_product,
     insert_price_alert,
     insert_price_observations,
-    insert_price_snapshot,
     latest_history_price,
     prune_price_history,
     recently_alerted,
@@ -130,30 +130,21 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
         conn = connect_app_database(expected_database="cardscanner_dev")
         try:
             product_ids = (self.product_id, self.vending_product_id)
-            conn.execute(
-                """
-                DELETE FROM catalog.product_price_history
-                WHERE game_id = 'mtg' AND provider_id = 'tcgcsv'
-                  AND external_product_id IN (?, ?)
-                """,
-                product_ids,
-            )
-            conn.execute(
-                """
-                DELETE FROM catalog.provider_price_observations
-                WHERE game_id = 'mtg' AND provider_id = 'tcgcsv'
-                  AND external_product_id IN (?, ?)
-                """,
-                product_ids,
-            )
-            conn.execute(
-                """
-                DELETE FROM app.price_alert_log
-                WHERE game_id = 'mtg' AND provider_id = 'tcgcsv'
-                  AND external_product_id IN (?, ?)
-                """,
-                product_ids,
-            )
+            for table in (
+                "catalog.provider_price_current",
+                "catalog.provider_price_observations",
+                "catalog.product_price_history",
+                "app.price_alert_log",
+            ):
+                conn.execute(
+                    f"""
+                    DELETE FROM {table}
+                    WHERE game_id = 'mtg'
+                      AND provider_id = 'tcgcsv'
+                      AND external_product_id IN (?, ?)
+                    """,
+                    product_ids,
+                )
             conn.execute(
                 "DELETE FROM app.inventory WHERE name LIKE ?",
                 (self.prefix + "%",),
@@ -173,7 +164,18 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_owned_products_snapshots_and_exact_subtypes_are_preserved(self):
+    def _normal_row(self, market=1.25, low=1.00, mid=1.10, high=1.50, direct=None):
+        return {
+            "productId": self.product_id,
+            "subTypeName": "Normal",
+            "marketPrice": market,
+            "lowPrice": low,
+            "midPrice": mid,
+            "highPrice": high,
+            "directLowPrice": direct,
+        }
+
+    def test_exact_subtypes_change_events_and_daily_reconstruction(self):
         conn = connect_app_database(expected_database="cardscanner_dev")
         try:
             fixture_product_ids = {self.product_id, self.vending_product_id}
@@ -188,42 +190,22 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
             self.assertEqual(products[self.vending_product_id]["foil_qty"], 3)
 
             self.assertTrue(has_owned_product(conn, self.product_id))
-            self.assertFalse(
-                has_owned_product(conn, self.product_id, vending_only=True)
-            )
+            self.assertFalse(has_owned_product(conn, self.product_id, vending_only=True))
             self.assertTrue(
                 has_owned_product(conn, self.vending_product_id, vending_only=True)
             )
 
-            captured = datetime.now(timezone.utc)
-            old = captured - timedelta(days=10)
-            self.assertTrue(
-                insert_price_snapshot(
-                    conn, self.product_id, "2026-11-08T12:00:00Z",
-                    old, 1.25, 4.50,
-                )
-            )
-            self.assertFalse(
-                insert_price_snapshot(
-                    conn, self.product_id, "2026-11-08T12:00:00Z",
-                    captured, 1.25, 4.50,
-                )
-            )
-
+            captured = datetime.now(timezone.utc) - timedelta(days=4)
             source_rows = [
-                {
-                    "productId": self.product_id,
-                    "subTypeName": "Normal",
-                    "marketPrice": 1.25,
-                    "lowPrice": 1.00,
-                    "midPrice": 1.10,
-                    "highPrice": 1.50,
-                    "directLowPrice": None,
-                },
+                self._normal_row(direct=0.95),
                 {
                     "productId": self.product_id,
                     "subTypeName": "Foil",
                     "marketPrice": 4.50,
+                    "lowPrice": 4.00,
+                    "midPrice": 4.25,
+                    "highPrice": 5.00,
+                    "directLowPrice": 3.90,
                 },
                 {
                     "productId": self.product_id,
@@ -233,20 +215,24 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
             ]
             self.assertEqual(
                 insert_price_observations(
-                    conn, source_rows, "2026-11-08T12:00:00Z", captured
+                    conn, source_rows, "initial-build", captured
                 ),
                 3,
             )
+            # A new source build with identical values updates last-seen state,
+            # but does not create duplicate history events.
             self.assertEqual(
                 insert_price_observations(
-                    conn, source_rows, "2026-11-08T12:00:00Z", captured
+                    conn, source_rows, "unchanged-build",
+                    captured + timedelta(days=1),
                 ),
                 0,
             )
 
             observations = conn.execute(
                 """
-                SELECT subtype_name, market_price, low_price, direct_low_price
+                SELECT subtype_name, market_price, low_price, mid_price,
+                       high_price, direct_low_price, is_available
                 FROM catalog.provider_price_observations
                 WHERE game_id = 'mtg'
                   AND provider_id = 'tcgcsv'
@@ -262,13 +248,158 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
             normal = next(row for row in observations if row["subtype_name"] == "Normal")
             self.assertEqual(float(normal["market_price"]), 1.25)
             self.assertEqual(float(normal["low_price"]), 1.00)
-            self.assertIsNone(normal["direct_low_price"])
+            self.assertEqual(float(normal["mid_price"]), 1.10)
+            self.assertEqual(float(normal["high_price"]), 1.50)
+            self.assertEqual(float(normal["direct_low_price"]), 0.95)
+            self.assertTrue(normal["is_available"])
+            # A physical Etched finish must not be assigned a generic Foil price.
+            self.assertIsNone(
+                latest_history_price(conn, self.product_id, "etched", captured)
+            )
 
-            points = fetch_price_history(conn, self.product_id, 365)
-            self.assertEqual(len(points), 1)
-            self.assertEqual(points[0]["normal"], 1.25)
-            self.assertEqual(points[0]["foil"], 4.50)
-            self.assertEqual(points[0]["source_updated"], "2026-11-08T12:00:00Z")
+            # One changed metric stores a complete new state for the subtype.
+            changed_at = captured + timedelta(days=2)
+            changed_rows = [
+                self._normal_row(market=1.35, low=1.05, mid=1.15, high=1.60, direct=1.00),
+                *source_rows[1:],
+            ]
+            self.assertEqual(
+                insert_price_observations(
+                    conn, changed_rows, "changed-build", changed_at
+                ),
+                1,
+            )
+            current = conn.execute(
+                """
+                SELECT market_price, low_price, mid_price, high_price,
+                       direct_low_price, source_updated, is_available
+                FROM catalog.provider_price_current
+                WHERE game_id = 'mtg'
+                  AND provider_id = 'tcgcsv'
+                  AND external_product_id = ?
+                  AND subtype_name = 'Normal'
+                """,
+                (self.product_id,),
+            ).fetchone()
+            self.assertEqual(float(current["market_price"]), 1.35)
+            self.assertEqual(float(current["low_price"]), 1.05)
+            self.assertEqual(float(current["mid_price"]), 1.15)
+            self.assertEqual(float(current["high_price"]), 1.60)
+            self.assertEqual(float(current["direct_low_price"]), 1.00)
+            self.assertEqual(current["source_updated"], "changed-build")
+            self.assertTrue(current["is_available"])
+
+            # A single metric becoming NULL is a real change, but the subtype
+            # remains available and its other four metrics are preserved.
+            null_changed_at = changed_at + timedelta(hours=1)
+            null_rows = [
+                self._normal_row(
+                    market=1.35, low=1.05, mid=1.15, high=1.60, direct=None
+                ),
+                *source_rows[1:],
+            ]
+            self.assertEqual(
+                insert_price_observations(
+                    conn, null_rows, "direct-low-removed-build", null_changed_at
+                ),
+                1,
+            )
+            null_state = conn.execute(
+                """
+                SELECT market_price, low_price, mid_price, high_price,
+                       direct_low_price, is_available
+                FROM catalog.provider_price_current
+                WHERE game_id = 'mtg'
+                  AND provider_id = 'tcgcsv'
+                  AND external_product_id = ?
+                  AND subtype_name = 'Normal'
+                """,
+                (self.product_id,),
+            ).fetchone()
+            self.assertTrue(null_state["is_available"])
+            self.assertIsNone(null_state["direct_low_price"])
+            self.assertEqual(float(null_state["market_price"]), 1.35)
+            self.assertEqual(float(null_state["low_price"]), 1.05)
+            self.assertEqual(float(null_state["mid_price"]), 1.15)
+            self.assertEqual(float(null_state["high_price"]), 1.60)
+
+            # Missing from a complete feed writes an explicit unavailable event.
+            self.assertEqual(
+                insert_price_observations(
+                    conn, [], "missing-build", changed_at + timedelta(days=1)
+                ),
+                3,
+            )
+            unavailable = conn.execute(
+                """
+                SELECT is_available, market_price
+                FROM catalog.provider_price_current
+                WHERE game_id = 'mtg'
+                  AND provider_id = 'tcgcsv'
+                  AND external_product_id = ?
+                  AND subtype_name = 'Normal'
+                """,
+                (self.product_id,),
+            ).fetchone()
+            self.assertFalse(unavailable["is_available"])
+            self.assertIsNone(unavailable["market_price"])
+            self.assertIsNone(
+                latest_history_price(
+                    conn, self.product_id, "normal",
+                    changed_at + timedelta(days=1),
+                )
+            )
+
+            # Reappearance with the same value is a new event after unavailability.
+            self.assertEqual(
+                insert_price_observations(
+                    conn, [self._normal_row(
+                        market=1.35, low=1.05, mid=1.15, high=1.60, direct=1.00
+                    )], "reappeared-build",
+                    changed_at + timedelta(days=1, hours=22),
+                ),
+                1,
+            )
+            reappeared = conn.execute(
+                """
+                SELECT is_available, market_price
+                FROM catalog.provider_price_current
+                WHERE game_id = 'mtg'
+                  AND provider_id = 'tcgcsv'
+                  AND external_product_id = ?
+                  AND subtype_name = 'Normal'
+                """,
+                (self.product_id,),
+            ).fetchone()
+            self.assertTrue(reappeared["is_available"])
+            self.assertEqual(float(reappeared["market_price"]), 1.35)
+            self.assertEqual(
+                latest_history_price(
+                    conn, self.product_id, "normal",
+                    changed_at + timedelta(days=1, hours=22),
+                ),
+                1.35,
+            )
+            trends = fetch_latest_price_trends(conn, [self.product_id])
+            self.assertEqual(len(trends[self.product_id]), 2)
+            self.assertEqual(trends[self.product_id][0]["normal_price"], 1.35)
+            self.assertIsNone(trends[self.product_id][1]["normal_price"])
+
+            series = fetch_price_history(conn, self.product_id, 365)
+            normal_series = next(item for item in series if item["subtype_name"] == "Normal")
+            self.assertGreaterEqual(len(normal_series["points"]), 365)
+            # The final daily value is the reappeared state.
+            self.assertEqual(normal_series["points"][-1]["market"], 1.35)
+            self.assertTrue(normal_series["points"][-1]["available"])
+            # The removal day is represented as unavailable, not a stale price.
+            unavailable_days = [
+                point for point in normal_series["points"]
+                if point["captured_at"].startswith((changed_at + timedelta(days=1)).date().isoformat())
+            ]
+            self.assertTrue(unavailable_days)
+            self.assertFalse(unavailable_days[-1]["available"])
+            self.assertIsNone(unavailable_days[-1]["market"])
+
             conn.commit()
         except Exception:
             conn.rollback()
@@ -276,86 +407,50 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_previous_price_alert_cooldown_and_retention(self):
+    def test_retention_keeps_one_pre_window_baseline_per_subtype(self):
         conn = connect_app_database(expected_database="cardscanner_dev")
         try:
             now = datetime.now(timezone.utc)
-            old_capture = now - timedelta(days=14)
-            retention_cutoff = now - timedelta(days=365)
-            self.assertTrue(
-                insert_price_snapshot(
-                    conn, self.product_id, "old-source-build",
-                    old_capture, 1.00, 2.00,
-                )
+            cutoff = now - timedelta(days=365)
+            self.assertEqual(
+                insert_price_observations(
+                    conn, [self._normal_row(0.75)], "baseline-older",
+                    now - timedelta(days=550),
+                ),
+                1,
+            )
+            self.assertEqual(
+                insert_price_observations(
+                    conn, [self._normal_row(1.00)], "baseline-newer",
+                    now - timedelta(days=500),
+                ),
+                1,
+            )
+            self.assertEqual(
+                insert_price_observations(
+                    conn, [self._normal_row(1.25)], "inside-window", now
+                ),
+                1,
             )
 
-            prior = latest_history_price(
-                conn, self.product_id, "normal", now - timedelta(days=1)
-            )
-            self.assertEqual(prior, 1.00)
-
-            self.assertTrue(
-                insert_price_snapshot(
-                    conn, self.product_id, "current-source-build",
-                    now, 3.00, 5.00,
-                )
-            )
-            # A comparison made before the current insert must use the prior point.
-            self.assertEqual(prior, 1.00)
-            self.assertFalse(
-                recently_alerted(
-                    conn, self.product_id, "normal", now - timedelta(days=7)
-                )
-            )
-
-            insert_price_alert(
-                conn,
-                tcg_id=self.product_id,
-                finish="normal",
-                alerted_at=now,
-                old_price=1.00,
-                new_price=3.00,
-                percent_change=200.0,
-                owned_quantity=2,
-                owned_value_gain=4.00,
-            )
-            self.assertTrue(
-                recently_alerted(
-                    conn, self.product_id, "normal", now - timedelta(days=7)
-                )
-            )
-
-            expired = now - timedelta(days=500)
-            insert_price_snapshot(
-                conn, self.vending_product_id, "expired-source-build",
-                expired, 0.50, None,
-            )
             prune_price_history(
-                conn,
-                retention_cutoff,
-                product_ids=(self.product_id, self.vending_product_id),
+                conn, cutoff, product_ids=(self.product_id,)
             )
-
             remaining = conn.execute(
                 """
-                SELECT external_product_id, source_updated
-                FROM catalog.product_price_history
+                SELECT source_updated
+                FROM catalog.provider_price_observations
                 WHERE game_id = 'mtg'
                   AND provider_id = 'tcgcsv'
-                  AND external_product_id IN (?, ?)
-                ORDER BY external_product_id, source_updated
+                  AND external_product_id = ?
+                  AND subtype_name = 'Normal'
+                ORDER BY captured_at
                 """,
-                (self.product_id, self.vending_product_id),
+                (self.product_id,),
             ).fetchall()
             self.assertEqual(
-                {
-                    (row["external_product_id"], row["source_updated"])
-                    for row in remaining
-                },
-                {
-                    (self.product_id, "old-source-build"),
-                    (self.product_id, "current-source-build"),
-                },
+                [row["source_updated"] for row in remaining],
+                ["baseline-newer", "inside-window"],
             )
             conn.commit()
         except Exception:
@@ -364,32 +459,34 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_updater_compares_against_previous_price_before_snapshot_insert(self):
+    def test_updater_alert_uses_previous_event_before_new_build(self):
         conn = connect_app_database(expected_database="cardscanner_dev")
         try:
             old_time = datetime.now(timezone.utc) - timedelta(days=14)
-            insert_price_snapshot(
-                conn, self.product_id, "old-alert-source-build",
-                old_time, 1.00, None,
+            insert_price_observations(
+                conn,
+                [self._normal_row(
+                    market=None, low=0.75, mid=1.00, high=1.25, direct=None
+                )],
+                "old-alert-source-build",
+                old_time,
+            )
+            fallback_trends = fetch_latest_price_trends(conn, [self.product_id])
+            self.assertEqual(
+                fallback_trends[self.product_id][0]["normal_price"], 1.00
             )
             conn.commit()
         finally:
             conn.close()
 
         source_rows = [{
-            "productId": self.product_id,
-            "subTypeName": "Normal",
-            "marketPrice": 3.00,
-            "lowPrice": 2.75,
-            "midPrice": 2.90,
-            "highPrice": 3.25,
-            "directLowPrice": None,
+            **self._normal_row(3.00, 2.75, 2.90, 3.25, None),
         }]
         with (
             patch.object(price_updater, "DATABASE_BACKEND", "postgres"),
             patch.object(price_updater, "PRICE_ALERT_ENABLED", True),
             patch.object(price_updater, "DISCORD_WEBHOOK_URL", "configured-for-test"),
-            patch.object(price_updater, "PRICE_ALERT_LOOKBACK_DAYS", 30),
+            patch.object(price_updater, "PRICE_ALERT_LOOKBACK_DAYS", 7),
             patch.object(price_updater, "PRICE_ALERT_COOLDOWN_DAYS", 7),
             patch.object(price_updater, "PRICE_ALERT_MIN_DOLLARS", 1.00),
             patch.object(price_updater, "PRICE_ALERT_MIN_PERCENT", 25.0),
@@ -432,16 +529,26 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_chart_api_uses_postgres_and_vendor_vending_scope(self):
+    def test_chart_api_uses_postgres_subtypes_and_vendor_vending_scope(self):
         conn = connect_app_database(expected_database="cardscanner_dev")
         try:
             now = datetime.now(timezone.utc)
-            insert_price_snapshot(
-                conn, self.product_id, "chart-source-build", now, 1.25, None
-            )
-            insert_price_snapshot(
-                conn, self.vending_product_id, "vending-chart-source-build",
-                now, None, 7.50,
+            insert_price_observations(
+                conn,
+                [
+                    self._normal_row(1.25),
+                    {
+                        "productId": self.vending_product_id,
+                        "subTypeName": "Foil",
+                        "marketPrice": 7.50,
+                        "lowPrice": 7.00,
+                        "midPrice": 7.25,
+                        "highPrice": 8.00,
+                        "directLowPrice": None,
+                    },
+                ],
+                "chart-source-build",
+                now,
             )
             conn.commit()
         finally:
@@ -453,7 +560,11 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
         self.assertEqual(
             admin_owned.status_code, 200, admin_owned.get_data(as_text=True)
         )
-        self.assertEqual(admin_owned.get_json()["points"][0]["normal"], 1.25)
+        normal = next(
+            item for item in admin_owned.get_json()["series"]
+            if item["subtype_name"] == "Normal"
+        )
+        self.assertEqual(normal["points"][-1]["market"], 1.25)
 
         vendor_hidden = self.vendor_client.get(
             f"/api/price-history/{self.product_id}?days=90"
@@ -466,7 +577,11 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
         self.assertEqual(
             vendor_visible.status_code, 200, vendor_visible.get_data(as_text=True)
         )
-        self.assertEqual(vendor_visible.get_json()["points"][0]["foil"], 7.50)
+        foil = next(
+            item for item in vendor_visible.get_json()["series"]
+            if item["subtype_name"] == "Foil"
+        )
+        self.assertEqual(foil["points"][-1]["market"], 7.50)
 
         missing = self.admin_client.get(
             f"/api/price-history/missing-{self.token}?days=90"

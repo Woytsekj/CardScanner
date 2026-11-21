@@ -169,9 +169,13 @@ dialog input[type=file] { width:100%; margin:14px 0; }
 .history-stats strong { display:block; font-size:22px; margin:2px 0; }
 .history-chart-wrap { width:100%; overflow:auto; border:1px solid #303030; border-radius:7px; background:#121212; }
 .history-chart-wrap svg { width:100%; min-width:700px; height:auto; display:block; }
-.chart-legend { display:flex; gap:18px; margin-top:8px; color:#aaa; font-size:13px; }
+.chart-legend { display:flex; gap:18px; margin-top:8px; color:#aaa; font-size:13px; flex-wrap:wrap; }
 .legend-normal::before,.legend-foil::before { content:""; display:inline-block; width:18px; height:3px; margin-right:6px; vertical-align:middle; }
 .legend-normal::before { background:#35b7e6; }
+.history-metric-control { display:flex; align-items:center; gap:9px; margin:10px 0; color:var(--muted,#aaa); font-size:13px; }
+.history-metric-control select { min-width:145px; }
+.price-history-legend-item { display:inline-flex; align-items:center; gap:7px; }
+.price-history-legend-item i { display:inline-block; width:18px; height:3px; border-radius:3px; }
 .legend-foil::before { background:#f3c842; }
 .settings-list { display:grid; gap:7px; margin-top:12px; }
 .settings-list > div { display:flex; justify-content:space-between; gap:12px; padding:8px 10px; border:1px solid #333; border-radius:6px; background:#202020; }

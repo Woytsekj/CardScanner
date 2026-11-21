@@ -75,7 +75,7 @@ def get_last_updated() -> str:
 
 
 def build_price_map(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Normalize TCGCSV rows into TCGplayer ID -> normal/foil prices."""
+    """Build legacy finish prices without collapsing unknown provider subtypes."""
     price_map: dict[str, dict[str, Any]] = {}
     for item in items:
         pid_raw = item.get("productId")
@@ -85,16 +85,27 @@ def build_price_map(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
             pid = str(int(float(pid_raw)))
         except (TypeError, ValueError):
             continue
-        entry = price_map.setdefault(pid, {"normal": None, "foil": None})
-        subtype = str(item.get("subTypeName") or "").lower()
-        variant = "foil" if ("foil" in subtype or "etched" in subtype) else "normal"
+        entry = price_map.setdefault(
+            pid, {"normal": None, "foil": None, "subtypes": {}}
+        )
+        subtype_name = str(item.get("subTypeName") or "").strip()
+        if not subtype_name:
+            continue
         value = item.get("marketPrice")
         if value is None:
             value = item.get("midPrice")
         if value is None:
             value = item.get("lowPrice")
-        if value is not None and entry[variant] is None:
-            entry[variant] = value
+        entry["subtypes"][subtype_name] = value
+        # The application inventory's legacy normal/foil valuation fields may
+        # consume only exact provider labels they actually understand. Keep
+        # other labels intact in "subtypes" rather than guessing that Etched,
+        # Reverse Holofoil, or an unfamiliar provider subtype is generic Foil.
+        normalized_subtype = subtype_name.casefold()
+        if value is not None and normalized_subtype == "normal" and entry["normal"] is None:
+            entry["normal"] = value
+        elif value is not None and normalized_subtype == "foil" and entry["foil"] is None:
+            entry["foil"] = value
     return price_map
 
 
@@ -276,14 +287,13 @@ def record_postgres_history_and_alerts(
     source_updated: str,
     source_rows: list[dict[str, Any]] | None = None,
 ) -> tuple[int, int]:
-    """Write MTG price history and alerts through the normalized PostgreSQL schema."""
+    """Write compact full-catalog history and inventory-based price alerts."""
     from postgres_app_db import connect_app_database
     from postgres_db import open_pool
     from postgres_price_history import (
         fetch_owned_products,
         insert_price_alert,
         insert_price_observations,
-        insert_price_snapshot,
         latest_history_price,
         prune_price_history,
         recently_alerted,
@@ -292,7 +302,6 @@ def record_postgres_history_and_alerts(
     open_pool()
     conn = connect_app_database()
     now = datetime.now(timezone.utc)
-    captured_at = now
     cutoff_retention = now - timedelta(days=PRICE_HISTORY_DAYS)
     cutoff_alert = now - timedelta(days=PRICE_ALERT_LOOKBACK_DAYS)
     cooldown_cutoff = now - timedelta(days=PRICE_ALERT_COOLDOWN_DAYS)
@@ -301,8 +310,33 @@ def record_postgres_history_and_alerts(
 
     try:
         products = fetch_owned_products(conn)
-        if source_rows:
-            insert_price_observations(conn, source_rows, source_updated, captured_at)
+
+        # Capture historical baselines before applying the incoming source
+        # build. Otherwise the newly inserted change event could compare
+        # against itself and suppress a legitimate alert.
+        previous_by_product: dict[str, dict[str, float | None]] = {}
+        for card in products:
+            tcg_id = str(card.get("tcgplayer_id") or "").strip()
+            if not tcg_id:
+                continue
+            prices = price_map.get(tcg_id, {})
+            normal = normalize_price(prices.get("normal"))
+            foil = normalize_price(prices.get("foil"))
+            previous_by_product[tcg_id] = {
+                finish: latest_history_price(
+                    conn, tcg_id, finish, now, not_before=cutoff_alert
+                )
+                for finish, current in (("normal", normal), ("foil", foil))
+                if current is not None
+            }
+
+        # Every successful complete feed is reconciled, including an empty
+        # list. This refreshes unchanged current-state markers and records
+        # explicit unavailability transitions for rows missing from the feed.
+        if source_rows is not None:
+            history_rows = insert_price_observations(
+                conn, source_rows, source_updated, now
+            )
 
         for card in products:
             tcg_id = str(card.get("tcgplayer_id") or "").strip()
@@ -311,28 +345,11 @@ def record_postgres_history_and_alerts(
             prices = price_map.get(tcg_id, {})
             normal = normalize_price(prices.get("normal"))
             foil = normalize_price(prices.get("foil"))
-            if normal is None and foil is None:
-                continue
-
-            # Capture the prior prices before inserting this snapshot. Otherwise
-            # the current observation could become its own comparison baseline.
-            previous_prices = {
-                finish: latest_history_price(
-                    conn, tcg_id, finish, now, not_before=cutoff_alert
-                )
-                for finish in ("normal", "foil")
-                if (normal if finish == "normal" else foil) is not None
-            }
-
-            if insert_price_snapshot(
-                conn, tcg_id, source_updated, captured_at, normal, foil
-            ):
-                history_rows += 1
 
             for finish, current in (("normal", normal), ("foil", foil)):
                 if current is None:
                     continue
-                old = previous_prices.get(finish)
+                old = previous_by_product.get(tcg_id, {}).get(finish)
                 if (
                     not PRICE_ALERT_ENABLED
                     or not DISCORD_WEBHOOK_URL
@@ -375,7 +392,7 @@ def record_postgres_history_and_alerts(
                         conn,
                         tcg_id=tcg_id,
                         finish=finish,
-                        alerted_at=captured_at,
+                        alerted_at=now,
                         old_price=old,
                         new_price=current,
                         percent_change=percent,
@@ -401,7 +418,6 @@ def record_postgres_history_and_alerts(
         raise
     finally:
         conn.close()
-
 
 def record_history_and_alerts(price_map: dict[str, dict[str, Any]], source_updated: str, source_rows: list[dict[str, Any]] | None = None) -> tuple[int, int]:
     if DATABASE_BACKEND == "postgres":
@@ -489,9 +505,58 @@ def sync_prices(force: bool = False) -> bool:
     # data directory from getting stuck with no prices.
     snapshot_missing = not PRICES_FILE.exists()
     if not force and not snapshot_missing and previous and marker == previous:
-        # A card can become trackable even if TCGCSV has not published new prices.
-        # Reuse the saved snapshot to record the first history point for newly
-        # mapped cards rather than skipping history capture entirely.
+        if DATABASE_BACKEND == "postgres":
+            # PostgreSQL stores history for the complete provider catalog,
+            # independently of inventory ownership. A newly added inventory
+            # row can read the existing history immediately, so replaying the
+            # entire 166k-row feed on every unchanged hourly check is wasteful.
+            # On a fresh/restored database, however, seed the catalog from the
+            # saved snapshot if the global history table is still empty.
+            from postgres_app_db import connect_app_database
+            from postgres_db import open_pool
+
+            open_pool()
+            conn = connect_app_database()
+            try:
+                history_exists = conn.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM catalog.provider_price_observations
+                        WHERE game_id = 'mtg'
+                          AND provider_id = 'tcgcsv'
+                    ) AS has_history
+                    """
+                ).fetchone()["has_history"]
+            finally:
+                conn.close()
+
+            if not history_exists:
+                print(
+                    f"No TCGCSV update detected ({marker}), but PostgreSQL "
+                    "full-catalog history is empty; seeding it from the saved snapshot."
+                )
+            else:
+                try:
+                    meta = json.loads(META_FILE.read_text(encoding="utf-8"))
+                    if not isinstance(meta, dict):
+                        meta = {}
+                except (OSError, json.JSONDecodeError):
+                    meta = {}
+                meta["history_rows_recorded"] = 0
+                meta["alerts_sent"] = 0
+                meta["history_checked_at"] = datetime.now(timezone.utc).isoformat()
+                meta["history_scope"] = "full_provider_catalog"
+                META_FILE.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+                print(
+                    f"No TCGCSV update detected ({marker}); full-catalog PostgreSQL "
+                    "history is already available, so no feed replay is needed."
+                )
+                return False
+
+        # SQLite still keeps owned-product-only history, and an empty
+        # PostgreSQL catalog needs its first full-catalog seed. Reuse the
+        # saved snapshot for either case rather than downloading it again.
         try:
             saved_snapshot = json.loads(PRICES_FILE.read_text(encoding="utf-8"))
             saved_prices = saved_snapshot.get("results") if isinstance(saved_snapshot, dict) else None
@@ -510,6 +575,8 @@ def sync_prices(force: bool = False) -> bool:
             meta["history_rows_recorded"] = history_rows
             meta["alerts_sent"] = alerts_sent
             meta["history_checked_at"] = datetime.now(timezone.utc).isoformat()
+            if DATABASE_BACKEND == "postgres":
+                meta["history_scope"] = "full_provider_catalog"
             META_FILE.write_text(json.dumps(meta, indent=2), encoding="utf-8")
             print(f"No TCGCSV update detected ({marker}); recorded {history_rows:,} new history point(s) from the saved snapshot.")
             return False
@@ -517,22 +584,58 @@ def sync_prices(force: bool = False) -> bool:
         print(f"Price snapshot is missing; rebuilding TCGCSV build {marker}.")
 
     groups_payload = get_json(f"/tcgplayer/{CATEGORY_ID}/groups")
-    groups = groups_payload.get("results", [])
+    failures = []
+    if (
+        not isinstance(groups_payload, dict)
+        or groups_payload.get("success") is not True
+        or groups_payload.get("errors")
+        or not isinstance(groups_payload.get("results"), list)
+    ):
+        failures.append({
+            "groupId": None,
+            "error": "TCGCSV group catalog response was not a successful result list",
+        })
+        groups = []
+    else:
+        groups = groups_payload["results"]
+
     all_prices = []
     synced_groups = 0
-    failures = []
 
     print(f"TCGCSV build {marker}: syncing {len(groups)} MTG groups")
     for idx, group in enumerate(groups, start=1):
-        group_id = group.get("groupId")
+        group_id = group.get("groupId") if isinstance(group, dict) else None
         if not group_id:
+            failures.append({
+                "groupId": None,
+                "error": f"TCGCSV group entry {idx} has no valid groupId",
+            })
             continue
         try:
             payload = get_json(f"/tcgplayer/{CATEGORY_ID}/{group_id}/prices")
-            for item in payload.get("results", []):
-                if item.get("productId"):
-                    all_prices.append(item)
-            synced_groups += 1
+            if (
+                not isinstance(payload, dict)
+                or payload.get("success") is not True
+                or payload.get("errors")
+                or not isinstance(payload.get("results"), list)
+            ):
+                failures.append({
+                    "groupId": group_id,
+                    "error": "TCGCSV price response was not a successful result list",
+                })
+            elif any(
+                not isinstance(item, dict)
+                or not item.get("productId")
+                or not str(item.get("subTypeName") or "").strip()
+                for item in payload["results"]
+            ):
+                failures.append({
+                    "groupId": group_id,
+                    "error": "TCGCSV price response contains a malformed product/subtype row",
+                })
+            else:
+                all_prices.extend(payload["results"])
+                synced_groups += 1
         except requests.RequestException as exc:
             failures.append({"groupId": group_id, "error": str(exc)})
             print(f"[warn] group {group_id} failed: {exc}")
@@ -553,9 +656,21 @@ def sync_prices(force: bool = False) -> bool:
         "discord_alerts_enabled": PRICE_ALERT_ENABLED and bool(DISCORD_WEBHOOK_URL),
     }
 
+    if not groups:
+        failures.append({
+            "groupId": None,
+            "error": "TCGCSV returned no product groups; existing price history was not reconciled",
+        })
+    elif not all_prices:
+        failures.append({
+            "groupId": None,
+            "error": "All groups returned zero price rows; refusing to mark the catalog unavailable",
+        })
+    meta["failures"] = failures
+
     if failures:
         META_FILE.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-        print(f"Sync incomplete: {len(failures)} group(s) failed. Existing price snapshot was kept; next run will retry build {marker}.")
+        print(f"Sync incomplete: {len(failures)} issue(s) found. Existing price snapshot was kept; next run will retry build {marker}.")
         return False
 
     # Build a quick productId -> normal/foil map for history capture.
