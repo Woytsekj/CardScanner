@@ -11,7 +11,7 @@ def delete_inventory_item(*, item_id: int) -> bool:
     Scanner idempotency history is intentionally kept: app.scan_log.row_id
     is not a foreign key to inventory.
     """
-    conn = connect_app_database(expected_database="cardscanner_dev")
+    conn = connect_app_database()
 
     try:
         cursor = conn.execute(
