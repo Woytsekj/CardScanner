@@ -11,6 +11,8 @@ DECLARE
     v_falcon_printing BIGINT;
     v_avacyn_illustration_front BIGINT;
     v_avacyn_illustration_back BIGINT;
+    v_avacyn_front_image BIGINT;
+    v_avacyn_back_image BIGINT;
     v_fury_illustration BIGINT;
     v_falcon_illustration BIGINT;
     v_art_tag BIGINT;
@@ -216,21 +218,46 @@ BEGIN
         RETURNING illustration_id INTO v_avacyn_illustration_back;
     END IF;
 
+    INSERT INTO catalog.images (
+        game_id, provider_id, image_uri, image_role, metadata
+    )
+    VALUES
+        ('mtg', 'scryfall',
+         'https://fixture.invalid/avacyn-front.jpg',
+         'card_face', '{"source":"postgres-ci-fixture","face":"front"}'::JSONB),
+        ('mtg', 'scryfall',
+         'https://fixture.invalid/avacyn-back.jpg',
+         'card_face', '{"source":"postgres-ci-fixture","face":"back"}'::JSONB)
+    ON CONFLICT (game_id, provider_id, image_uri) DO NOTHING;
+
+    SELECT image_id INTO v_avacyn_front_image
+    FROM catalog.images
+    WHERE game_id = 'mtg' AND provider_id = 'scryfall'
+      AND image_uri = 'https://fixture.invalid/avacyn-front.jpg';
+    SELECT image_id INTO v_avacyn_back_image
+    FROM catalog.images
+    WHERE game_id = 'mtg' AND provider_id = 'scryfall'
+      AND image_uri = 'https://fixture.invalid/avacyn-back.jpg';
+
     INSERT INTO catalog.printing_faces (
-        printing_id, game_id, face_index, name, type_line, illustration_id
+        printing_id, game_id, face_index, name, type_line,
+        image_id, illustration_id
     )
     VALUES
         (
             v_avacyn_printing, 'mtg', 0, 'Archangel Avacyn',
-            'Legendary Creature — Angel', v_avacyn_illustration_front
+            'Legendary Creature — Angel',
+            v_avacyn_front_image, v_avacyn_illustration_front
         ),
         (
             v_avacyn_printing, 'mtg', 1, 'Avacyn, the Purifier',
-            'Legendary Creature — Angel', v_avacyn_illustration_back
+            'Legendary Creature — Angel',
+            v_avacyn_back_image, v_avacyn_illustration_back
         )
     ON CONFLICT (printing_id, face_index) DO UPDATE SET
         name = EXCLUDED.name,
         type_line = EXCLUDED.type_line,
+        image_id = EXCLUDED.image_id,
         illustration_id = EXCLUDED.illustration_id;
 
     INSERT INTO catalog.provider_printing_metadata (
