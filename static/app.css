@@ -1519,18 +1519,20 @@ body[data-inventory-mode="select"] .card-tile { cursor: crosshair; }
 }
 
 
-/* Docked card inspector: inventory remains interactive and reflows beside the details. */
-.inventory-results-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  align-items: start;
-  gap: 16px;
-  min-width: 0;
+/* Docked card inspector: full-height rail below the sticky app header. */
+:root {
+  --inventory-inspector-width: clamp(360px, 23vw, 460px);
+  --inventory-panel-motion: 300ms cubic-bezier(.2,.75,.25,1);
 }
+main.inventory-page-layout {
+  margin-right: 0;
+  transition: margin-right var(--inventory-panel-motion);
+}
+main.inventory-page-layout.has-card-details {
+  margin-right: var(--inventory-inspector-width);
+}
+.inventory-results-layout { display: block; min-width: 0; }
 .inventory-results-content { min-width: 0; }
-.inventory-results-layout.has-card-details {
-  grid-template-columns: minmax(0, 1fr) minmax(360px, min(42vw, 570px));
-}
 .card-detail-backdrop[hidden],
 .oracle-dialog[hidden] { display: none !important; }
 .oracle-dialog {
@@ -1545,19 +1547,32 @@ body[data-inventory-mode="select"] .card-tile { cursor: crosshair; }
   border-radius: 12px;
   background: var(--panel);
   color: var(--text);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform var(--inventory-panel-motion), opacity 220ms ease;
 }
 .oracle-dialog:not([hidden])[data-display-mode="sidebar"] {
   display: block;
-  position: sticky;
-  top: 94px;
-  grid-column: 2;
-  align-self: start;
-  width: auto;
-  max-height: calc(100dvh - 108px);
+  position: fixed;
+  top: var(--inventory-header-offset, 54px);
+  right: 0;
+  bottom: 0;
+  width: var(--inventory-inspector-width);
+  height: auto;
+  max-height: none;
   overflow-x: hidden;
   overflow-y: auto;
-  z-index: 5;
-  box-shadow: 0 12px 32px rgba(0,0,0,.28);
+  z-index: 990;
+  border-right: 0;
+  border-bottom: 0;
+  border-radius: 12px 0 0 0;
+  box-shadow: -12px 0 32px rgba(0,0,0,.24);
+  transform: translateX(22px);
+}
+.oracle-dialog.is-visible:not([hidden])[data-display-mode="sidebar"] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
 }
 .card-detail-panel-heading {
   position: sticky;
@@ -1650,6 +1665,38 @@ body[data-inventory-mode="select"] .card-tile { cursor: crosshair; }
   margin: 0 auto;
   overflow: auto;
   box-shadow: 0 24px 70px rgba(0,0,0,.5);
+  transform: translateY(10px) scale(.99);
+}
+.oracle-dialog.is-visible:not([hidden])[data-display-mode="popup"] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+}
+.oracle-dialog:not([hidden])[data-display-mode="drawer"] {
+  display: block;
+  position: fixed;
+  top: var(--inventory-header-offset, 54px);
+  right: 0;
+  bottom: 0;
+  width: min(92vw, 440px);
+  height: auto;
+  max-height: none;
+  margin: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  z-index: 1401;
+  border-radius: 12px 0 0 0;
+  transform: translateX(22px);
+  box-shadow: -12px 0 32px rgba(0,0,0,.38);
+}
+.oracle-dialog.is-visible:not([hidden])[data-display-mode="drawer"] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+@media (prefers-reduced-motion: reduce) {
+  main.inventory-page-layout,
+  .oracle-dialog { transition: none !important; }
 }
 .oracle-dialog:not([hidden])[data-display-mode="popup"] .oracle-detail-layout {
   grid-template-columns: minmax(180px, 240px) minmax(0,1fr);
@@ -1658,17 +1705,11 @@ body[data-inventory-mode="select"] .card-tile { cursor: crosshair; }
 .card-tile.is-active,
 tr.is-active { outline: 2px solid var(--cyan); outline-offset: 1px; border-radius: 8px; }
 @media (max-width: 1050px) {
-  .inventory-results-layout.has-card-details { grid-template-columns: minmax(0,1fr); }
-  .oracle-dialog:not([hidden])[data-display-mode="sidebar"] {
-    position: static;
-    grid-column: 1;
-    grid-row: 2;
-    width: 100%;
-    max-height: 72vh;
-  }
+  main.inventory-page-layout.has-card-details { margin-right: var(--inventory-inspector-width); }
   .oracle-detail-image-column { position: static; }
 }
 @media (max-width: 760px) {
+  main.inventory-page-layout.has-card-details { margin-right: 0; }
   .oracle-dialog { padding: 12px; }
   .card-detail-panel-heading { top: -12px; margin: -12px -12px 11px; padding: 11px 12px 9px; }
   .oracle-detail-layout,
