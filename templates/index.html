@@ -382,7 +382,6 @@
               <div id="oracleLegalities" class="legality-grid"></div>
               <div id="oracleUpdated" class="subtle"></div>
               <div id="oracleStatus" class="status"></div>
-            </div>
           </div>
 
         </aside>
@@ -797,7 +796,10 @@ if (inventoryHeader && 'ResizeObserver' in window) {
 }
 window.addEventListener('resize', () => {
   updateInventoryHeaderOffset();
-  if (!oracleDialog.hidden) applyCardDetailMode();
+  if (!oracleDialog.hidden) {
+    applyCardDetailMode();
+    setCardDetailWidth(cardDetailResizeWidth);
+  }
 }, { passive: true });
 
 function applyOracleRotation() {
@@ -982,6 +984,7 @@ const cardDetailResizeHandle = document.getElementById('cardDetailResizeHandle')
 const CARD_DETAIL_WIDTH_MIN = 400;
 const CARD_DETAIL_WIDTH_MAX = 760;
 let cardDetailResizePointer = null;
+let cardDetailResizeWidth = 520;
 
 function cardDetailWidthBounds() {
   const viewportLimit = Math.max(CARD_DETAIL_WIDTH_MIN, Math.floor(window.innerWidth * 0.62));
@@ -994,12 +997,14 @@ function setCardDetailWidth(requestedWidth, persist = false) {
   const bounds = cardDetailWidthBounds();
   const width = Math.round(Math.min(bounds.max, Math.max(bounds.min, Number(requestedWidth) || 520)));
   document.documentElement.style.setProperty('--inventory-inspector-width', width + 'px');
+  cardDetailResizeWidth = width;
   if (cardDetailResizeHandle) cardDetailResizeHandle.setAttribute('aria-valuenow', String(width));
   if (persist) {
     try { localStorage.setItem('cardscanner-card-detail-width', String(width)); } catch (_) {}
   }
   return width;
 }
+setCardDetailWidth(Math.max(420, Math.min(560, Math.round(window.innerWidth * 0.28))));
 try {
   const savedWidth = Number(localStorage.getItem('cardscanner-card-detail-width'));
   if (Number.isFinite(savedWidth) && savedWidth > 0) setCardDetailWidth(savedWidth);
@@ -1021,14 +1026,14 @@ if (cardDetailResizeHandle) {
     if (cardDetailResizePointer !== event.pointerId) return;
     cardDetailResizePointer = null;
     document.documentElement.classList.remove('is-resizing-card-detail');
-    setCardDetailWidth(window.innerWidth - event.clientX, true);
+    setCardDetailWidth(event.type === 'pointercancel' ? cardDetailResizeWidth : window.innerWidth - event.clientX, true);
   };
   cardDetailResizeHandle.addEventListener('pointerup', finishCardDetailResize);
   cardDetailResizeHandle.addEventListener('pointercancel', finishCardDetailResize);
   cardDetailResizeHandle.addEventListener('keydown', event => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
-    const current = Number.parseInt(getComputedStyle(document.documentElement).getPropertyValue('--inventory-inspector-width'), 10) || 520;
+    const current = Number(oracleDialog.getBoundingClientRect().width) || cardDetailResizeWidth || 520;
     const bounds = cardDetailWidthBounds();
     const step = event.shiftKey ? 64 : 24;
     const next = event.key === 'Home' ? bounds.min
