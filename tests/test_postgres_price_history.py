@@ -14,6 +14,7 @@ import price_updater
 
 from postgres_price_history import (
     fetch_owned_products,
+    fetch_latest_price_trends,
     fetch_price_history,
     has_owned_product,
     insert_price_alert,
