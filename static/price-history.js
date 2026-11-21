@@ -35,6 +35,14 @@ function metricLabel(metric) {
   return ({market:'Market', low:'Low', mid:'Mid', high:'High', direct_low:'Direct low'})[metric] || 'Market';
 }
 
+const expandedHistoryDialog = document.getElementById('cardDetailHistoryExpanded');
+const expandedHistoryTitle = document.getElementById('cardDetailHistoryExpandedTitle');
+const expandedHistoryStatus = document.getElementById('cardDetailExpandedHistoryStatus');
+const expandedHistoryStats = document.getElementById('cardDetailExpandedHistoryStats');
+const expandedHistoryChart = document.getElementById('cardDetailExpandedPriceHistoryChart');
+const expandedHistoryLegend = document.getElementById('cardDetailExpandedHistoryLegend');
+const expandedHistoryMetric = document.getElementById('cardDetailExpandedHistoryMetric');
+
 function appendSvg(target, tag, attributes, text) {
   const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
   Object.entries(attributes || {}).forEach(([key, value]) => node.setAttribute(key, value));
@@ -97,10 +105,10 @@ function renderHistoryChart(series, targetChart = historyChart, metric = 'market
     const value = min + (max-min)*(i/4);
     const y = yFn(value);
     appendSvg(targetChart, 'line', {
-      x1:left, x2:W-right, y1:y, y2:y, stroke:'#2f2f2f', 'stroke-width':'1'
+      x1:left, x2:W-right, y1:y, y2:y, stroke:'var(--border)', 'stroke-width':'1', opacity:'0.8'
     });
     appendSvg(targetChart, 'text', {
-      x:left-8, y:y+4, 'text-anchor':'end', fill:'#888', 'font-size':'12'
+      x:left-8, y:y+4, 'text-anchor':'end', fill:'var(--muted)', 'font-size':'12'
     }, formatMoney(value));
   }
 
@@ -108,10 +116,10 @@ function renderHistoryChart(series, targetChart = historyChart, metric = 'market
   [...new Set(gridDates)].forEach(index => {
     const x=xFn(index);
     appendSvg(targetChart, 'line', {
-      x1:x, x2:x, y1:top, y2:H-bottom, stroke:'#242424', 'stroke-width':'1'
+      x1:x, x2:x, y1:top, y2:H-bottom, stroke:'var(--border)', 'stroke-width':'1', opacity:'0.65'
     });
     appendSvg(targetChart, 'text', {
-      x, y:H-17, 'text-anchor':'middle', fill:'#888', 'font-size':'12'
+      x, y:H-17, 'text-anchor':'middle', fill:'var(--muted)', 'font-size':'12'
     }, labels[index] ? localLabel(labels[index].captured_at) : '');
   });
 
@@ -120,6 +128,21 @@ function renderHistoryChart(series, targetChart = historyChart, metric = 'market
     const color = SERIES_COLORS[index % SERIES_COLORS.length];
     const d = seriesPath(points, metric, xFn, yFn);
     if (d) {
+      // A small marker with a native SVG title exposes the exact date and
+      // price on hover/focus without adding a permanent tooltip over the line.
+      points.forEach((point, pointIndex) => {
+        const value = point[metric];
+        if (!point.available || value == null || !Number.isFinite(Number(value))) return;
+        const date = new Date(point.captured_at);
+        const dateText = Number.isNaN(date.getTime()) ? String(point.captured_at || '') : date.toLocaleString();
+        const pointTitle = `${item.subtype_name} · ${dateText} · ${metricLabel(metric)}: ${formatMoney(value)}`;
+        const marker = appendSvg(targetChart, 'circle', {
+          cx:xFn(pointIndex), cy:yFn(Number(value)),
+          r:points.length > 180 ? '1.8' : '2.8', fill:color,
+          opacity:points.length > 180 ? '0.48' : '0.82'
+        });
+        appendSvg(marker, 'title', {}, pointTitle);
+      });
       appendSvg(targetChart, 'path', {
         d, fill:'none', stroke:color, 'stroke-width':'2.8',
         'stroke-linejoin':'round', 'stroke-linecap':'round'
@@ -180,6 +203,30 @@ function renderHistoryStats(series, targetStats, metric) {
 function renderHistoryData(series, targetChart, targetStats, targetLegend, metric) {
   renderHistoryStats(series, targetStats, metric);
   renderHistoryChart(series, targetChart, metric, targetLegend);
+}
+
+function refreshExpandedCardHistory() {
+  if (!expandedHistoryDialog?.open) return;
+  const currentName = document.getElementById('oracleTitle')?.textContent || 'Selected card';
+  const currentStatus = document.getElementById('cardDetailHistoryStatus');
+  const inlineMetric = document.getElementById('cardDetailHistoryMetric');
+  const activeRange = document.querySelector('.card-detail-history-range.active');
+  if (expandedHistoryTitle) expandedHistoryTitle.textContent = currentName + ' · Price History';
+  if (expandedHistoryStatus) expandedHistoryStatus.textContent = currentStatus?.textContent || '';
+  if (expandedHistoryMetric && inlineMetric) expandedHistoryMetric.value = inlineMetric.value;
+  document.querySelectorAll('.card-detail-expanded-range').forEach(button => {
+    button.classList.toggle('active', Number(button.dataset.days) === Number(activeRange?.dataset.days || 90));
+  });
+  if (inlineHistorySeries.length && expandedHistoryChart) {
+    renderHistoryData(
+      inlineHistorySeries, expandedHistoryChart, expandedHistoryStats,
+      expandedHistoryLegend, inlineMetric?.value || 'market'
+    );
+  } else {
+    if (expandedHistoryChart) expandedHistoryChart.innerHTML = '';
+    if (expandedHistoryStats) expandedHistoryStats.innerHTML = '';
+    if (expandedHistoryLegend) expandedHistoryLegend.innerHTML = '';
+  }
 }
 
 async function loadPriceHistory(days) {
@@ -245,15 +292,18 @@ async function loadCardDetailHistory(tcg, days, requestId) {
   if (legend) legend.innerHTML = '';
   if (!tcg) {
     status.textContent = 'No TCGplayer product is linked to this printing, so price history is unavailable.';
+    refreshExpandedCardHistory();
     return;
   }
   status.textContent = `Loading ${days}-day price history…`;
+  refreshExpandedCardHistory();
   try {
     const response = await fetch(`/api/price-history/${encodeURIComponent(tcg)}?days=${days}`);
     const data = await response.json().catch(() => ({}));
     if (requestId !== inlineHistoryRequest) return;
     if (!response.ok || !data.success) {
       status.textContent = data.error || 'Could not load price history.';
+      refreshExpandedCardHistory();
       return;
     }
     inlineHistorySeries = data.series || [];
@@ -267,8 +317,12 @@ async function loadCardDetailHistory(tcg, days, requestId) {
         metricSelect?.value || 'market'
       );
     }
+    refreshExpandedCardHistory();
   } catch (_) {
-    if (requestId === inlineHistoryRequest) status.textContent = 'Could not load price history.';
+    if (requestId === inlineHistoryRequest) {
+      status.textContent = 'Could not load price history.';
+      refreshExpandedCardHistory();
+    }
   }
 }
 
@@ -279,24 +333,54 @@ window.openCardDetailPriceHistory = function(tcg, name) {
   if (status) status.textContent = tcg
     ? 'Preparing price history…'
     : 'No TCGplayer product is linked to this printing, so price history is unavailable.';
-  document.querySelectorAll('.card-detail-history-range').forEach(button =>
+  if (expandedHistoryDialog?.open) expandedHistoryDialog.close();
+  document.querySelectorAll('.card-detail-history-range, .card-detail-expanded-range').forEach(button =>
     button.classList.toggle('active', Number(button.dataset.days) === 90)
   );
   if (metricSelect) metricSelect.value = 'market';
+  if (expandedHistoryMetric) expandedHistoryMetric.value = 'market';
   if (tcg) void loadCardDetailHistory(tcg, 90, requestId);
 };
-document.querySelectorAll('.card-detail-history-range').forEach(button => button.addEventListener('click', () => {
-  document.querySelectorAll('.card-detail-history-range').forEach(other => other.classList.remove('active'));
-  button.classList.add('active');
+function setCardDetailHistoryRange(days) {
+  document.querySelectorAll('.card-detail-history-range, .card-detail-expanded-range').forEach(button =>
+    button.classList.toggle('active', Number(button.dataset.days) === Number(days))
+  );
   const link = document.getElementById('oracleTcgplayerLink');
   const tcg = link && !link.hidden ? link.href.split('/').pop() : '';
-  void loadCardDetailHistory(tcg, Number(button.dataset.days), ++inlineHistoryRequest);
-}));
-document.getElementById('cardDetailHistoryMetric')?.addEventListener('change', event => {
-  const chart = document.getElementById('cardDetailPriceHistoryChart');
-  const stats = document.getElementById('cardDetailHistoryStats');
-  const legend = document.getElementById('cardDetailHistoryLegend');
+  void loadCardDetailHistory(tcg, Number(days), ++inlineHistoryRequest);
+}
+document.querySelectorAll('.card-detail-history-range, .card-detail-expanded-range').forEach(button =>
+  button.addEventListener('click', () => setCardDetailHistoryRange(button.dataset.days))
+);
+function setCardDetailHistoryMetric(metric) {
+  const inlineMetric = document.getElementById('cardDetailHistoryMetric');
+  if (inlineMetric) inlineMetric.value = metric;
+  if (expandedHistoryMetric) expandedHistoryMetric.value = metric;
   if (inlineHistorySeries.length) {
-    renderHistoryData(inlineHistorySeries, chart, stats, legend, event.target.value);
+    renderHistoryData(
+      inlineHistorySeries,
+      document.getElementById('cardDetailPriceHistoryChart'),
+      document.getElementById('cardDetailHistoryStats'),
+      document.getElementById('cardDetailHistoryLegend'),
+      metric
+    );
   }
+  refreshExpandedCardHistory();
+}
+document.getElementById('cardDetailHistoryMetric')?.addEventListener('change', event =>
+  setCardDetailHistoryMetric(event.target.value)
+);
+expandedHistoryMetric?.addEventListener('change', event =>
+  setCardDetailHistoryMetric(event.target.value)
+);
+document.getElementById('expandCardDetailHistory')?.addEventListener('click', () => {
+  if (!expandedHistoryDialog || expandedHistoryDialog.open) return;
+  expandedHistoryDialog.showModal();
+  refreshExpandedCardHistory();
+});
+document.getElementById('closeCardDetailHistoryExpanded')?.addEventListener('click', () => {
+  if (expandedHistoryDialog?.open) expandedHistoryDialog.close();
+});
+expandedHistoryDialog?.addEventListener('click', event => {
+  if (event.target === expandedHistoryDialog) expandedHistoryDialog.close();
 });
