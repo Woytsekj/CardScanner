@@ -197,6 +197,8 @@
     </nav>
     {% endif %}
 
+    <div class="inventory-results-layout" id="inventoryResultsLayout">
+      <div class="inventory-results-content">
     {% if view == 'grid' %}
     <section class="card-grid" aria-label="Card collection">
       {% for item in inventory %}
@@ -316,6 +318,62 @@
       </div>
     </section>
     {% endif %}
+      </div>
+      <div class="card-detail-backdrop" id="cardDetailBackdrop" hidden></div>
+        <aside id="oracleDialog" class="price-history-dialog oracle-dialog" aria-label="Selected card details" hidden>
+          <div class="card-detail-panel-heading">
+            <div><span class="panel-eyebrow">Selected card</span><h2 id="oracleTitle">Card Details</h2></div>
+            <button class="dialog-close" id="closeCardDetail" type="button" aria-label="Close card details">×</button>
+          </div>
+          <h2 id="oracleTitle">Card Details</h2>
+          <div class="oracle-detail-layout">
+             <div class="oracle-detail-image-column">
+               <div class="oracle-detail-image-wrap"><img id="oracleCardImage" class="oracle-detail-image" src="" alt="" title="Click to zoom"></div>
+               <div id="oracleFaceControls" class="oracle-face-controls" hidden aria-label="Card face"></div>
+               <div class="oracle-rotate-controls" role="group" aria-label="Rotate card image">
+                 <button type="button" class="button secondary" id="oracleRotateLeft" title="Rotate left">↶</button>
+                 <button type="button" class="button secondary" id="oracleRotateReset">Reset</button>
+                 <button type="button" class="button secondary" id="oracleRotateRight" title="Rotate right">↷</button>
+               </div>
+             </div>
+            <div class="oracle-detail-content">
+              <div id="oracleSubtitle" class="subtle"></div>
+              <div class="card-detail-printing">
+                <div id="oraclePrintingLine" class="subtle"></div><div id="oracleCollectionLine" class="subtle"></div>
+                <div class="card-detail-price-row"><strong id="oracleUnitPrice">Per-card price: —</strong><a id="oracleTcgplayerLink" class="button secondary" href="#" target="_blank" rel="noopener noreferrer" hidden>View on TCGplayer ↗</a></div>
+              </div>
+              <section class="card-detail-history-panel" aria-label="Card price history">
+                <div class="card-detail-history-heading"><h3>Price history</h3><span class="subtle">TCGCSV market observations</span></div>
+                <div class="history-range-buttons" id="cardDetailHistoryRanges">
+                  <button type="button" class="button secondary card-detail-history-range" data-days="3">3 Days</button><button type="button" class="button secondary card-detail-history-range" data-days="7">1 Week</button><button type="button" class="button secondary card-detail-history-range" data-days="30">1 Month</button><button type="button" class="button secondary card-detail-history-range active" data-days="90">3 Months</button><button type="button" class="button secondary card-detail-history-range" data-days="180">6 Months</button><button type="button" class="button secondary card-detail-history-range" data-days="365">1 Year</button>
+                </div>
+                <div id="cardDetailHistoryStats" class="history-stats"></div><div id="cardDetailHistoryStatus" class="status" role="status" aria-live="polite"></div>
+                <div class="history-chart-wrap"><svg id="cardDetailPriceHistoryChart" viewBox="0 0 820 360" role="img" aria-label="Selected card price history chart"></svg></div>
+                <div class="chart-legend"><span class="legend-normal">Normal</span><span class="legend-foil">Foil</span></div>
+              </section>
+              <div id="oracleTypeLine" class="oracle-type-line"></div>
+              <div id="oracleManaCost" class="oracle-mana-cost"></div>
+              <pre id="oracleText" class="oracle-text"></pre>
+              <details id="oracleRulingsSection" class="oracle-rulings-section">
+                <summary>
+                  <span>Rulings &amp; Rules Notes</span>
+                  <span id="oracleRulingsCount" class="oracle-rulings-count">Expand to load</span>
+                </summary>
+                <div id="oracleRulingsList" class="oracle-rulings-list">
+                  <div class="subtle">Expand to load this card's rulings.</div>
+                </div>
+              </details>
+              <h3>Tags</h3>
+              <div class="oracle-tag-section"><strong>Art tags</strong><div id="oracleArtTags" class="oracle-tag-list"></div></div>
+              <div class="oracle-tag-section"><strong>Oracle tags</strong><div id="oracleOracleTags" class="oracle-tag-list"></div></div>
+              <h3>Legality</h3>
+              <div id="oracleLegalities" class="legality-grid"></div>
+              <div id="oracleUpdated" class="subtle"></div>
+              <div id="oracleStatus" class="status"></div>
+            </div>
+          </div>
+        </dialo
+    </div>
 
     {% if page_count > 1 %}
     <nav class="inventory-pagination inventory-pagination-bottom" aria-label="Inventory pages (bottom)">
@@ -437,48 +495,7 @@
     <div class="chart-legend"><span class="legend-normal">Normal</span><span class="legend-foil">Foil</span></div>
   </dialog>
 
-  <dialog id="oracleDialog" class="price-history-dialog oracle-dialog">
-    <button class="dialog-close" type="button" onclick="document.getElementById('oracleDialog').close()">×</button>
-    <h2 id="oracleTitle">Card Details</h2>
-    <div class="oracle-detail-layout">
-      <div class="oracle-detail-image-wrap"><img id="oracleCardImage" class="oracle-detail-image" src="" alt=""></div>
-      <div class="oracle-detail-content">
-        <div id="oracleSubtitle" class="subtle"></div>
-        <div class="card-detail-printing">
-          <div id="oraclePrintingLine" class="subtle"></div><div id="oracleCollectionLine" class="subtle"></div>
-          <div class="card-detail-price-row"><strong id="oracleUnitPrice">Per-card price: —</strong><a id="oracleTcgplayerLink" class="button secondary" href="#" target="_blank" rel="noopener noreferrer" hidden>View on TCGplayer ↗</a></div>
-        </div>
-        <section class="card-detail-history-panel" aria-label="Card price history">
-          <div class="card-detail-history-heading"><h3>Price history</h3><span class="subtle">TCGCSV market observations</span></div>
-          <div class="history-range-buttons" id="cardDetailHistoryRanges">
-            <button type="button" class="button secondary card-detail-history-range" data-days="3">3 Days</button><button type="button" class="button secondary card-detail-history-range" data-days="7">1 Week</button><button type="button" class="button secondary card-detail-history-range" data-days="30">1 Month</button><button type="button" class="button secondary card-detail-history-range active" data-days="90">3 Months</button><button type="button" class="button secondary card-detail-history-range" data-days="180">6 Months</button><button type="button" class="button secondary card-detail-history-range" data-days="365">1 Year</button>
-          </div>
-          <div id="cardDetailHistoryStats" class="history-stats"></div><div id="cardDetailHistoryStatus" class="status" role="status" aria-live="polite"></div>
-          <div class="history-chart-wrap"><svg id="cardDetailPriceHistoryChart" viewBox="0 0 820 360" role="img" aria-label="Selected card price history chart"></svg></div>
-          <div class="chart-legend"><span class="legend-normal">Normal</span><span class="legend-foil">Foil</span></div>
-        </section>
-        <div id="oracleTypeLine" class="oracle-type-line"></div>
-        <div id="oracleManaCost" class="oracle-mana-cost"></div>
-        <pre id="oracleText" class="oracle-text"></pre>
-        <details id="oracleRulingsSection" class="oracle-rulings-section">
-          <summary>
-            <span>Rulings &amp; Rules Notes</span>
-            <span id="oracleRulingsCount" class="oracle-rulings-count">Expand to load</span>
-          </summary>
-          <div id="oracleRulingsList" class="oracle-rulings-list">
-            <div class="subtle">Expand to load this card's rulings.</div>
-          </div>
-        </details>
-        <h3>Tags</h3>
-        <div class="oracle-tag-section"><strong>Art tags</strong><div id="oracleArtTags" class="oracle-tag-list"></div></div>
-        <div class="oracle-tag-section"><strong>Oracle tags</strong><div id="oracleOracleTags" class="oracle-tag-list"></div></div>
-        <h3>Legality</h3>
-        <div id="oracleLegalities" class="legality-grid"></div>
-        <div id="oracleUpdated" class="subtle"></div>
-        <div id="oracleStatus" class="status"></div>
-      </div>
-    </div>
-  </dialog>
+g>
 
 <script src="{{ url_for('static', filename='multi-select.js') }}"></script>
 <script>
@@ -668,6 +685,7 @@ function openImage(src, alt) {
   document.getElementById('largeCardImage').src = src;
   document.getElementById('largeCardImage').alt = alt || '';
   document.getElementById('largeCardCaption').textContent = alt || '';
+  document.getElementById('largeCardImage').style.transform = `rotate(${activeOracleRotation}deg)`;
   document.getElementById('imageDialog').showModal();
 }
 function closeImage() { document.getElementById('imageDialog').close(); }
@@ -685,6 +703,7 @@ if (cardDetailModeControl) {
   cardDetailModeControl.addEventListener('change', () => {
     cardDetailDisplayMode = cardDetailModeControl.value === 'popup' ? 'popup' : 'sidebar';
     try { localStorage.setItem('cardscanner-card-detail-mode', cardDetailDisplayMode); } catch (_) {}
+    if (!oracleDialog.hidden) applyCardDetailMode();
   });
 }
 const oracleTitle = document.getElementById('oracleTitle');
@@ -704,7 +723,61 @@ const oracleCardImage = document.getElementById('oracleCardImage');
 const oracleSwitchButton = document.getElementById('oracleSwitchButton');
 let activeOracleImageUrl = '';
 let activeOracleScryfallId = '';
-oracleCardImage.addEventListener('click', () => openImage(activeOracleImageUrl, oracleTitle.textContent));
+let activeOracleFaces = [];
+let activeOracleFaceIndex = 0;
+let activeOracleRotation = 0;
+let activeOracleRequest = 0;
+const oracleFaceControls = document.getElementById('oracleFaceControls');
+const cardDetailBackdrop = document.getElementById('cardDetailBackdrop');
+const inventoryResultsLayout = document.getElementById('inventoryResultsLayout');
+const largeCardImage = document.getElementById('largeCardImage');
+
+function applyOracleRotation() {
+  oracleCardImage.style.transform = `rotate(${activeOracleRotation}deg)`;
+  oracleCardImage.classList.toggle('is-rotated', Math.abs(activeOracleRotation % 180) === 90);
+  if (largeCardImage) largeCardImage.style.transform = `rotate(${activeOracleRotation}deg)`;
+}
+function setOracleRotation(next) {
+  activeOracleRotation = ((next % 360) + 360) % 360;
+  applyOracleRotation();
+}
+function setOracleFace(index) {
+  const face = activeOracleFaces[index];
+  if (!face || !face.image_url) return;
+  activeOracleFaceIndex = index;
+  activeOracleImageUrl = face.image_url;
+  oracleCardImage.src = activeOracleImageUrl;
+  oracleCardImage.alt = face.name || oracleTitle.textContent;
+  oracleFaceControls.querySelectorAll('[data-oracle-face]').forEach(button => {
+    button.classList.toggle('active', Number(button.dataset.oracleFace) === index);
+  });
+  setOracleRotation(0);
+}
+function renderOracleFaces(faces) {
+  activeOracleFaces = Array.isArray(faces) ? faces.filter(face => face && face.image_url) : [];
+  activeOracleFaceIndex = 0;
+  oracleFaceControls.hidden = activeOracleFaces.length < 2;
+  oracleFaceControls.innerHTML = '';
+  if (activeOracleFaces.length < 2) return;
+  activeOracleFaces.forEach((face, index) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'button secondary' + (index === 0 ? ' active' : '');
+    button.dataset.oracleFace = String(index);
+    button.textContent = index === 0 ? 'Front' : (index === 1 ? 'Back' : (face.name || `Face ${index + 1}`));
+    button.addEventListener('click', () => setOracleFace(index));
+    oracleFaceControls.appendChild(button);
+  });
+}
+oracleCardImage.addEventListener('click', () => openImage(activeOracleImageUrl, oracleCardImage.alt));
+document.getElementById('oracleRotateLeft').addEventListener('click', () => setOracleRotation(activeOracleRotation - 90));
+document.getElementById('oracleRotateRight').addEventListener('click', () => setOracleRotation(activeOracleRotation + 90));
+document.getElementById('oracleRotateReset').addEventListener('click', () => setOracleRotation(0));
+cardDetailBackdrop.addEventListener('click', closeOraclePanel);
+document.getElementById('closeCardDetail').addEventListener('click', closeOraclePanel);
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !oracleDialog.hidden && cardDetailDisplayMode === 'sidebar') closeOraclePanel();
+});
 let loadedOracleRulingsSid = '';
 function escOracle(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function renderOracleTagList(container, tags, kind) {
@@ -771,6 +844,7 @@ oracleRulingsSection.addEventListener('toggle', () => {
 });
 async function openOracle(sid, name, imageUrl = '', cardMeta = {}) {
   activeOracleScryfallId = sid || '';
+  const requestId = ++activeOracleRequest;
   loadedOracleRulingsSid = '';
   oracleRulingsSection.open = false;
   oracleRulingsCount.textContent = sid ? 'Expand to load' : 'Unavailable';
@@ -793,16 +867,26 @@ async function openOracle(sid, name, imageUrl = '', cardMeta = {}) {
   activeOracleImageUrl = imageUrl || (sid ? `https://cards.scryfall.io/normal/front/${sid[0]}/${sid[1]}/${sid}.jpg` : '');
   oracleCardImage.src = activeOracleImageUrl;
   oracleCardImage.alt = name || '';
-  oracleDialog.dataset.displayMode = cardDetailDisplayMode;
-  oracleDialog.showModal();
+  renderOracleFaces([]);
+  setOracleRotation(0);
+  applyCardDetailMode();
+  oracleDialog.hidden = false;
+  document.querySelectorAll('.card-tile.is-active, tr.is-active').forEach(row => row.classList.remove('is-active'));
+  const tile = document.querySelector(`.card-art-trigger[data-scryfall="${CSS.escape(sid || '')}"]`)?.closest('.card-tile');
+  const tableRow = document.querySelector(`.oracle-image-trigger[data-scryfall="${CSS.escape(sid || '')}"]`)?.closest('tr');
+  if (tile) tile.classList.add('is-active');
+  if (tableRow) tableRow.classList.add('is-active');
   if (window.openCardDetailPriceHistory) window.openCardDetailPriceHistory(cardMeta.tcg || '', name || 'Card');
   if (!sid) { oracleSubtitle.textContent = 'No Scryfall ID is available for this printing.'; return; }
   try {
     const r = await fetch('/api/card-info/' + encodeURIComponent(sid));
     const data = await r.json().catch(() => ({}));
+    if (requestId !== activeOracleRequest) return;
     if (!r.ok || !data.success) { oracleStatus.textContent = data.error || 'No cached metadata.'; return; }
     const c = data.card || {};
-    oracleSubtitle.textContent = c.colors ? 'Colors: ' + c.colors : '';
+    renderOracleFaces(c.faces || []);
+    if (activeOracleFaces.length) setOracleFace(0);
+    oracleSubtitle.textContent = [c.colors ? 'Colors: ' + c.colors : '', c.layout || ''].filter(Boolean).join(' · ');
     oracleTypeLine.textContent = c.type_line || ''; oracleManaCost.textContent = c.mana_cost || ''; oracleTextEl.textContent = c.oracle_text || 'No oracle text.';
     renderOracleTagList(oracleArtTags, c.art_tags, 'art');
     renderOracleTagList(oracleOracleTags, c.oracle_tags, 'oracle');
@@ -810,7 +894,23 @@ async function openOracle(sid, name, imageUrl = '', cardMeta = {}) {
     const labels = Object.keys(legal).sort((a,b)=>a.localeCompare(b));
     oracleLegalities.innerHTML = labels.map(k => `<div class="legality-chip ${escOracle(legal[k])}"><strong>${escOracle(k)}</strong><span>${escOracle(String(legal[k]).replace(/^./,m=>m.toUpperCase()))}</span></div>`).join('');
     oracleUpdated.textContent = c.updated_at ? 'Cached metadata updated: ' + c.updated_at : '';
-  } catch (_) { oracleStatus.textContent = 'Could not load cached metadata.'; }
+  } catch (_) {
+    if (requestId === activeOracleRequest) oracleStatus.textContent = 'Could not load cached metadata.';
+  }
+}
+function applyCardDetailMode() {
+  const popup = cardDetailDisplayMode === 'popup';
+  oracleDialog.dataset.displayMode = popup ? 'popup' : 'sidebar';
+  oracleDialog.classList.toggle('is-popup', popup);
+  inventoryResultsLayout.classList.toggle('has-card-details', !popup);
+  cardDetailBackdrop.hidden = !popup;
+}
+function closeOraclePanel() {
+  oracleDialog.hidden = true;
+  oracleDialog.classList.remove('is-popup');
+  inventoryResultsLayout.classList.remove('has-card-details');
+  cardDetailBackdrop.hidden = true;
+  document.querySelectorAll('.card-tile.is-active, tr.is-active').forEach(row => row.classList.remove('is-active'));
 }
 document.querySelectorAll('.oracle-button').forEach(btn => btn.addEventListener('click', () => openOracle(btn.dataset.scryfall, btn.dataset.name, btn.dataset.image || '')));
 document.querySelectorAll('.oracle-image-trigger').forEach(img => img.addEventListener('click', () => {
