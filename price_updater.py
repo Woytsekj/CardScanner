@@ -510,24 +510,53 @@ def sync_prices(force: bool = False) -> bool:
             # independently of inventory ownership. A newly added inventory
             # row can read the existing history immediately, so replaying the
             # entire 166k-row feed on every unchanged hourly check is wasteful.
+            # On a fresh/restored database, however, seed the catalog from the
+            # saved snapshot if the global history table is still empty.
+            from postgres_app_db import connect_app_database
+            from postgres_db import open_pool
+
+            open_pool()
+            conn = connect_app_database()
             try:
-                meta = json.loads(META_FILE.read_text(encoding="utf-8"))
+                history_exists = conn.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM catalog.provider_price_observations
+                        WHERE game_id = 'mtg'
+                          AND provider_id = 'tcgcsv'
+                    ) AS has_history
+                    """
+                ).fetchone()["has_history"]
+            finally:
+                conn.close()
+
+            if not history_exists:
+                print(
+                    f"No TCGCSV update detected ({marker}), but PostgreSQL "
+                    "full-catalog history is empty; seeding it from the saved snapshot."
+                )
+            else:
+                try:
+                    meta = json.loads(META_FILE.read_text(encoding="utf-8"))
                 if not isinstance(meta, dict):
                     meta = {}
             except (OSError, json.JSONDecodeError):
                 meta = {}
-            meta["history_rows_recorded"] = 0
-            meta["alerts_sent"] = 0
-            meta["history_checked_at"] = datetime.now(timezone.utc).isoformat()
-            meta["history_scope"] = "full_provider_catalog"
-            META_FILE.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-            print(
-                f"No TCGCSV update detected ({marker}); full-catalog PostgreSQL "
-                "history is already available, so no feed replay is needed."
-            )
-            return False
+                meta["history_rows_recorded"] = 0
+                meta["alerts_sent"] = 0
+                meta["history_checked_at"] = datetime.now(timezone.utc).isoformat()
+                meta["history_scope"] = "full_provider_catalog"
+                META_FILE.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+                print(
+                    f"No TCGCSV update detected ({marker}); full-catalog PostgreSQL "
+                    "history is already available, so no feed replay is needed."
+                )
+                return False
 
-        # SQLite still keeps owned-product-only history, so it must reuse the
+        # SQLite still keeps owned-product-only history, and an empty
+        # PostgreSQL catalog needs its first full-catalog seed. Reuse the
+        # saved snapshot for either case rather than downloading it again.
         # saved snapshot to backfill cards that became trackable after the
         # provider's last source update.
         try:
