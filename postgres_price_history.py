@@ -28,7 +28,12 @@ def _product_id_expression(alias: str = "i") -> str:
 
 
 def _subtype_for_finish(finish: str) -> str:
-    return "Normal" if str(finish or "").strip().lower() == "normal" else "Foil"
+    normalized = str(finish or "").strip().lower()
+    if normalized in {"normal", "nonfoil", "non-foil"}:
+        return "Normal"
+    if normalized == "foil":
+        return "Foil"
+    return ""
 
 
 def fetch_owned_products(conn, *, vending_only: bool = False) -> list[dict]:
@@ -283,8 +288,11 @@ def latest_history_price(
     # For change-event history, a lookback reference asks for the state at
     # the start of the window. The last change may be much older than the
     # window when a price has remained stable, so do not require a recent row.
+    subtype = _subtype_for_finish(finish)
+    if not subtype:
+        return None
     as_of = not_before if not_before is not None else cutoff
-    params = [_tcg_product_id(tcg_id), _subtype_for_finish(finish), as_of]
+    params = [_tcg_product_id(tcg_id), subtype, as_of]
     row = conn.execute(
         f"""
         SELECT COALESCE(market_price, mid_price, low_price) AS price, is_available
