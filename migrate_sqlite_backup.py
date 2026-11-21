@@ -45,6 +45,7 @@ EMPTY_DESTINATION_TABLES = TARGET_TABLES + [
     "catalog.provider_product_groups",
     "catalog.provider_products",
     "catalog.provider_price_observations",
+    "catalog.provider_price_current",
 ]
 
 IDENTITY_COLUMNS = [
