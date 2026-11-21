@@ -667,14 +667,14 @@ def import_snapshot(args):
                 game_id, provider_id, external_product_id, subtype_name,
                 source_updated, captured_at, market_price, low_price,
                 mid_price, high_price, direct_low_price, is_available
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         current_price_statement = """
             INSERT INTO catalog.provider_price_current (
                 game_id, provider_id, external_product_id, subtype_name,
                 source_updated, captured_at, market_price, low_price,
                 mid_price, high_price, direct_low_price, is_available
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (game_id, provider_id, external_product_id, subtype_name)
             DO UPDATE SET
                 source_updated = EXCLUDED.source_updated,
