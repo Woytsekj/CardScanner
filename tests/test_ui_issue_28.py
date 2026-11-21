@@ -85,6 +85,27 @@ class Issue28UIFoundationTests(unittest.TestCase):
         self.assertIn('data-display-mode="sidebar"', css)
         self.assertIn('data-display-mode="popup"', css)
 
+    def test_card_details_are_docked_and_inventory_reflows_without_modal_backdrop(self):
+        source = self.read("templates/index.html")
+        css = self.read("static/app.css")
+        self.assertIn('<aside id="oracleDialog"', source)
+        self.assertIn('id="inventoryResultsLayout"', source)
+        self.assertIn('id="cardDetailBackdrop"', source)
+        self.assertIn("function closeOraclePanel()", source)
+        self.assertNotIn("oracleDialog.showModal()", source)
+        self.assertIn(".inventory-results-layout.has-card-details", css)
+        self.assertIn('data-display-mode="sidebar"', css)
+
+    def test_card_details_support_face_switching_rotation_and_zoom(self):
+        source = self.read("templates/index.html")
+        card_info = self.read("postgres_card_info.py")
+        self.assertIn('id="oracleFaceControls"', source)
+        self.assertIn("setOracleFace(index)", source)
+        self.assertIn("oracleRotateRight", source)
+        self.assertIn("openImage(activeOracleImageUrl", source)
+        self.assertIn('"faces": faces', card_info)
+        self.assertIn("face_image.image_uri", card_info)
+
     def test_inventory_price_trends_use_last_two_saved_prices(self):
         app = self.read("app.py")
         pg_history = self.read("postgres_price_history.py")
