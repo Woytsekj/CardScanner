@@ -199,7 +199,7 @@ async function loadPriceHistory(days) {
     historySeries = data.series || [];
     const dailyPoints = historySeries[0]?.points?.length || 0;
     historyStatus.textContent = dailyPoints
-      ? `${dailyPoints} daily points · ${historySeries.length} provider subtype(s) · timezone ${data.timezone}`
+      ? `${dailyPoints} history points · ${historySeries.length} provider subtype(s) · timezone ${data.timezone}`
       : 'No historical observations have been recorded for this product yet.';
     if (historySeries.length) {
       renderHistoryData(historySeries, historyChart, historyStats, historyLegend, historyMetric?.value || 'market');
@@ -259,7 +259,7 @@ async function loadCardDetailHistory(tcg, days, requestId) {
     inlineHistorySeries = data.series || [];
     const dailyPoints = inlineHistorySeries[0]?.points?.length || 0;
     status.textContent = dailyPoints
-      ? `${dailyPoints} daily points · ${inlineHistorySeries.length} provider subtype(s) · timezone ${data.timezone}`
+      ? `${dailyPoints} history points · ${inlineHistorySeries.length} provider subtype(s) · timezone ${data.timezone}`
       : 'No historical observations have been recorded for this product yet.';
     if (inlineHistorySeries.length) {
       renderHistoryData(
