@@ -371,7 +371,7 @@
               <div id="oracleStatus" class="status"></div>
             </div>
           </div>
-        </dialo
+        </aside>
     </div>
 
     {% if page_count > 1 %}
@@ -750,8 +750,9 @@ function setOracleFace(index) {
   oracleFaceControls.querySelectorAll('[data-oracle-face]').forEach(button => {
     button.classList.toggle('active', Number(button.dataset.oracleFace) === index);
   });
-  oracleTypeLine.textContent = activeOracleFaces[index].type_line || oracleTypeLine.textContent;
-  if (activeOracleFaces[index].oracle_text) oracleTextEl.textContent = activeOracleFaces[index].oracle_text;
+  oracleTypeLine.textContent = activeOracleFaces[index].type_line || '';
+  oracleManaCost.textContent = activeOracleFaces[index].mana_cost || '';
+  oracleTextEl.textContent = activeOracleFaces[index].oracle_text || 'No oracle text.';
   setOracleRotation(0);
 }
 function renderOracleFaces(faces) {
