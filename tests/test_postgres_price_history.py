@@ -460,9 +460,15 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
             old_time = datetime.now(timezone.utc) - timedelta(days=14)
             insert_price_observations(
                 conn,
-                [self._normal_row(1.00)],
+                [self._normal_row(
+                    market=None, low=0.75, mid=1.00, high=1.25, direct=None
+                )],
                 "old-alert-source-build",
                 old_time,
+            )
+            fallback_trends = fetch_latest_price_trends(conn, [self.product_id])
+            self.assertEqual(
+                fallback_trends[self.product_id][0]["normal_price"], 1.00
             )
             conn.commit()
         finally:
