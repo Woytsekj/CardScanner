@@ -342,6 +342,27 @@
                 <div id="oraclePrintingLine" class="subtle"></div><div id="oracleCollectionLine" class="subtle"></div>
                 <div class="card-detail-price-row"><strong id="oracleUnitPrice">Per-card price: —</strong><a id="oracleTcgplayerLink" class="button secondary" href="#" target="_blank" rel="noopener noreferrer" hidden>View on TCGplayer ↗</a></div>
               </div>
+            </div>
+          </div>
+            <section class="card-detail-history-panel" aria-label="Card price history">
+            <div class="card-detail-history-heading"><div><h3>Price history</h3><span class="subtle">TCGCSV market observations</span></div><button type="button" class="button secondary history-expand-button" id="expandCardDetailHistory" aria-haspopup="dialog">Expand chart ↗</button></div>
+            <div class="history-range-buttons" id="cardDetailHistoryRanges">
+              <button type="button" class="button secondary card-detail-history-range" data-days="3">3 Days</button><button type="button" class="button secondary card-detail-history-range" data-days="7">1 Week</button><button type="button" class="button secondary card-detail-history-range" data-days="30">1 Month</button><button type="button" class="button secondary card-detail-history-range active" data-days="90">3 Months</button><button type="button" class="button secondary card-detail-history-range" data-days="180">6 Months</button><button type="button" class="button secondary card-detail-history-range" data-days="365">1 Year</button>
+            </div>
+            <label class="history-metric-control">Price metric
+              <select id="cardDetailHistoryMetric">
+                <option value="market" selected>Market</option>
+                <option value="low">Low</option>
+                <option value="mid">Mid</option>
+                <option value="high">High</option>
+                <option value="direct_low">Direct low</option>
+              </select>
+            </label>
+            <div id="cardDetailHistoryStats" class="history-stats"></div><div id="cardDetailHistoryStatus" class="status" role="status" aria-live="polite"></div>
+            <div class="history-chart-wrap"><svg id="cardDetailPriceHistoryChart" viewBox="0 0 820 360" role="img" aria-label="Selected card price history chart"></svg></div>
+            <div id="cardDetailHistoryLegend" class="chart-legend"></div>
+          </section>
+          <div class="oracle-detail-content oracle-detail-secondary-content">
               <div id="oracleTypeLine" class="oracle-type-line"></div>
               <div id="oracleManaCost" class="oracle-mana-cost"></div>
               <pre id="oracleText" class="oracle-text"></pre>
@@ -363,24 +384,7 @@
               <div id="oracleStatus" class="status"></div>
             </div>
           </div>
-                    <section class="card-detail-history-panel" aria-label="Card price history">
-            <div class="card-detail-history-heading"><div><h3>Price history</h3><span class="subtle">TCGCSV market observations</span></div><button type="button" class="button secondary history-expand-button" id="expandCardDetailHistory" aria-haspopup="dialog">Expand chart ↗</button></div>
-            <div class="history-range-buttons" id="cardDetailHistoryRanges">
-              <button type="button" class="button secondary card-detail-history-range" data-days="3">3 Days</button><button type="button" class="button secondary card-detail-history-range" data-days="7">1 Week</button><button type="button" class="button secondary card-detail-history-range" data-days="30">1 Month</button><button type="button" class="button secondary card-detail-history-range active" data-days="90">3 Months</button><button type="button" class="button secondary card-detail-history-range" data-days="180">6 Months</button><button type="button" class="button secondary card-detail-history-range" data-days="365">1 Year</button>
-            </div>
-            <label class="history-metric-control">Price metric
-              <select id="cardDetailHistoryMetric">
-                <option value="market" selected>Market</option>
-                <option value="low">Low</option>
-                <option value="mid">Mid</option>
-                <option value="high">High</option>
-                <option value="direct_low">Direct low</option>
-              </select>
-            </label>
-            <div id="cardDetailHistoryStats" class="history-stats"></div><div id="cardDetailHistoryStatus" class="status" role="status" aria-live="polite"></div>
-            <div class="history-chart-wrap"><svg id="cardDetailPriceHistoryChart" viewBox="0 0 820 360" role="img" aria-label="Selected card price history chart"></svg></div>
-            <div id="cardDetailHistoryLegend" class="chart-legend"></div>
-          </section>
+
         </aside>
     </div>
 
