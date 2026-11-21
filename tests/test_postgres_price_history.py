@@ -304,6 +304,12 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
             ).fetchone()
             self.assertFalse(unavailable["is_available"])
             self.assertIsNone(unavailable["market_price"])
+            self.assertIsNone(
+                latest_history_price(
+                    conn, self.product_id, "normal",
+                    changed_at + timedelta(days=1),
+                )
+            )
 
             # Reappearance with the same value is a new event after unavailability.
             self.assertEqual(
@@ -326,6 +332,17 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
             ).fetchone()
             self.assertTrue(reappeared["is_available"])
             self.assertEqual(float(reappeared["market_price"]), 1.35)
+            self.assertEqual(
+                latest_history_price(
+                    conn, self.product_id, "normal",
+                    changed_at + timedelta(days=2),
+                ),
+                1.35,
+            )
+            trends = fetch_latest_price_trends(conn, [self.product_id])
+            self.assertEqual(len(trends[self.product_id]), 2)
+            self.assertEqual(trends[self.product_id][0]["normal_price"], 1.35)
+            self.assertIsNone(trends[self.product_id][1]["normal_price"])
 
             series = fetch_price_history(conn, self.product_id, 365)
             normal_series = next(item for item in series if item["subtype_name"] == "Normal")
