@@ -569,9 +569,21 @@ def sync_prices(force: bool = False) -> bool:
         "discord_alerts_enabled": PRICE_ALERT_ENABLED and bool(DISCORD_WEBHOOK_URL),
     }
 
+    if not groups:
+        failures.append({
+            "groupId": None,
+            "error": "TCGCSV returned no product groups; existing price history was not reconciled",
+        })
+    elif not all_prices:
+        failures.append({
+            "groupId": None,
+            "error": "All groups returned zero price rows; refusing to mark the catalog unavailable",
+        })
+    meta["failures"] = failures
+
     if failures:
         META_FILE.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-        print(f"Sync incomplete: {len(failures)} group(s) failed. Existing price snapshot was kept; next run will retry build {marker}.")
+        print(f"Sync incomplete: {len(failures)} issue(s) found. Existing price snapshot was kept; next run will retry build {marker}.")
         return False
 
     # Build a quick productId -> normal/foil map for history capture.
