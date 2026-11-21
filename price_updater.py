@@ -505,9 +505,31 @@ def sync_prices(force: bool = False) -> bool:
     # data directory from getting stuck with no prices.
     snapshot_missing = not PRICES_FILE.exists()
     if not force and not snapshot_missing and previous and marker == previous:
-        # A card can become trackable even if TCGCSV has not published new prices.
-        # Reuse the saved snapshot to record the first history point for newly
-        # mapped cards rather than skipping history capture entirely.
+        if DATABASE_BACKEND == "postgres":
+            # PostgreSQL stores history for the complete provider catalog,
+            # independently of inventory ownership. A newly added inventory
+            # row can read the existing history immediately, so replaying the
+            # entire 166k-row feed on every unchanged hourly check is wasteful.
+            try:
+                meta = json.loads(META_FILE.read_text(encoding="utf-8"))
+                if not isinstance(meta, dict):
+                    meta = {}
+            except (OSError, json.JSONDecodeError):
+                meta = {}
+            meta["history_rows_recorded"] = 0
+            meta["alerts_sent"] = 0
+            meta["history_checked_at"] = datetime.now(timezone.utc).isoformat()
+            meta["history_scope"] = "full_provider_catalog"
+            META_FILE.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+            print(
+                f"No TCGCSV update detected ({marker}); full-catalog PostgreSQL "
+                "history is already available, so no feed replay is needed."
+            )
+            return False
+
+        # SQLite still keeps owned-product-only history, so it must reuse the
+        # saved snapshot to backfill cards that became trackable after the
+        # provider's last source update.
         try:
             saved_snapshot = json.loads(PRICES_FILE.read_text(encoding="utf-8"))
             saved_prices = saved_snapshot.get("results") if isinstance(saved_snapshot, dict) else None
