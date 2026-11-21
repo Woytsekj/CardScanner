@@ -356,7 +356,7 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
                     conn, [self._normal_row(
                         market=1.35, low=1.05, mid=1.15, high=1.60, direct=1.00
                     )], "reappeared-build",
-                    changed_at + timedelta(days=2),
+                    changed_at + timedelta(days=1, hours=22),
                 ),
                 1,
             )
@@ -376,7 +376,7 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
             self.assertEqual(
                 latest_history_price(
                     conn, self.product_id, "normal",
-                    changed_at + timedelta(days=2),
+                    changed_at + timedelta(days=1, hours=22),
                 ),
                 1.35,
             )
