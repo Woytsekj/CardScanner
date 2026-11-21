@@ -19,6 +19,7 @@
   <main>
 
 
+    <section class="inventory-control-panel" aria-label="Inventory search and filters">
     <section class="page-actions-bar inventory-page-actions" aria-label="Inventory actions">
       <div class="page-actions-group">
         {% if admin_user %}
@@ -43,7 +44,7 @@
         {% endif %}
       </div>
     </section>
-    <section class="inventory-control-panel" aria-label="Inventory search and filters">
+
     <section class="toolbar" id="inventoryToolbar">
       <form class="search-form" method="get" action="{{ url_for('index') }}" id="inventorySearchForm">
         <div class="inventory-search-box">
@@ -120,6 +121,20 @@
           <a class="button {% if view == 'list' %}{% else %}secondary{% endif %}" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view='list') }}">☷ List</a>
           <a class="button {% if view == 'grid' %}{% else %}secondary{% endif %}" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view='grid') }}">▦ Grid</a>
         </div>
+        {% if view == 'grid' %}
+        <label class="grid-size-control" for="gridCardSize">
+          <span>Card size</span>
+          <input id="gridCardSize" type="range" min="120" max="330" step="15" value="180">
+          <output id="gridCardSizeValue" for="gridCardSize">180 px</output>
+        </label>
+        {% endif %}
+        <label class="card-detail-mode-control" for="cardDetailMode">
+          <span>Card details</span>
+          <select id="cardDetailMode">
+            <option value="sidebar">Right sidebar</option>
+            <option value="popup">Popup</option>
+          </select>
+        </label>
         {% if admin_user %}
         <div class="interaction-mode-toggle" role="group" aria-label="Inventory interaction mode">
           <button type="button" class="button secondary mode-button active" data-mode="browse" aria-pressed="true">Browse</button>
@@ -196,7 +211,16 @@
             {% else %}<span class="image-placeholder">No card image</span>{% endif %}
             <span class="finish-badge {{ item.finish }}">{{ item.finish|capitalize }}</span>
           </span>
-          <span class="tile-price-badge"><span>Per card</span><strong>${{ '%.2f'|format(item.calculated_unit_price|float) }}</strong></span>
+          <span class="tile-price-badge">
+            <span class="tile-price-label">Per card</span>
+            <strong>${{ '%.2f'|format(item.calculated_unit_price|float) }}</strong>
+            <span class="price-trend-indicator trend-{{ item.price_trend }}"
+              title="{% if item.price_trend_pct is not none %}{{ '%+.1f'|format(item.price_trend_pct) }}% versus the previous recorded price{% else %}Not enough price history to calculate a trend{% endif %}"
+              aria-label="{% if item.price_trend == 'up' %}Price trending up{% elif item.price_trend == 'down' %}Price trending down{% elif item.price_trend == 'flat' %}Price roughly unchanged{% else %}Trend unavailable{% endif %}">
+              {% if item.price_trend == 'up' %}▲{% elif item.price_trend == 'down' %}▼{% elif item.price_trend == 'flat' %}−{% else %}—{% endif %}
+              {% if item.price_trend_pct is not none %}<small>{{ '%+.1f'|format(item.price_trend_pct) }}%</small>{% endif %}
+            </span>
+          </span>
         </button>
         {% if admin_user %}
         <details class="tile-manage-menu edit-only-control">
@@ -222,6 +246,7 @@
       {% else %}<div class="empty grid-empty">No cards match the current filters.</div>
       {% endfor %}
     </section>
+    {% else %}
     <section class="table-card">
       <div class="table-wrap">
         <table>
@@ -649,6 +674,19 @@ function closeImage() { document.getElementById('imageDialog').close(); }
 function imageFailed(img) { img.style.display = 'none'; }
 
 const oracleDialog = document.getElementById('oracleDialog');
+let cardDetailDisplayMode = 'sidebar';
+const cardDetailModeControl = document.getElementById('cardDetailMode');
+try {
+  const savedCardDetailMode = localStorage.getItem('cardscanner-card-detail-mode');
+  if (savedCardDetailMode === 'popup') cardDetailDisplayMode = 'popup';
+} catch (_) {}
+if (cardDetailModeControl) {
+  cardDetailModeControl.value = cardDetailDisplayMode;
+  cardDetailModeControl.addEventListener('change', () => {
+    cardDetailDisplayMode = cardDetailModeControl.value === 'popup' ? 'popup' : 'sidebar';
+    try { localStorage.setItem('cardscanner-card-detail-mode', cardDetailDisplayMode); } catch (_) {}
+  });
+}
 const oracleTitle = document.getElementById('oracleTitle');
 const oracleSubtitle = document.getElementById('oracleSubtitle');
 const oracleTypeLine = document.getElementById('oracleTypeLine');
@@ -666,6 +704,7 @@ const oracleCardImage = document.getElementById('oracleCardImage');
 const oracleSwitchButton = document.getElementById('oracleSwitchButton');
 let activeOracleImageUrl = '';
 let activeOracleScryfallId = '';
+oracleCardImage.addEventListener('click', () => openImage(activeOracleImageUrl, oracleTitle.textContent));
 let loadedOracleRulingsSid = '';
 function escOracle(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function renderOracleTagList(container, tags, kind) {
@@ -754,6 +793,7 @@ async function openOracle(sid, name, imageUrl = '', cardMeta = {}) {
   activeOracleImageUrl = imageUrl || (sid ? `https://cards.scryfall.io/normal/front/${sid[0]}/${sid[1]}/${sid}.jpg` : '');
   oracleCardImage.src = activeOracleImageUrl;
   oracleCardImage.alt = name || '';
+  oracleDialog.dataset.displayMode = cardDetailDisplayMode;
   oracleDialog.showModal();
   if (window.openCardDetailPriceHistory) window.openCardDetailPriceHistory(cardMeta.tcg || '', name || 'Card');
   if (!sid) { oracleSubtitle.textContent = 'No Scryfall ID is available for this printing.'; return; }
