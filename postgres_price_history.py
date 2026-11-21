@@ -148,8 +148,8 @@ def fetch_price_history(conn, tcg_id: str, days: int) -> list[dict]:
         ),
         sample_days AS (
             SELECT generate_series(
-                now() - (?::double precision * INTERVAL '1 day'),
-                now(),
+                statement_timestamp() - (?::double precision * INTERVAL '1 day'),
+                statement_timestamp(),
                 INTERVAL '1 day'
             ) AS sample_at
         )
@@ -223,9 +223,10 @@ def fetch_latest_price_trends(
                 SELECT unnest(ARRAY[{product_values}]) AS external_product_id
             ),
             sample_times AS (
-                SELECT 1 AS sample_rank, now() AS sample_at
+                SELECT 1 AS sample_rank, statement_timestamp() AS sample_at
                 UNION ALL
-                SELECT 2 AS sample_rank, now() - INTERVAL '1 day' AS sample_at
+                SELECT 2 AS sample_rank,
+                       statement_timestamp() - INTERVAL '1 day' AS sample_at
             )
             SELECT
                 products.external_product_id,
