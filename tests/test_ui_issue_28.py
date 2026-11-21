@@ -96,6 +96,21 @@ class Issue28UIFoundationTests(unittest.TestCase):
         self.assertIn(".inventory-results-layout.has-card-details", css)
         self.assertIn('data-display-mode="sidebar"', css)
 
+    def test_docked_inspector_spans_the_inventory_page_and_animates_in(self):
+        source = self.read("templates/index.html")
+        css = self.read("static/app.css")
+        self.assertIn('<main id="inventoryPageLayout"', source)
+        self.assertIn("inventoryPageLayout.classList.toggle('has-card-details'", source)
+        self.assertIn("updateInventoryHeaderOffset()", source)
+        self.assertIn("window.requestAnimationFrame", source)
+        self.assertIn("window.setTimeout", source)
+        self.assertIn("margin-right: var(--inventory-inspector-width)", css)
+        self.assertIn("top: var(--inventory-header-offset, 54px)", css)
+        self.assertIn("bottom: 0", css)
+        self.assertIn("transform: translateX(22px)", css)
+        self.assertIn("transition: margin-right var(--inventory-panel-motion)", css)
+        self.assertIn("prefers-reduced-motion: reduce", css)
+
     def test_card_details_support_face_switching_rotation_and_zoom(self):
         source = self.read("templates/index.html")
         card_info = self.read("postgres_card_info.py")
