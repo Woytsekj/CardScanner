@@ -1423,3 +1423,81 @@ body[data-inventory-mode="select"] .card-tile { cursor: crosshair; }
   .settings-list > div > strong { text-align: left; }
   .preference-password-form { align-items: stretch; flex-direction: column; }
 }
+
+
+/* Follow-up UX: grid sizing, price direction and inventory detail presentation. */
+.app-nav-menu:not([open]) .app-primary-nav { display: none; }
+.inventory-control-panel > .inventory-page-actions { margin: 0 0 9px; padding: 0 2px; }
+.inventory-control-panel > .inventory-page-actions .page-actions-group { justify-content: flex-end; }
+.grid-size-control, .card-detail-mode-control {
+  display: inline-flex; align-items: center; gap: 8px; min-width: 0;
+  color: var(--muted); font-size: 12px; white-space: nowrap;
+}
+.grid-size-control input { width: clamp(90px, 10vw, 160px); accent-color: var(--green); }
+.grid-size-control output { min-width: 44px; color: var(--text); font-size: 11px; font-variant-numeric: tabular-nums; }
+.card-detail-mode-control select { min-width: 130px; min-height: 34px; padding: 0 8px; font-size: 12px; }
+.card-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--inventory-card-min-width, 180px)), 1fr)) !important;
+}
+.tile-price-badge { justify-content: space-between; gap: 5px; }
+.tile-price-label { color: var(--muted); }
+.price-trend-indicator {
+  display: inline-flex; align-items: center; justify-content: flex-end; gap: 3px;
+  min-width: 34px; font-size: 12px; font-weight: 900; line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.price-trend-indicator small { font-size: 9px; font-weight: 800; }
+.price-trend-indicator.trend-up { color: #49d69a; }
+.price-trend-indicator.trend-down { color: #ff727a; }
+.price-trend-indicator.trend-flat { color: #a8b4c5; }
+.price-trend-indicator.trend-unknown { color: #65748b; }
+
+/* Card details is a right drawer by default, with a user-selectable centered popup. */
+.oracle-dialog[open][data-display-mode="sidebar"] {
+  position: fixed; inset: 0 0 0 auto; margin: 0;
+  width: min(590px, 94vw); max-width: none; height: 100dvh; max-height: 100dvh;
+  padding: 22px 18px 28px; border-radius: 14px 0 0 14px;
+  overflow-x: hidden; overflow-y: auto;
+}
+.oracle-dialog[open][data-display-mode="sidebar"] .oracle-detail-layout {
+  grid-template-columns: minmax(135px, 170px) minmax(0,1fr); gap: 14px;
+}
+.oracle-dialog[open][data-display-mode="sidebar"] .oracle-detail-image-wrap { top: 12px; }
+.oracle-dialog[open][data-display-mode="sidebar"] .oracle-detail-image { max-height: calc(100dvh - 135px); cursor: zoom-in; }
+.oracle-dialog[open][data-display-mode="sidebar"] .history-chart-wrap svg { min-width: 480px; }
+.oracle-dialog[open][data-display-mode="popup"] {
+  position: fixed; inset: 0; margin: auto;
+  width: min(1100px, calc(100vw - 32px)); max-width: 1100px;
+  max-height: 92dvh; padding: 24px; border-radius: 13px; overflow: auto;
+}
+.oracle-dialog[open][data-display-mode="popup"] .oracle-detail-layout {
+  grid-template-columns: minmax(210px, 270px) minmax(0,1fr); gap: 22px;
+}
+.oracle-dialog[open][data-display-mode="popup"] .oracle-detail-image { max-height: 62vh; cursor: zoom-in; }
+.oracle-dialog::backdrop { background: rgba(3,8,18,.72); backdrop-filter: blur(2px); }
+.oracle-detail-image { cursor: zoom-in; }
+@media (max-width: 900px) {
+  .app-topbar { grid-template-columns: minmax(0,1fr) auto; }
+  .app-nav-menu { grid-column: 1 / -1; grid-row: 2; }
+  .app-primary-nav { justify-content: flex-start; }
+}
+@media (max-width: 760px) {
+  .inventory-control-panel > .inventory-page-actions .page-actions-group { justify-content: flex-start; }
+  .inventory-control-panel > .inventory-page-actions .page-actions-group .button { flex: 0 1 auto; }
+  .grid-size-control, .card-detail-mode-control { white-space: normal; }
+  .oracle-dialog[open][data-display-mode="sidebar"] {
+    inset: auto 0 0; margin: auto 0 0; width: 100vw; height: 94dvh; max-height: 94dvh;
+    border-radius: 14px 14px 0 0; padding: 22px 13px 24px;
+  }
+  .oracle-dialog[open][data-display-mode="sidebar"] .oracle-detail-layout,
+  .oracle-dialog[open][data-display-mode="popup"] .oracle-detail-layout { grid-template-columns: minmax(0,1fr); gap: 12px; }
+  .oracle-dialog[open][data-display-mode="sidebar"] .oracle-detail-image-wrap,
+  .oracle-dialog[open][data-display-mode="popup"] .oracle-detail-image-wrap {
+    position: static; max-width: 190px; margin: 0 auto;
+  }
+  .oracle-dialog[open][data-display-mode="sidebar"] .oracle-detail-image,
+  .oracle-dialog[open][data-display-mode="popup"] .oracle-detail-image { max-height: 35vh; }
+  .oracle-dialog[open][data-display-mode="popup"] {
+    inset: 0; width: calc(100vw - 16px); max-height: 94dvh; padding: 20px 12px;
+  }
+}
