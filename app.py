@@ -856,6 +856,7 @@ def security_gate():
             "rename_user": "POST",
             "change_user_role": "POST",
             "delete_user": "POST",
+            "admin_change_password_legacy": "POST",
             "change_password": "POST",
             "set_counts": "POST",
             "update_inventory": "POST",
@@ -3677,6 +3678,13 @@ def delete_user(username):
         return redirect(url_for("admin_page", message=f"Deleted web user {username} permanently."))
     finally:
         conn.close()
+
+
+@app.post("/admin/password")
+@admin_required
+def admin_change_password_legacy():
+    """Backward-compatible admin-only URL; the current UI uses Preferences."""
+    return change_password()
 
 
 @app.post("/account/password")
