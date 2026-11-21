@@ -5841,20 +5841,43 @@ def api_price_history(tcg_id: str):
         (tcg_id, since),
     ).fetchall()
     conn.close()
+    normal_points = [
+        {
+            "captured_at": r["captured_at"],
+            "source_updated": r["source_updated"],
+            "available": r["normal_price"] is not None,
+            "market": r["normal_price"],
+            "low": None,
+            "mid": None,
+            "high": None,
+            "direct_low": None,
+        }
+        for r in rows
+    ]
+    foil_points = [
+        {
+            "captured_at": r["captured_at"],
+            "source_updated": r["source_updated"],
+            "available": r["foil_price"] is not None,
+            "market": r["foil_price"],
+            "low": None,
+            "mid": None,
+            "high": None,
+            "direct_low": None,
+        }
+        for r in rows
+    ]
+    series = []
+    if any(point["available"] for point in normal_points):
+        series.append({"subtype_name": "Normal", "points": normal_points})
+    if any(point["available"] for point in foil_points):
+        series.append({"subtype_name": "Foil", "points": foil_points})
     return jsonify({
         "success": True,
         "tcgplayer_id": tcg_id,
         "days": days,
         "timezone": DISPLAY_TIMEZONE,
-        "points": [
-            {
-                "captured_at": r["captured_at"],
-                "normal": r["normal_price"],
-                "foil": r["foil_price"],
-                "source_updated": r["source_updated"],
-            }
-            for r in rows
-        ],
+        "series": series,
     })
 
 
