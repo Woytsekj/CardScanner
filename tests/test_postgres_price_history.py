@@ -422,7 +422,7 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
             patch.object(price_updater, "DATABASE_BACKEND", "postgres"),
             patch.object(price_updater, "PRICE_ALERT_ENABLED", True),
             patch.object(price_updater, "DISCORD_WEBHOOK_URL", "configured-for-test"),
-            patch.object(price_updater, "PRICE_ALERT_LOOKBACK_DAYS", 30),
+            patch.object(price_updater, "PRICE_ALERT_LOOKBACK_DAYS", 7),
             patch.object(price_updater, "PRICE_ALERT_COOLDOWN_DAYS", 7),
             patch.object(price_updater, "PRICE_ALERT_MIN_DOLLARS", 1.00),
             patch.object(price_updater, "PRICE_ALERT_MIN_PERCENT", 25.0),
