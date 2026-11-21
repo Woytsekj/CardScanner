@@ -9,6 +9,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from types import ModuleType
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -309,21 +310,25 @@ class PriceHistoryTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        import postgres_app_db
-        import postgres_db
-
         db_cursor = Mock()
         db_cursor.fetchone.return_value = {"has_history": True}
         db_conn = Mock()
         db_conn.execute.return_value = db_cursor
+        fake_app_db = ModuleType("postgres_app_db")
+        fake_app_db.connect_app_database = Mock(return_value=db_conn)
+        fake_postgres_db = ModuleType("postgres_db")
+        fake_postgres_db.open_pool = Mock()
 
         with (
+            patch.dict(
+                "sys.modules",
+                {
+                    "postgres_app_db": fake_app_db,
+                    "postgres_db": fake_postgres_db,
+                },
+            ),
             patch.object(updater, "DATABASE_BACKEND", "postgres"),
             patch.object(updater, "get_last_updated", return_value=TCGCSV_MARKER),
-            patch.object(postgres_db, "open_pool"),
-            patch.object(
-                postgres_app_db, "connect_app_database", return_value=db_conn
-            ),
             patch.object(
                 updater,
                 "get_json",
@@ -359,20 +364,24 @@ class PriceHistoryTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        import postgres_app_db
-        import postgres_db
-
         db_cursor = Mock()
         db_cursor.fetchone.return_value = {"has_history": False}
         db_conn = Mock()
         db_conn.execute.return_value = db_cursor
+        fake_app_db = ModuleType("postgres_app_db")
+        fake_app_db.connect_app_database = Mock(return_value=db_conn)
+        fake_postgres_db = ModuleType("postgres_db")
+        fake_postgres_db.open_pool = Mock()
         with (
+            patch.dict(
+                "sys.modules",
+                {
+                    "postgres_app_db": fake_app_db,
+                    "postgres_db": fake_postgres_db,
+                },
+            ),
             patch.object(updater, "DATABASE_BACKEND", "postgres"),
             patch.object(updater, "get_last_updated", return_value=TCGCSV_MARKER),
-            patch.object(postgres_db, "open_pool"),
-            patch.object(
-                postgres_app_db, "connect_app_database", return_value=db_conn
-            ),
             patch.object(
                 updater, "record_history_and_alerts", return_value=(4, 0)
             ) as record_history,
