@@ -200,6 +200,46 @@ class PriceHistoryTests(unittest.TestCase):
         meta = json.loads(self.meta_file.read_text(encoding="utf-8"))
         self.assertEqual(meta["history_rows_recorded"], 3)
 
+    def test_empty_provider_feed_does_not_replace_snapshot_or_reconcile_history(self) -> None:
+        previous_snapshot = {
+            "success": True,
+            "sourceUpdated": "previous-good-build",
+            "results": self.sample_price_rows(),
+        }
+        previous_text = json.dumps(previous_snapshot, separators=(",", ":"))
+        self.prices_file.write_text(previous_text, encoding="utf-8")
+        self.last_seen_file.write_text("previous-good-build\\n", encoding="utf-8")
+
+        def fake_get_json(path: str) -> dict[str, object]:
+            if path.endswith("/groups"):
+                return {"results": [{"groupId": 77}]}
+            if path.endswith("/77/prices"):
+                return {"results": []}
+            raise AssertionError(f"Unexpected TCGCSV path: {path}")
+
+        with (
+            patch.object(updater, "get_last_updated", return_value=TCGCSV_MARKER),
+            patch.object(updater, "get_json", side_effect=fake_get_json),
+            patch.object(updater.time, "sleep"),
+            patch.object(
+                updater,
+                "record_history_and_alerts",
+                side_effect=AssertionError("empty feed must not reconcile price history"),
+            ),
+        ):
+            updated = updater.sync_prices(force=True)
+
+        self.assertFalse(updated)
+        self.assertEqual(self.prices_file.read_text(encoding="utf-8"), previous_text)
+        self.assertEqual(
+            self.last_seen_file.read_text(encoding="utf-8"),
+            "previous-good-build\\n",
+        )
+        meta = json.loads(self.meta_file.read_text(encoding="utf-8"))
+        self.assertEqual(meta["price_rows"], 0)
+        self.assertTrue(meta["failures"])
+        self.assertIn("zero price rows", meta["failures"][-1]["error"])
+
     def test_forced_sync_downloads_mock_data_and_records_history(self) -> None:
         """Exercise the full sync path without a network call."""
         self.prices_file.write_text("{}", encoding="utf-8")
