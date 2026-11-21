@@ -974,6 +974,66 @@ async function openOracle(sid, name, imageUrl = '', cardMeta = {}) {
     if (requestId === activeOracleRequest) oracleStatus.textContent = 'Could not load cached metadata.';
   }
 }
+const cardDetailResizeHandle = document.getElementById('cardDetailResizeHandle');
+const CARD_DETAIL_WIDTH_MIN = 400;
+const CARD_DETAIL_WIDTH_MAX = 760;
+let cardDetailResizePointer = null;
+
+function cardDetailWidthBounds() {
+  const viewportLimit = Math.max(CARD_DETAIL_WIDTH_MIN, Math.floor(window.innerWidth * 0.62));
+  return {
+    min: Math.min(CARD_DETAIL_WIDTH_MIN, viewportLimit),
+    max: Math.max(Math.min(CARD_DETAIL_WIDTH_MIN, viewportLimit), Math.min(CARD_DETAIL_WIDTH_MAX, viewportLimit))
+  };
+}
+function setCardDetailWidth(requestedWidth, persist = false) {
+  const bounds = cardDetailWidthBounds();
+  const width = Math.round(Math.min(bounds.max, Math.max(bounds.min, Number(requestedWidth) || 520)));
+  document.documentElement.style.setProperty('--inventory-inspector-width', width + 'px');
+  if (cardDetailResizeHandle) cardDetailResizeHandle.setAttribute('aria-valuenow', String(width));
+  if (persist) {
+    try { localStorage.setItem('cardscanner-card-detail-width', String(width)); } catch (_) {}
+  }
+  return width;
+}
+try {
+  const savedWidth = Number(localStorage.getItem('cardscanner-card-detail-width'));
+  if (Number.isFinite(savedWidth) && savedWidth > 0) setCardDetailWidth(savedWidth);
+} catch (_) {}
+if (cardDetailResizeHandle) {
+  cardDetailResizeHandle.addEventListener('pointerdown', event => {
+    if (oracleDialog.dataset.displayMode !== 'sidebar' || event.button !== 0) return;
+    cardDetailResizePointer = event.pointerId;
+    cardDetailResizeHandle.setPointerCapture(event.pointerId);
+    document.documentElement.classList.add('is-resizing-card-detail');
+    event.preventDefault();
+    setCardDetailWidth(window.innerWidth - event.clientX);
+  });
+  cardDetailResizeHandle.addEventListener('pointermove', event => {
+    if (cardDetailResizePointer !== event.pointerId) return;
+    setCardDetailWidth(window.innerWidth - event.clientX);
+  });
+  const finishCardDetailResize = event => {
+    if (cardDetailResizePointer !== event.pointerId) return;
+    cardDetailResizePointer = null;
+    document.documentElement.classList.remove('is-resizing-card-detail');
+    setCardDetailWidth(window.innerWidth - event.clientX, true);
+  };
+  cardDetailResizeHandle.addEventListener('pointerup', finishCardDetailResize);
+  cardDetailResizeHandle.addEventListener('pointercancel', finishCardDetailResize);
+  cardDetailResizeHandle.addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const current = Number.parseInt(getComputedStyle(document.documentElement).getPropertyValue('--inventory-inspector-width'), 10) || 520;
+    const bounds = cardDetailWidthBounds();
+    const step = event.shiftKey ? 64 : 24;
+    const next = event.key === 'Home' ? bounds.min
+      : event.key === 'End' ? bounds.max
+      : current + (event.key === 'ArrowLeft' ? step : -step);
+    setCardDetailWidth(next, true);
+  });
+}
+
 function applyCardDetailMode() {
   updateInventoryHeaderOffset();
   const popup = cardDetailDisplayMode === 'popup';
