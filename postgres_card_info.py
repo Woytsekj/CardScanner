@@ -15,6 +15,7 @@ def fetch_card_info(conn, scryfall_id: str) -> dict | None:
         """
         SELECT
             external_printing_id AS scryfall_id,
+            printing_id,
             name,
             type_line,
             colors_text,
@@ -34,6 +35,62 @@ def fetch_card_info(conn, scryfall_id: str) -> dict | None:
 
     if not row:
         return None
+
+    face_rows = conn.execute(
+        """
+        SELECT
+            pf.face_index,
+            pf.name,
+            pf.type_line,
+            pf.rules_text,
+            CASE
+                WHEN jsonb_exists(pf.metadata, 'image_uri')
+                    THEN pf.metadata ->> 'image_uri'
+                ELSE COALESCE(
+                    face_image.image_uri,
+                    pf.metadata #>> '{image_uris,normal}'
+                )
+            END AS image_uri,
+            pf.metadata
+        FROM catalog.printing_faces AS pf
+        LEFT JOIN catalog.images AS face_image
+          ON face_image.image_id = pf.image_id
+         AND face_image.game_id = pf.game_id
+        WHERE pf.game_id = 'mtg'
+          AND pf.printing_id = ?
+          AND COALESCE((pf.metadata ->> '_synthetic')::boolean, false) = false
+        ORDER BY pf.face_index
+        """,
+        (row["printing_id"],),
+    ).fetchall() if row["printing_id"] is not None else []
+
+    faces = []
+    for face in face_rows:
+        metadata = face["metadata"] if isinstance(face["metadata"], dict) else {}
+        image_url = face["image_uri"]
+        if not image_url:
+            image_uris = metadata.get("image_uris")
+            if isinstance(image_uris, dict):
+                image_url = image_uris.get("normal") or image_uris.get("large") or image_uris.get("small")
+        faces.append({
+            "face_index": int(face["face_index"]),
+            "name": face["name"] or "",
+            "type_line": face["type_line"] or "",
+            "oracle_text": face["rules_text"] or "",
+            "mana_cost": metadata.get("mana_cost") or "",
+            "image_url": image_url or "",
+        })
+
+    printing_row = conn.execute(
+        """
+        SELECT metadata
+        FROM catalog.printings
+        WHERE game_id = 'mtg' AND printing_id = ?
+        """,
+        (row["printing_id"],),
+    ).fetchone() if row["printing_id"] is not None else None
+    printing_metadata = printing_row["metadata"] if printing_row and isinstance(printing_row["metadata"], dict) else {}
+    layout = printing_metadata.get("layout") or ""
 
     art_rows = conn.execute(
         """
@@ -113,4 +170,6 @@ def fetch_card_info(conn, scryfall_id: str) -> dict | None:
         "art_tags": art_tags,
         "oracle_tags": oracle_tags,
         "updated_at": updated_at,
+        "layout": layout,
+        "faces": faces,
     }

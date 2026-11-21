@@ -788,6 +788,10 @@ def security_gate():
         # Deck pages use PostgreSQL read helpers. Cover files are validated
         # generated filenames and are served read-only.
         if request.endpoint in {
+            "preferences_page",
+            "server_info_page",
+            "analytics_page",
+            "search_guide",
             "index",
             "decks_page",
             "deck_view",
@@ -852,6 +856,7 @@ def security_gate():
             "rename_user": "POST",
             "change_user_role": "POST",
             "delete_user": "POST",
+            "admin_change_password_legacy": "POST",
             "change_password": "POST",
             "set_counts": "POST",
             "update_inventory": "POST",
@@ -1684,12 +1689,96 @@ def inventory_summary(
     return owner_totals, owner_counts, grand_total, finish_totals, row_count, owner_row_counts
 
 
+def _fetch_inventory_price_trends(conn, rows) -> dict[str, list[dict[str, Any]]]:
+    """Load at most the two most recent history points for visible inventory products."""
+    product_ids: set[str] = set()
+    for row in rows:
+        raw = str(row["tcgplayer_id"] or "").strip()
+        if not raw:
+            continue
+        try:
+            raw = str(int(float(raw)))
+        except (TypeError, ValueError, OverflowError):
+            pass
+        product_ids.add(raw)
+
+    if not product_ids:
+        return {}
+
+    ordered_ids = sorted(product_ids)
+    if DATABASE_BACKEND == "postgres":
+        from postgres_price_history import fetch_latest_price_trends
+        return fetch_latest_price_trends(conn, ordered_ids)
+
+    trends: dict[str, list[dict[str, Any]]] = {}
+    for start in range(0, len(ordered_ids), 400):
+        chunk = ordered_ids[start:start + 400]
+        placeholders = ", ".join("?" for _ in chunk)
+        try:
+            result = conn.execute(
+                f"""
+                SELECT tcgplayer_id, captured_at, normal_price, foil_price
+                FROM (
+                    SELECT
+                        tcgplayer_id, captured_at, normal_price, foil_price,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY tcgplayer_id
+                            ORDER BY captured_at DESC, id DESC
+                        ) AS history_rank
+                    FROM price_history
+                    WHERE tcgplayer_id IN ({placeholders})
+                ) recent
+                WHERE history_rank <= 2
+                ORDER BY tcgplayer_id, history_rank
+                """,
+                chunk,
+            ).fetchall()
+        except Exception as exc:
+            app.logger.debug("Could not load inventory price trends: %s", exc)
+            return {}
+
+        for row in result:
+            product_id = str(row["tcgplayer_id"] or "").strip()
+            if product_id:
+                trends.setdefault(product_id, []).append({
+                    "normal_price": row["normal_price"],
+                    "foil_price": row["foil_price"],
+                    "captured_at": row["captured_at"],
+                })
+    return trends
+
+
+def _calculate_price_trend(
+    history: list[dict[str, Any]],
+    finish: str,
+) -> tuple[str, float | None]:
+    """Compare the latest two values for a finish; changes under 1% are flat."""
+    key = "foil_price" if normalize_finish(finish) == "foil" else "normal_price"
+    if len(history) < 2:
+        return "unknown", None
+
+    try:
+        latest = float(history[0].get(key))
+        previous = float(history[1].get(key))
+    except (TypeError, ValueError, OverflowError):
+        return "unknown", None
+
+    if previous <= 0:
+        return "unknown", None
+
+    percent = ((latest - previous) / previous) * 100
+    if abs(percent) < 1.0:
+        return "flat", percent
+    return ("up" if percent > 0 else "down"), percent
+
+
 def inventory_rows(
     search: str, owner_filter: str, finish_filter: str, sort_key: str, direction: str,
     type_filter: str = "", color_filter: str = "", location_filter: str = "", vending_filter: str = "",
     limit: int | None = None, offset: int = 0,
 ):
     prices = get_tcg_prices()
+    price_trend_history: dict[str, list[dict[str, Any]]] = {}
     _, _, query_order, query_direction = parse_scryfall_search(search)
     if query_order:
         sort_key = query_order
@@ -1717,6 +1806,7 @@ def inventory_rows(
                 limit=limit,
                 offset=offset,
             )
+            price_trend_history = _fetch_inventory_price_trends(conn, rows)
         finally:
             conn.close()
     else:
@@ -1832,6 +1922,7 @@ def inventory_rows(
                           SUM(IFNULL(quantity,1)) qty
                    FROM inventory GROUP BY scryfall_id, owner, finish"""
             ).fetchall()
+        price_trend_history = _fetch_inventory_price_trends(conn, rows)
         conn.close()
 
     owner_finish: dict[tuple[str, str], dict[str, int]] = {}
@@ -1859,6 +1950,16 @@ def inventory_rows(
         item["curr_normal"] = normal_price if normal_price else None
         item["curr_foil"] = foil_price if foil_price else None
         item["calculated_unit_price"] = unit_value
+        history_key = str(item.get("tcgplayer_id") or "").strip()
+        if history_key:
+            try:
+                history_key = str(int(float(history_key)))
+            except (TypeError, ValueError, OverflowError):
+                pass
+        item["price_trend"], item["price_trend_pct"] = _calculate_price_trend(
+            price_trend_history.get(history_key, []),
+            item["finish"],
+        )
         item["calculated_total_value"] = unit_value * item["quantity"]
         item["image_url"] = scryfall_image_url(item.get("scryfall_id"))
         item["alternate_names"] = str(item.get("alternate_names") or "")
@@ -2464,6 +2565,63 @@ def login_post():
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
+
+@app.get("/preferences")
+@login_required
+def preferences_page():
+    """Show account and browser-local display preferences."""
+    return render_template(
+        "preferences.html",
+        postgres_mode=(DATABASE_BACKEND == "postgres"),
+        message=request.args.get("message", ""),
+    )
+
+
+@app.get("/analytics")
+@login_required
+def analytics_page():
+    """Show aggregate and personal totals without exposing other owners' values."""
+    owner_totals, owner_counts, grand_total, global_finish_totals, _, _ = inventory_summary(
+        "", "", "", "date", "desc"
+    )
+    user = current_user()
+    person_name = str(user["person_name"] or "").strip() if user else ""
+    personal_total = owner_totals.get(person_name) if person_name else None
+    personal_counts = owner_counts.get(person_name, {"normal": 0, "foil": 0}) if person_name else None
+    return render_template(
+        "analytics.html",
+        grand_total=grand_total,
+        global_finish_totals=global_finish_totals,
+        personal_total=personal_total,
+        personal_counts=personal_counts,
+        postgres_mode=(DATABASE_BACKEND == "postgres"),
+    )
+
+
+@app.get("/help/search")
+@login_required
+def search_guide():
+    """Show the supported local inventory and vending search syntax."""
+    return render_template("search_guide.html", postgres_mode=(DATABASE_BACKEND == "postgres"))
+
+
+@app.get("/admin/server-info")
+@admin_required
+def server_info_page():
+    """Show operational metadata to administrators without exposing secrets or hosts."""
+    return render_template(
+        "server_info.html",
+        price_meta=get_price_meta(),
+        scryfall_catalog_meta=get_scryfall_catalog_meta(),
+        scryfall_bulk_meta=get_scryfall_bulk_meta(),
+        price_history_days=PRICE_HISTORY_DAYS,
+        scanner_api_enabled=bool(SCANNER_API_KEY),
+        postgres_mode=(DATABASE_BACKEND == "postgres"),
+        display_timezone=DISPLAY_TIMEZONE,
+        discord_configured=bool(DISCORD_WEBHOOK_URL),
+        price_alert_enabled=PRICE_ALERT_ENABLED,
+    )
 
 
 @app.get("/admin")
@@ -3524,6 +3682,13 @@ def delete_user(username):
 
 @app.post("/admin/password")
 @admin_required
+def admin_change_password_legacy():
+    """Backward-compatible admin-only URL; the current UI uses Preferences."""
+    return change_password()
+
+
+@app.post("/account/password")
+@login_required
 def change_password():
     if DATABASE_BACKEND == "postgres":
         from postgres_user_admin import handle_change_password
@@ -3531,12 +3696,18 @@ def change_password():
 
     password = str(request.form.get("password") or "")
     if len(password) < 12:
-        return redirect(url_for("admin_page", message="Password must be at least 12 characters."))
+        return redirect(url_for("preferences_page", message="Password must be at least 12 characters."))
+    user = current_user()
+    if not user:
+        return redirect(url_for("login"))
     conn = connect_inventory()
-    conn.execute("UPDATE users SET password_hash = ? WHERE username = ?", (generate_password_hash(password), current_admin()))
+    conn.execute(
+        "UPDATE users SET password_hash = ? WHERE username = ?",
+        (generate_password_hash(password), str(user["username"])),
+    )
     conn.commit()
     conn.close()
-    return redirect(url_for("admin_page", message="Password updated."))
+    return redirect(url_for("preferences_page", message="Password updated."))
 
 
 @app.post("/admin/set_counts")
@@ -3740,10 +3911,6 @@ def index():
         page_count=page_count,
         total_rows=total_rows,
         total_cards=total_cards,
-        price_meta=get_price_meta(),
-        scryfall_catalog_meta=get_scryfall_catalog_meta(),
-        price_history_days=PRICE_HISTORY_DAYS,
-        scanner_api_enabled=bool(SCANNER_API_KEY),
         postgres_mode=(DATABASE_BACKEND == 'postgres'),
         admin_user=current_admin(),
         admin_is_superadmin=is_superadmin_user(current_user()),

@@ -5,68 +5,45 @@
 <meta name="csrf-token" content="{{ csrf_token }}">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MTG Scanner Inventory</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.12.5') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.18.0') }}">
 <script src="{{ url_for('static', filename='security.js') }}" defer></script>
-<script src="{{ url_for('static', filename='theme.js', v='39.12.4') }}" defer></script>
-<script src="{{ url_for('static', filename='price-history.js', v='39.12.4') }}" defer></script>
+<script src="{{ url_for('static', filename='theme.js', v='39.13.0') }}" defer></script>
+<script src="{{ url_for('static', filename='price-history.js', v='39.14.0') }}" defer></script>
 </head>
 <body data-inventory-mode="browse">
-  <header class="topbar">
-    <div>
-      <h1>MTG Scanner Inventory</h1>
-      <div class="subtle">{{ result_count }} matching rows · {{ total_cards }} total cards</div>
-    </div>
-    <details class="site-nav-menu" id="siteNavMenu">
-      <summary class="site-nav-toggle" aria-label="Open site navigation"><span aria-hidden="true">☰</span><span>Menu</span></summary>
-      <nav class="actions" id="siteNavActions" aria-label="Site navigation">
-      {% if not postgres_mode %}
-      <a class="button" href="{{ url_for('scanner_mobile_index') }}" title="Scan cards with your phone camera">Mobile Scanner</a>
-      <a class="button secondary" href="{{ url_for('scanner_desktop_download') }}" title="Download the Linux desktop scanner source bundle">Download Desktop Scanner</a>
-      {% endif %}
-      <a class="button secondary" href="{{ url_for('decks_page') }}">Decks</a>
-      <a class="button secondary" href="{{ url_for('vending_view') }}">Vending</a>
-      {% if admin_user %}
-      <a class="button secondary" href="{{ url_for('export_csv') }}">Export CSV</a>
-      <a class="button secondary" href="{{ url_for('export_manabox_csv', owner=selected_owner) }}" title="CSV you can import into the ManaBox app{% if selected_owner %} ({{ selected_owner }} only){% endif %}">Export ManaBox</a>
-      <a class="button secondary" href="{{ url_for('admin_page') }}">Admin</a>
-<button class="button" type="button" onclick="openImport()">Import CSV</button>
-      <form method="post" action="{{ url_for('logout') }}" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Log out</button></form>
-      {% else %}
-      <a class="button" href="{{ url_for('login') }}">Admin Login</a>
-      {% endif %}
-      </nav>
-    </details>
-  </header>
+  {% set page_title = 'Inventory' %}
+{% set page_subtitle = 'Search, filter, and manage your collection.' %}
+{% set active_page = 'inventory' %}
+{% include '_app_header.html' %}
 
-  <main>
-    <details class="mobile-summary-menu" id="collectionSummary">
-      <summary><span>Collection totals</span><strong>${{ '%.2f'|format(grand_total) }}</strong></summary>
-    <section class="summary-grid">
-      <div class="summary-card">
-        <span>Total collection value</span>
-        <strong>${{ '%.2f'|format(grand_total) }}</strong>
+  <main id="inventoryPageLayout" class="inventory-page-layout">
+
+
+    <section class="inventory-control-panel" aria-label="Inventory search and filters">
+    <section class="page-actions-bar inventory-page-actions" aria-label="Inventory actions">
+      <div class="page-actions-group">
+        {% if admin_user %}
+        <button class="button" type="button" id="openManualAdd">Add card</button>
+        <details class="inventory-transfer-menu">
+          <summary class="button secondary">Import / Export <span aria-hidden="true">▾</span></summary>
+          <div class="inventory-transfer-dropdown">
+            <button type="button" onclick="openImport()">Import CSV</button>
+            <a href="{{ url_for('export_csv') }}">Export CSV</a>
+            <a href="{{ url_for('export_manabox_csv', owner=selected_owner) }}">Export ManaBox CSV</a>
+          </div>
+        </details>
+        {% endif %}
+        {% if not postgres_mode %}
+        <details class="inventory-transfer-menu">
+          <summary class="button secondary">Scanner tools <span aria-hidden="true">▾</span></summary>
+          <div class="inventory-transfer-dropdown">
+            <a href="{{ url_for('scanner_mobile_index') }}">Mobile scanner</a>
+            <a href="{{ url_for('scanner_desktop_download') }}">Desktop scanner</a>
+          </div>
+        </details>
+        {% endif %}
       </div>
-      <div class="summary-card">
-        <span>Normal cards</span>
-        <strong>{{ global_finish_totals.normal }}</strong>
-      </div>
-      <div class="summary-card foil-card">
-        <span>Foil cards</span>
-        <strong>{{ global_finish_totals.foil }}</strong>
-      </div>
-      <div class="summary-card">
-        <span>Visible value</span>
-        <strong>${{ '%.2f'|format(visible_total) }}</strong>
-      </div>
-      {% for owner, total in owner_totals.items() %}
-      <div class="summary-card owner-card">
-        <span>{{ owner }}</span>
-        <strong>${{ '%.2f'|format(total) }}</strong>
-        <small>N {{ owner_counts.get(owner, {}).get('normal', 0) }} · F {{ owner_counts.get(owner, {}).get('foil', 0) }}</small>
-      </div>
-      {% endfor %}
     </section>
-    </details>
 
     <section class="toolbar" id="inventoryToolbar">
       <form class="search-form" method="get" action="{{ url_for('index') }}" id="inventorySearchForm">
@@ -89,6 +66,7 @@
         {% endif %}
       </form>
     </section>
+    <div class="search-guide-shortcut"><a href="{{ url_for('search_guide') }}">Need help with search syntax? Open the search guide →</a></div>
 
     <details class="inventory-options-menu" id="inventoryOptions">
       <summary><span aria-hidden="true">☰</span><span>Filters, sort &amp; display</span></summary>
@@ -143,6 +121,20 @@
           <a class="button {% if view == 'list' %}{% else %}secondary{% endif %}" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view='list') }}">☷ List</a>
           <a class="button {% if view == 'grid' %}{% else %}secondary{% endif %}" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view='grid') }}">▦ Grid</a>
         </div>
+        {% if view == 'grid' %}
+        <label class="grid-size-control" for="gridCardSize">
+          <span>Card size</span>
+          <input id="gridCardSize" type="range" min="120" max="330" step="15" value="180">
+          <output id="gridCardSizeValue" for="gridCardSize">180 px</output>
+        </label>
+        {% endif %}
+        <label class="card-detail-mode-control" for="cardDetailMode">
+          <span>Card details</span>
+          <select id="cardDetailMode">
+            <option value="sidebar">Right sidebar</option>
+            <option value="popup">Popup</option>
+          </select>
+        </label>
         {% if admin_user %}
         <div class="interaction-mode-toggle" role="group" aria-label="Inventory interaction mode">
           <button type="button" class="button secondary mode-button active" data-mode="browse" aria-pressed="true">Browse</button>
@@ -169,25 +161,11 @@
       </form>
     </section>
 
-    <section class="meta-row">
-      <span>Prices: TCGCSV</span>
-      {% if scryfall_catalog_meta %}
-        {% set catalog_stats = scryfall_catalog_meta.get('catalog', {}) %}
-        <span>Art hashes: {{ catalog_stats.get('hashed_printings', 0) }} / {{ catalog_stats.get('printings', 0) }}</span>
-        <span>Tagger: {{ catalog_stats.get('art_tag_assignments', 0) }} art · {{ catalog_stats.get('oracle_tag_assignments', 0) }} Oracle</span>
-        <span>Last Scryfall sync: {{ scryfall_catalog_meta.get('synced_at', '')|localdt }}</span>
-      {% else %}
-        <span>Scryfall catalog: initial sync pending</span>
-      {% endif %}
-      <span>Normal: {{ global_finish_totals.normal }}</span>
-      <span>Foil: {{ global_finish_totals.foil }}</span>
-      <span>Last price sync: {{ price_meta.get('synced_at', 'not yet synced')|localdt }}</span>
-      <span>History: {{ price_history_days }} days</span>
-      {% if scanner_api_enabled %}<span class="api-live">Scanner API: ready</span>{% else %}<span class="api-warning">Scanner API: not configured</span>{% endif %}
-      <span class="hint">Finish is stored separately, so normal and foil quantities no longer get mixed together.</span>
-    </section>
+
       </div>
     </details>
+
+    </section>
 
     {% if admin_user %}
     <section class="bulk-edit-bar" id="bulkEditBar">
@@ -219,63 +197,55 @@
     </nav>
     {% endif %}
 
+    <div class="inventory-results-layout" id="inventoryResultsLayout">
+      <div class="inventory-results-content">
     {% if view == 'grid' %}
-    <section class="card-grid">
+    <section class="card-grid" aria-label="Card collection">
       {% for item in inventory %}
       <article class="card-tile" id="tile-{{ item.id }}">
         {% if admin_user %}<label class="inventory-select-label"><input class="inventory-select" type="checkbox" value="{{ item.id }}" aria-label="Select {{ item.name }} for bulk editing"> Select</label>{% endif %}
-        <div class="tile-image-wrap">
-          {% if item.image_url %}
-          <img src="{{ item.image_url }}" class="card-image oracle-image-trigger" alt="{{ item.name }}" data-scryfall="{{ item.scryfall_id or '' }}" data-name="{{ item.name|e }}" loading="lazy" onerror="imageFailed(this)">
-          {% else %}
-          <div class="image-placeholder">No card image</div>
-          {% endif %}
-          <span class="finish-badge {{ item.finish }}">{{ item.finish|capitalize }}</span>
-        </div>
-        <div class="tile-body">
-          <div class="card-title">{{ item.name }}</div>
-          {% if item.alternate_names %}<div class="alternate-name">Also: {{ item.alternate_names }}</div>{% endif %}
-          <div class="subtle">{{ item.set_code or '—' }} · #{{ item.collector_number or '—' }} · {{ item.rarity }}</div>
-          <div class="finish-counts"><span>Normal {{ item.card_normal_qty }}</span><span>Foil {{ item.card_foil_qty }}</span></div>
-          <div class="tile-meta">
-            <span>{{ item.owner }}</span>
-            <span>Qty {{ item.quantity }}</span>
+        <button type="button" class="card-art-trigger" title="{{ item.name|e }} · {{ item.set_code or '—' }} #{{ item.collector_number or '—' }}" aria-label="View details and price history for {{ item.name|e }}"
+          data-scryfall="{{ item.scryfall_id or '' }}" data-tcg="{{ item.tcgplayer_id or '' }}" data-image="{{ item.image_url or '' }}" data-name="{{ item.name|e }}"
+          data-set="{{ item.set_code or '' }}" data-collector="{{ item.collector_number or '' }}" data-rarity="{{ item.rarity or '' }}" data-finish="{{ item.finish }}"
+          data-owner="{{ item.owner|e }}" data-quantity="{{ item.quantity }}" data-location="{{ item.location|e }}" data-price="{{ '%.2f'|format(item.calculated_unit_price|float) }}">
+          <span class="tile-image-wrap">
+            {% if item.image_url %}<img src="{{ item.image_url }}" class="card-image" alt="{{ item.name }}" loading="lazy" onerror="imageFailed(this)">
+            {% else %}<span class="image-placeholder">No card image</span>{% endif %}
+            <span class="finish-badge {{ item.finish }}">{{ item.finish|capitalize }}</span>
+          </span>
+          <span class="tile-price-badge">
+            <span class="tile-price-label">Per card</span>
+            <strong>${{ '%.2f'|format(item.calculated_unit_price|float) }}</strong>
+            <span class="price-trend-indicator trend-{{ item.price_trend }}"
+              title="{% if item.price_trend_pct is not none %}{{ '%+.1f'|format(item.price_trend_pct) }}% versus the previous recorded price{% else %}Not enough price history to calculate a trend{% endif %}"
+              aria-label="{% if item.price_trend == 'up' %}Price trending up{% elif item.price_trend == 'down' %}Price trending down{% elif item.price_trend == 'flat' %}Price roughly unchanged{% else %}Trend unavailable{% endif %}">
+              {% if item.price_trend == 'up' %}▲{% elif item.price_trend == 'down' %}▼{% elif item.price_trend == 'flat' %}−{% else %}—{% endif %}
+              {% if item.price_trend_pct is not none %}<small>{{ '%+.1f'|format(item.price_trend_pct) }}%</small>{% endif %}
+            </span>
+          </span>
+        </button>
+        {% if admin_user %}
+        <details class="tile-manage-menu edit-only-control">
+          <summary>Manage inventory row</summary>
+          <div class="tile-manage-controls">
+            <div class="inventory-management-controls">
+              <label class="check-row vending-inline-toggle"><input type="checkbox" class="vending-input" data-id="{{ item.id }}" data-field="for_vending" {% if item.for_vending %}checked{% endif %} {% if item.deck_id %}disabled{% endif %}> For vending</label>
+              <label>Deck<select class="inline-input deck-input" data-id="{{ item.id }}" data-field="deck_id"><option value="none" {% if not item.deck_id %}selected{% endif %}>Unassigned</option>{% for deck in decks %}<option value="{{ deck.id }}" {% if item.deck_id == deck.id %}selected{% endif %}>{{ deck.name }}</option>{% endfor %}</select></label>
+            </div>
+            <div class="tile-edit-controls">
+              <button class="button secondary counts-button" data-scryfall="{{ item.scryfall_id }}" data-owner="{{ item.owner|e }}" data-name="{{ item.name|e }}" data-normal="{{ item.owner_normal_qty }}" data-foil="{{ item.owner_foil_qty }}">Edit counts</button>
+              <button class="button secondary move-button" data-id="{{ item.id }}" data-name="{{ item.name|e }}" data-qty="{{ item.quantity }}" data-location="{{ item.location|e }}">Move</button>
+              <label>Finish<select class="finish-input" data-id="{{ item.id }}" data-field="finish"><option value="normal" {% if item.finish == 'normal' %}selected{% endif %}>Normal</option><option value="foil" {% if item.finish == 'foil' %}selected{% endif %}>Foil</option></select></label>
+              <label>Quantity<input class="qty-input" type="number" min="1" step="1" data-id="{{ item.id }}" data-field="quantity" value="{{ item.quantity }}" aria-label="Quantity for {{ item.name }}"></label>
+              <label>Location<input class="location-input" type="text" data-id="{{ item.id }}" data-field="location" value="{{ item.location|e }}" aria-label="Location for {{ item.name }}"></label>
+              <label>Owner<select class="inline-input owner-input" data-id="{{ item.id }}" data-field="owner" aria-label="Owner for {{ item.name }}">{% for owner in owners %}<option value="{{ owner }}" {% if owner == item.owner %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select></label>
+              <button class="icon-button delete-button" data-id="{{ item.id }}" title="Delete">×</button>
+            </div>
           </div>
-          <div class="subtle location-label">Storage: {{ item.location }}{% if item.deck_id %} · Deck assigned{% endif %}</div>
-          {% if admin_user %}
-          <div class="inventory-management-controls edit-only-control">
-            <label class="check-row vending-inline-toggle"><input type="checkbox" class="vending-input" data-id="{{ item.id }}" data-field="for_vending" {% if item.for_vending %}checked{% endif %} {% if item.deck_id %}disabled{% endif %}> For vending</label>
-            <label>Deck<select class="inline-input deck-input" data-id="{{ item.id }}" data-field="deck_id"><option value="none" {% if not item.deck_id %}selected{% endif %}>Unassigned</option>{% for deck in decks %}<option value="{{ deck.id }}" {% if item.deck_id == deck.id %}selected{% endif %}>{{ deck.name }}</option>{% endfor %}</select></label>
-          </div>
-          {% else %}<div class="subtle">{% if item.for_vending %}For vending{% endif %}</div>{% endif %}
-          <div class="price-grid">
-            <div class="price-cell price-scanned"><small>Scanned</small><strong>${{ '%.2f'|format(item.scanned_price|float) }}</strong></div>
-            <div class="price-cell price-normal"><small>Normal</small><strong>{% if item.curr_normal is not none %}${{ '%.2f'|format(item.curr_normal|float) }}{% else %}—{% endif %}</strong></div>
-            <div class="price-cell price-row"><small>Row</small><strong>${{ '%.2f'|format(item.calculated_total_value) }}</strong></div>
-            <div class="price-cell price-foil"><small>Foil</small><strong>{% if item.curr_foil is not none %}${{ '%.2f'|format(item.curr_foil|float) }}{% else %}—{% endif %}</strong></div>
-          </div>
-          <div class="tile-controls">
-            {% if item.tcgplayer_id %}<a class="button secondary tcgplayer-button" href="https://www.tcgplayer.com/product/{{ item.tcgplayer_id|urlencode }}" target="_blank" rel="noopener noreferrer" title="Open this printing on TCGplayer">TCGplayer ↗</a><button class="button secondary price-history-button" data-tcg="{{ item.tcgplayer_id }}" data-name="{{ item.name|e }}" data-finish="{{ item.finish }}">Price History</button>{% endif %}
-            {% if item.scryfall_id %}<button class="button secondary oracle-button" data-scryfall="{{ item.scryfall_id }}" data-name="{{ item.name|e }}" data-image="{{ item.image_url or '' }}">Card Details</button>{% endif %}
-            {% if admin_user %}
-            <button class="button secondary counts-button edit-only-control" data-scryfall="{{ item.scryfall_id }}" data-owner="{{ item.owner|e }}" data-name="{{ item.name|e }}" data-normal="{{ item.owner_normal_qty }}" data-foil="{{ item.owner_foil_qty }}">Edit counts</button>
-            <button class="button secondary move-button edit-only-control" data-id="{{ item.id }}" data-name="{{ item.name|e }}" data-qty="{{ item.quantity }}" data-location="{{ item.location|e }}">Move</button>
-            <select class="finish-input edit-only-control" data-id="{{ item.id }}" data-field="finish">
-              <option value="normal" {% if item.finish == 'normal' %}selected{% endif %}>Normal</option>
-              <option value="foil" {% if item.finish == 'foil' %}selected{% endif %}>Foil</option>
-            </select>
-            <input class="qty-input edit-only-control" type="number" min="1" step="1" data-id="{{ item.id }}" data-field="quantity" value="{{ item.quantity }}" aria-label="Quantity for {{ item.name }}">
-            <input class="location-input edit-only-control" type="text" data-id="{{ item.id }}" data-field="location" value="{{ item.location|e }}" aria-label="Location for {{ item.name }}">
-            <select class="inline-input owner-input edit-only-control" data-id="{{ item.id }}" data-field="owner" aria-label="Owner for {{ item.name }}">
-              {% for owner in owners %}<option value="{{ owner }}" {% if owner == item.owner %}selected{% endif %}>{{ owner }}</option>{% endfor %}
-            </select>
-            <button class="icon-button delete-button edit-only-control" data-id="{{ item.id }}" title="Delete">×</button>
-            {% endif %}
-          </div>
-        </div>
+        </details>
+        {% endif %}
       </article>
-      {% else %}
-      <div class="empty grid-empty">No cards match the current filters.</div>
+      {% else %}<div class="empty grid-empty">No cards match the current filters.</div>
       {% endfor %}
     </section>
     {% else %}
@@ -295,7 +265,7 @@
               <td class="selection-column">{% if admin_user %}<input class="inventory-select" type="checkbox" value="{{ item.id }}" aria-label="Select {{ item.name }} for bulk editing">{% endif %}</td>
               <td class="name-cell">
                 <div class="name-with-thumb">
-                  {% if item.image_url %}<img src="{{ item.image_url }}" class="thumb oracle-image-trigger" alt="" data-scryfall="{{ item.scryfall_id or '' }}" data-name="{{ item.name|e }}" loading="lazy" onerror="imageFailed(this)">{% else %}<div class="thumb placeholder-thumb">—</div>{% endif %}
+                  {% if item.image_url %}<img src="{{ item.image_url }}" class="thumb oracle-image-trigger" alt="" data-scryfall="{{ item.scryfall_id or '' }}" data-tcg="{{ item.tcgplayer_id or '' }}" data-name="{{ item.name|e }}" data-image="{{ item.image_url }}" data-set="{{ item.set_code or '' }}" data-collector="{{ item.collector_number or '' }}" data-rarity="{{ item.rarity or '' }}" data-finish="{{ item.finish }}" data-owner="{{ item.owner|e }}" data-quantity="{{ item.quantity }}" data-location="{{ item.location|e }}" data-price="{{ '%.2f'|format(item.calculated_unit_price|float) }}" loading="lazy" onerror="imageFailed(this)">{% else %}<div class="thumb placeholder-thumb">—</div>{% endif %}
                   <div>
                     <div class="card-title">{{ item.name }}</div>
                     {% if item.tcgplayer_id %}<div class="subtle"><a class="external-card-link" href="https://www.tcgplayer.com/product/{{ item.tcgplayer_id|urlencode }}" target="_blank" rel="noopener noreferrer">TCGplayer #{{ item.tcgplayer_id }} ↗</a></div>{% endif %}
@@ -348,6 +318,61 @@
       </div>
     </section>
     {% endif %}
+      </div>
+      <div class="card-detail-backdrop" id="cardDetailBackdrop" hidden></div>
+        <aside id="oracleDialog" class="price-history-dialog oracle-dialog" aria-label="Selected card details" hidden>
+          <div class="card-detail-panel-heading">
+            <div><span class="panel-eyebrow">Selected card</span><h2 id="oracleTitle">Card Details</h2></div>
+            <button class="dialog-close" id="closeCardDetail" type="button" aria-label="Close card details">×</button>
+          </div>
+          <div class="oracle-detail-layout">
+             <div class="oracle-detail-image-column">
+               <div class="oracle-detail-image-wrap"><img id="oracleCardImage" class="oracle-detail-image" src="" alt="" title="Click to zoom"></div>
+               <div id="oracleFaceControls" class="oracle-face-controls" hidden aria-label="Card face"></div>
+               <div class="oracle-rotate-controls" role="group" aria-label="Rotate card image">
+                 <button type="button" class="button secondary" id="oracleRotateLeft" title="Rotate left">↶</button>
+                 <button type="button" class="button secondary" id="oracleRotateReset">Reset</button>
+                 <button type="button" class="button secondary" id="oracleRotateRight" title="Rotate right">↷</button>
+               </div>
+             </div>
+            <div class="oracle-detail-content">
+              <div id="oracleSubtitle" class="subtle"></div>
+              <div class="card-detail-printing">
+                <div id="oraclePrintingLine" class="subtle"></div><div id="oracleCollectionLine" class="subtle"></div>
+                <div class="card-detail-price-row"><strong id="oracleUnitPrice">Per-card price: —</strong><a id="oracleTcgplayerLink" class="button secondary" href="#" target="_blank" rel="noopener noreferrer" hidden>View on TCGplayer ↗</a></div>
+              </div>
+              <section class="card-detail-history-panel" aria-label="Card price history">
+                <div class="card-detail-history-heading"><h3>Price history</h3><span class="subtle">TCGCSV market observations</span></div>
+                <div class="history-range-buttons" id="cardDetailHistoryRanges">
+                  <button type="button" class="button secondary card-detail-history-range" data-days="3">3 Days</button><button type="button" class="button secondary card-detail-history-range" data-days="7">1 Week</button><button type="button" class="button secondary card-detail-history-range" data-days="30">1 Month</button><button type="button" class="button secondary card-detail-history-range active" data-days="90">3 Months</button><button type="button" class="button secondary card-detail-history-range" data-days="180">6 Months</button><button type="button" class="button secondary card-detail-history-range" data-days="365">1 Year</button>
+                </div>
+                <div id="cardDetailHistoryStats" class="history-stats"></div><div id="cardDetailHistoryStatus" class="status" role="status" aria-live="polite"></div>
+                <div class="history-chart-wrap"><svg id="cardDetailPriceHistoryChart" viewBox="0 0 820 360" role="img" aria-label="Selected card price history chart"></svg></div>
+                <div class="chart-legend"><span class="legend-normal">Normal</span><span class="legend-foil">Foil</span></div>
+              </section>
+              <div id="oracleTypeLine" class="oracle-type-line"></div>
+              <div id="oracleManaCost" class="oracle-mana-cost"></div>
+              <pre id="oracleText" class="oracle-text"></pre>
+              <details id="oracleRulingsSection" class="oracle-rulings-section">
+                <summary>
+                  <span>Rulings &amp; Rules Notes</span>
+                  <span id="oracleRulingsCount" class="oracle-rulings-count">Expand to load</span>
+                </summary>
+                <div id="oracleRulingsList" class="oracle-rulings-list">
+                  <div class="subtle">Expand to load this card's rulings.</div>
+                </div>
+              </details>
+              <h3>Tags</h3>
+              <div class="oracle-tag-section"><strong>Art tags</strong><div id="oracleArtTags" class="oracle-tag-list"></div></div>
+              <div class="oracle-tag-section"><strong>Oracle tags</strong><div id="oracleOracleTags" class="oracle-tag-list"></div></div>
+              <h3>Legality</h3>
+              <div id="oracleLegalities" class="legality-grid"></div>
+              <div id="oracleUpdated" class="subtle"></div>
+              <div id="oracleStatus" class="status"></div>
+            </div>
+          </div>
+        </aside>
+    </div>
 
     {% if page_count > 1 %}
     <nav class="inventory-pagination inventory-pagination-bottom" aria-label="Inventory pages (bottom)">
@@ -362,6 +387,38 @@
     {% endif %}
   </main>
   <datalist id="location-options">{% for location in locations %}<option value="{{ location }}">{% endfor %}</datalist>
+
+  <dialog id="manualAddDialog" class="manual-add-dialog">
+    <form method="post" action="{{ url_for('manual_add') }}" class="manual-form" id="manualAddForm">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="dialog-heading-row"><div><p class="panel-eyebrow">Inventory</p><h2>Add a card</h2><p class="subtle">Search the local catalog to select the exact printing, then confirm the collection details.</p></div><button class="dialog-close" type="button" id="closeManualAdd" aria-label="Close add card dialog">×</button></div>
+      <div class="manual-search">
+        <label>Search card catalog
+          <div class="search-inline catalog-search-box">
+            <input id="inventoryCatalogSearch" type="search" placeholder="Card name, set code, or collector number" autocomplete="off">
+            <button class="button secondary" type="button" id="inventoryCatalogSearchButton">Search</button>
+          </div>
+        </label>
+        <div id="inventoryCatalogStatus" class="status" role="status" aria-live="polite"></div>
+        <div id="inventoryCatalogResults" class="catalog-results"></div>
+      </div>
+      <div class="form-grid-2">
+        <label>Card name<input id="inventoryManualName" name="name" maxlength="200" required></label>
+        <label>Set code<input id="inventoryManualSet" name="set_code" maxlength="20" placeholder="Set code"></label>
+        <label>Collector number<input id="inventoryManualCollector" name="collector_number" maxlength="40" placeholder="Collector number"></label>
+        <label>Rarity<input id="inventoryManualRarity" name="rarity" maxlength="40" placeholder="Rarity"></label>
+        <label>Scryfall ID<input id="inventoryManualScryfall" name="scryfall_id" maxlength="80" placeholder="Optional"></label>
+        <label>TCGplayer ID<input id="inventoryManualTCG" name="tcgplayer_id" maxlength="40" placeholder="Optional"></label>
+        <label>Scanned / acquisition price<input id="inventoryManualPrice" name="price" value="0.00" inputmode="decimal"></label>
+        <label>Quantity<input name="quantity" type="number" min="1" step="1" value="1" required></label>
+        <label>Collection owner<select name="owner" required>{% for owner in owners %}<option value="{{ owner }}"{% if selected_owner == owner %} selected{% endif %}>{{ owner }}</option>{% endfor %}</select></label>
+        <label>Finish<select name="finish"><option value="normal">Normal</option><option value="foil">Foil</option></select></label>
+        <label>Storage location<input name="location" value="Free" list="location-options" placeholder="Free or a storage place"></label>
+      </div>
+      <div class="manual-preview"><img id="inventoryManualPreview" src="" alt="" hidden><span id="inventoryManualPreviewText">Select a catalog printing to preview its image.</span></div>
+      <div class="dialog-actions"><button class="button secondary" type="button" id="cancelManualAdd">Cancel</button><button class="button" type="submit">Add to inventory</button></div>
+    </form>
+  </dialog>
 
   <dialog id="importDialog">
     <form id="importForm" method="dialog" enctype="multipart/form-data">
@@ -437,35 +494,7 @@
     <div class="chart-legend"><span class="legend-normal">Normal</span><span class="legend-foil">Foil</span></div>
   </dialog>
 
-  <dialog id="oracleDialog" class="price-history-dialog oracle-dialog">
-    <button class="dialog-close" type="button" onclick="document.getElementById('oracleDialog').close()">×</button>
-    <h2 id="oracleTitle">Card Details</h2>
-    <div class="oracle-detail-layout">
-      <div class="oracle-detail-image-wrap"><img id="oracleCardImage" class="oracle-detail-image" src="" alt=""></div>
-      <div class="oracle-detail-content">
-        <div id="oracleSubtitle" class="subtle"></div>
-        <div id="oracleTypeLine" class="oracle-type-line"></div>
-        <div id="oracleManaCost" class="oracle-mana-cost"></div>
-        <pre id="oracleText" class="oracle-text"></pre>
-        <details id="oracleRulingsSection" class="oracle-rulings-section">
-          <summary>
-            <span>Rulings &amp; Rules Notes</span>
-            <span id="oracleRulingsCount" class="oracle-rulings-count">Expand to load</span>
-          </summary>
-          <div id="oracleRulingsList" class="oracle-rulings-list">
-            <div class="subtle">Expand to load this card's rulings.</div>
-          </div>
-        </details>
-        <h3>Tags</h3>
-        <div class="oracle-tag-section"><strong>Art tags</strong><div id="oracleArtTags" class="oracle-tag-list"></div></div>
-        <div class="oracle-tag-section"><strong>Oracle tags</strong><div id="oracleOracleTags" class="oracle-tag-list"></div></div>
-        <h3>Legality</h3>
-        <div id="oracleLegalities" class="legality-grid"></div>
-        <div id="oracleUpdated" class="subtle"></div>
-        <div id="oracleStatus" class="status"></div>
-      </div>
-    </div>
-  </dialog>
+g>
 
 <script src="{{ url_for('static', filename='multi-select.js') }}"></script>
 <script>
@@ -655,12 +684,27 @@ function openImage(src, alt) {
   document.getElementById('largeCardImage').src = src;
   document.getElementById('largeCardImage').alt = alt || '';
   document.getElementById('largeCardCaption').textContent = alt || '';
+  document.getElementById('largeCardImage').style.transform = `rotate(${activeOracleRotation}deg)`;
   document.getElementById('imageDialog').showModal();
 }
 function closeImage() { document.getElementById('imageDialog').close(); }
 function imageFailed(img) { img.style.display = 'none'; }
 
 const oracleDialog = document.getElementById('oracleDialog');
+let cardDetailDisplayMode = 'sidebar';
+const cardDetailModeControl = document.getElementById('cardDetailMode');
+try {
+  const savedCardDetailMode = localStorage.getItem('cardscanner-card-detail-mode');
+  if (savedCardDetailMode === 'popup') cardDetailDisplayMode = 'popup';
+} catch (_) {}
+if (cardDetailModeControl) {
+  cardDetailModeControl.value = cardDetailDisplayMode;
+  cardDetailModeControl.addEventListener('change', () => {
+    cardDetailDisplayMode = cardDetailModeControl.value === 'popup' ? 'popup' : 'sidebar';
+    try { localStorage.setItem('cardscanner-card-detail-mode', cardDetailDisplayMode); } catch (_) {}
+    if (!oracleDialog.hidden) applyCardDetailMode();
+  });
+}
 const oracleTitle = document.getElementById('oracleTitle');
 const oracleSubtitle = document.getElementById('oracleSubtitle');
 const oracleTypeLine = document.getElementById('oracleTypeLine');
@@ -678,6 +722,80 @@ const oracleCardImage = document.getElementById('oracleCardImage');
 const oracleSwitchButton = document.getElementById('oracleSwitchButton');
 let activeOracleImageUrl = '';
 let activeOracleScryfallId = '';
+let activeOracleFaces = [];
+let activeOracleFaceIndex = 0;
+let activeOracleRotation = 0;
+let activeOracleRequest = 0;
+const oracleFaceControls = document.getElementById('oracleFaceControls');
+const cardDetailBackdrop = document.getElementById('cardDetailBackdrop');
+const inventoryPageLayout = document.getElementById('inventoryPageLayout');
+const inventoryHeader = document.querySelector('.app-topbar');
+const largeCardImage = document.getElementById('largeCardImage');
+
+function updateInventoryHeaderOffset() {
+  const headerHeight = inventoryHeader
+    ? Math.ceil(inventoryHeader.getBoundingClientRect().height)
+    : 54;
+  document.documentElement.style.setProperty('--inventory-header-offset', headerHeight + 'px');
+}
+updateInventoryHeaderOffset();
+if (inventoryHeader && 'ResizeObserver' in window) {
+  new ResizeObserver(updateInventoryHeaderOffset).observe(inventoryHeader);
+}
+window.addEventListener('resize', () => {
+  updateInventoryHeaderOffset();
+  if (!oracleDialog.hidden) applyCardDetailMode();
+}, { passive: true });
+
+function applyOracleRotation() {
+  oracleCardImage.style.transform = `rotate(${activeOracleRotation}deg)`;
+  oracleCardImage.classList.toggle('is-rotated', Math.abs(activeOracleRotation % 180) === 90);
+  if (largeCardImage) largeCardImage.style.transform = `rotate(${activeOracleRotation}deg)`;
+}
+function setOracleRotation(next) {
+  activeOracleRotation = ((next % 360) + 360) % 360;
+  applyOracleRotation();
+}
+function setOracleFace(index) {
+  const face = activeOracleFaces[index];
+  if (!face || !face.image_url) return;
+  activeOracleFaceIndex = index;
+  activeOracleImageUrl = face.image_url;
+  oracleCardImage.src = activeOracleImageUrl;
+  oracleCardImage.alt = face.name || oracleTitle.textContent;
+  oracleFaceControls.querySelectorAll('[data-oracle-face]').forEach(button => {
+    button.classList.toggle('active', Number(button.dataset.oracleFace) === index);
+  });
+  oracleTypeLine.textContent = activeOracleFaces[index].type_line || '';
+  oracleManaCost.textContent = activeOracleFaces[index].mana_cost || '';
+  oracleTextEl.textContent = activeOracleFaces[index].oracle_text || 'No oracle text.';
+  setOracleRotation(0);
+}
+function renderOracleFaces(faces) {
+  activeOracleFaces = Array.isArray(faces) ? faces.filter(face => face && face.image_url) : [];
+  activeOracleFaceIndex = 0;
+  oracleFaceControls.hidden = activeOracleFaces.length < 2;
+  oracleFaceControls.innerHTML = '';
+  if (activeOracleFaces.length < 2) return;
+  activeOracleFaces.forEach((face, index) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'button secondary' + (index === 0 ? ' active' : '');
+    button.dataset.oracleFace = String(index);
+    button.textContent = index === 0 ? 'Front' : (index === 1 ? 'Back' : (face.name || `Face ${index + 1}`));
+    button.addEventListener('click', () => setOracleFace(index));
+    oracleFaceControls.appendChild(button);
+  });
+}
+oracleCardImage.addEventListener('click', () => openImage(activeOracleImageUrl, oracleCardImage.alt));
+document.getElementById('oracleRotateLeft').addEventListener('click', () => setOracleRotation(activeOracleRotation - 90));
+document.getElementById('oracleRotateRight').addEventListener('click', () => setOracleRotation(activeOracleRotation + 90));
+document.getElementById('oracleRotateReset').addEventListener('click', () => setOracleRotation(0));
+cardDetailBackdrop.addEventListener('click', closeOraclePanel);
+document.getElementById('closeCardDetail').addEventListener('click', closeOraclePanel);
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !oracleDialog.hidden) closeOraclePanel();
+});
 let loadedOracleRulingsSid = '';
 function escOracle(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function renderOracleTagList(container, tags, kind) {
@@ -742,8 +860,9 @@ oracleRulingsSection.addEventListener('toggle', () => {
     void loadOracleRulings(activeOracleScryfallId);
   }
 });
-async function openOracle(sid, name, imageUrl = '') {
+async function openOracle(sid, name, imageUrl = '', cardMeta = {}) {
   activeOracleScryfallId = sid || '';
+  const requestId = ++activeOracleRequest;
   loadedOracleRulingsSid = '';
   oracleRulingsSection.open = false;
   oracleRulingsCount.textContent = sid ? 'Expand to load' : 'Unavailable';
@@ -752,34 +871,122 @@ async function openOracle(sid, name, imageUrl = '') {
     : '<div class="subtle">No Scryfall ID is available for this printing.</div>';
   oracleTitle.textContent = name || 'Card Details';
   oracleSubtitle.textContent = 'Loading cached metadata…';
+  const printingBits = [cardMeta.set, cardMeta.collector ? '#' + cardMeta.collector : '', cardMeta.rarity, cardMeta.finish].filter(Boolean);
+  document.getElementById('oraclePrintingLine').textContent = printingBits.join(' · ') || 'Printing details unavailable';
+  const collectionBits = [cardMeta.owner, cardMeta.quantity ? 'Qty ' + cardMeta.quantity : '', cardMeta.location ? 'Storage: ' + cardMeta.location : ''].filter(Boolean);
+  document.getElementById('oracleCollectionLine').textContent = collectionBits.join(' · ');
+  document.getElementById('oracleUnitPrice').textContent = cardMeta.price ? 'Per-card price: $' + Number(cardMeta.price).toFixed(2) : 'Per-card price unavailable';
+  const tcgLink = document.getElementById('oracleTcgplayerLink');
+  if (cardMeta.tcg) { tcgLink.href = 'https://www.tcgplayer.com/product/' + encodeURIComponent(cardMeta.tcg); tcgLink.hidden = false; }
+  else { tcgLink.href = '#'; tcgLink.hidden = true; }
   oracleTypeLine.textContent = ''; oracleManaCost.textContent = ''; oracleTextEl.textContent = '';
   oracleLegalities.innerHTML = ''; oracleArtTags.innerHTML = ''; oracleOracleTags.innerHTML = '';
   oracleUpdated.textContent = ''; oracleStatus.textContent = '';
   activeOracleImageUrl = imageUrl || (sid ? `https://cards.scryfall.io/normal/front/${sid[0]}/${sid[1]}/${sid}.jpg` : '');
   oracleCardImage.src = activeOracleImageUrl;
   oracleCardImage.alt = name || '';
-  oracleDialog.showModal();
+  renderOracleFaces([]);
+  setOracleRotation(0);
+  const needsEntrance = !oracleDialog.classList.contains('is-visible');
+  applyCardDetailMode();
+  oracleDialog.hidden = false;
+  if (needsEntrance) {
+    oracleDialog.classList.remove('is-visible');
+    window.requestAnimationFrame(() => {
+      if (!oracleDialog.hidden) oracleDialog.classList.add('is-visible');
+    });
+  }
+  document.querySelectorAll('.card-tile.is-active, tr.is-active').forEach(row => row.classList.remove('is-active'));
+  const tile = document.querySelector(`.card-art-trigger[data-scryfall="${CSS.escape(sid || '')}"]`)?.closest('.card-tile');
+  const tableRow = document.querySelector(`.oracle-image-trigger[data-scryfall="${CSS.escape(sid || '')}"]`)?.closest('tr');
+  if (tile) tile.classList.add('is-active');
+  if (tableRow) tableRow.classList.add('is-active');
+  if (window.openCardDetailPriceHistory) window.openCardDetailPriceHistory(cardMeta.tcg || '', name || 'Card');
   if (!sid) { oracleSubtitle.textContent = 'No Scryfall ID is available for this printing.'; return; }
   try {
     const r = await fetch('/api/card-info/' + encodeURIComponent(sid));
     const data = await r.json().catch(() => ({}));
+    if (requestId !== activeOracleRequest) return;
     if (!r.ok || !data.success) { oracleStatus.textContent = data.error || 'No cached metadata.'; return; }
     const c = data.card || {};
-    oracleSubtitle.textContent = c.colors ? 'Colors: ' + c.colors : '';
-    oracleTypeLine.textContent = c.type_line || ''; oracleManaCost.textContent = c.mana_cost || ''; oracleTextEl.textContent = c.oracle_text || 'No oracle text.';
+    oracleSubtitle.textContent = [c.colors ? 'Colors: ' + c.colors : '', c.layout || ''].filter(Boolean).join(' · ');
+    oracleTypeLine.textContent = c.type_line || '';
+    oracleManaCost.textContent = c.mana_cost || '';
+    oracleTextEl.textContent = c.oracle_text || 'No oracle text.';
+    renderOracleFaces(c.faces || []);
+    if (activeOracleFaces.length) setOracleFace(0);
     renderOracleTagList(oracleArtTags, c.art_tags, 'art');
     renderOracleTagList(oracleOracleTags, c.oracle_tags, 'oracle');
     const legal = c.legalities || {};
     const labels = Object.keys(legal).sort((a,b)=>a.localeCompare(b));
     oracleLegalities.innerHTML = labels.map(k => `<div class="legality-chip ${escOracle(legal[k])}"><strong>${escOracle(k)}</strong><span>${escOracle(String(legal[k]).replace(/^./,m=>m.toUpperCase()))}</span></div>`).join('');
     oracleUpdated.textContent = c.updated_at ? 'Cached metadata updated: ' + c.updated_at : '';
-  } catch (_) { oracleStatus.textContent = 'Could not load cached metadata.'; }
+  } catch (_) {
+    if (requestId === activeOracleRequest) oracleStatus.textContent = 'Could not load cached metadata.';
+  }
+}
+function applyCardDetailMode() {
+  updateInventoryHeaderOffset();
+  const popup = cardDetailDisplayMode === 'popup';
+  const mobileDrawer = !popup && window.matchMedia('(max-width: 760px)').matches;
+  oracleDialog.dataset.displayMode = popup ? 'popup' : (mobileDrawer ? 'drawer' : 'sidebar');
+  oracleDialog.classList.toggle('is-popup', popup);
+  inventoryPageLayout.classList.toggle('has-card-details', !popup && !mobileDrawer);
+  cardDetailBackdrop.hidden = !(popup || mobileDrawer);
+}
+function closeOraclePanel() {
+  oracleDialog.classList.remove('is-visible', 'is-popup');
+  inventoryPageLayout.classList.remove('has-card-details');
+  cardDetailBackdrop.hidden = true;
+  document.querySelectorAll('.card-tile.is-active, tr.is-active').forEach(row => row.classList.remove('is-active'));
+  window.setTimeout(() => {
+    if (!oracleDialog.classList.contains('is-visible')) oracleDialog.hidden = true;
+  }, 320);
 }
 document.querySelectorAll('.oracle-button').forEach(btn => btn.addEventListener('click', () => openOracle(btn.dataset.scryfall, btn.dataset.name, btn.dataset.image || '')));
 document.querySelectorAll('.oracle-image-trigger').forEach(img => img.addEventListener('click', () => {
   if (document.body.dataset.inventoryMode === 'select') return;
-  openOracle(img.dataset.scryfall || '', img.dataset.name || img.alt, img.currentSrc || img.src);
+  openOracle(img.dataset.scryfall || '', img.dataset.name || img.alt, img.dataset.image || img.currentSrc || img.src, {
+    tcg: img.dataset.tcg || '', set: img.dataset.set || '', collector: img.dataset.collector || '',
+    rarity: img.dataset.rarity || '', finish: img.dataset.finish || '', owner: img.dataset.owner || '',
+    quantity: img.dataset.quantity || '', location: img.dataset.location || '', price: img.dataset.price || ''
+  });
 }));
+
+document.querySelectorAll('.card-art-trigger').forEach(button => button.addEventListener('click', () => {
+  if (document.body.dataset.inventoryMode === 'select') return;
+  openOracle(button.dataset.scryfall || '', button.dataset.name || button.title, button.dataset.image || '', {
+    tcg: button.dataset.tcg || '', set: button.dataset.set || '', collector: button.dataset.collector || '',
+    rarity: button.dataset.rarity || '', finish: button.dataset.finish || '', owner: button.dataset.owner || '',
+    quantity: button.dataset.quantity || '', location: button.dataset.location || '', price: button.dataset.price || ''
+  });
+}));
+
+(() => {
+  const grid = document.querySelector('.card-grid');
+  const slider = document.getElementById('gridCardSize');
+  const output = document.getElementById('gridCardSizeValue');
+  if (!grid || !slider || !output) return;
+
+  let size = 180;
+  try {
+    const stored = Number(localStorage.getItem('cardscanner-grid-card-size'));
+    if (Number.isFinite(stored) && stored >= 120 && stored <= 330) size = stored;
+  } catch (_) {}
+
+  const applySize = () => {
+    grid.style.setProperty('--inventory-card-min-width', size + 'px');
+    slider.value = String(size);
+    output.value = size + ' px';
+    output.textContent = size + ' px';
+  };
+  slider.addEventListener('input', () => {
+    size = Math.min(330, Math.max(120, Number(slider.value) || 180));
+    applySize();
+    try { localStorage.setItem('cardscanner-grid-card-size', String(size)); } catch (_) {}
+  });
+  applySize();
+})();
 
 async function saveField(input) {
   let value = input.dataset.field === 'for_vending' ? input.checked : input.value;
@@ -930,11 +1137,9 @@ document.getElementById('importForm').addEventListener('submit', async (event) =
 </script>
 <script>
 (() => {
-  // Native <details> remains collapsed even when CSS uses display: contents.
-  // On desktop, keep these sections expanded so navigation, totals, sorting,
-  // filters, and view controls remain visible. On mobile, retain dropdowns.
+  // Keep navigation and filter controls expanded on desktop; use compact menus on mobile.
   const desktopLayout = window.matchMedia('(min-width: 901px)');
-  const detailsMenus = ['siteNavMenu', 'collectionSummary', 'inventoryOptions']
+  const detailsMenus = ['siteNavMenu', 'inventoryOptions']
     .map(id => document.getElementById(id))
     .filter(Boolean);
   const syncDetailsForViewport = () => {
@@ -942,6 +1147,66 @@ document.getElementById('importForm').addEventListener('submit', async (event) =
   };
   syncDetailsForViewport();
   desktopLayout.addEventListener('change', syncDetailsForViewport);
+})();
+</script>
+
+<script>
+(() => {
+  const dialog = document.getElementById('manualAddDialog');
+  const open = document.getElementById('openManualAdd');
+  const close = document.getElementById('closeManualAdd');
+  const cancel = document.getElementById('cancelManualAdd');
+  if (!dialog || !open) return;
+  open.addEventListener('click', () => dialog.showModal());
+  [close, cancel].forEach(button => button && button.addEventListener('click', () => dialog.close()));
+  const search = document.getElementById('inventoryCatalogSearch');
+  const results = document.getElementById('inventoryCatalogResults');
+  const status = document.getElementById('inventoryCatalogStatus');
+  const fields = {
+    name: document.getElementById('inventoryManualName'),
+    set: document.getElementById('inventoryManualSet'),
+    collector: document.getElementById('inventoryManualCollector'),
+    rarity: document.getElementById('inventoryManualRarity'),
+    scryfall: document.getElementById('inventoryManualScryfall'),
+    tcg: document.getElementById('inventoryManualTCG')
+  };
+  const preview = document.getElementById('inventoryManualPreview');
+  const previewText = document.getElementById('inventoryManualPreviewText');
+  const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  async function searchCatalog() {
+    const term = search.value.trim();
+    if (!term) { status.textContent = 'Enter a card name, set code, or collector number.'; results.innerHTML = ''; return; }
+    status.textContent = 'Searching the local catalog…';
+    results.innerHTML = '';
+    try {
+      const response = await fetch('{{ url_for('catalog_search') }}?q=' + encodeURIComponent(term));
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.success) { status.textContent = data.error || 'Catalog search failed.'; return; }
+      if (!data.results || !data.results.length) { status.textContent = 'No matching printings found.'; return; }
+      status.textContent = data.results.length + ' matching printing(s). Select the exact one you own.';
+      results.innerHTML = data.results.map((card, index) =>
+        '<button type="button" class="catalog-result" data-index="' + index + '">' +
+        (card.image_url ? '<img src="' + escapeHtml(card.image_url) + '" alt="">' : '<div class="catalog-thumb-placeholder">—</div>') +
+        '<span><strong>' + escapeHtml(card.name) + '</strong><small>' +
+        escapeHtml(card.set_code || '—') + ' · #' + escapeHtml(card.collector_number || '—') + ' · ' + escapeHtml(card.rarity || '') +
+        '</small></span></button>'
+      ).join('');
+      results.querySelectorAll('.catalog-result').forEach(button => button.addEventListener('click', () => {
+        const card = data.results[Number(button.dataset.index)];
+        fields.name.value = card.name || '';
+        fields.set.value = card.set_code || '';
+        fields.collector.value = card.collector_number || '';
+        fields.rarity.value = card.rarity || '';
+        fields.scryfall.value = card.scryfall_id || '';
+        fields.tcg.value = card.tcgplayer_id || '';
+        if (card.image_url) { preview.src = card.image_url; preview.hidden = false; previewText.hidden = true; }
+        else { preview.hidden = true; previewText.hidden = false; }
+        status.textContent = 'Selected ' + card.name + ' · ' + (card.set_code || '—') + ' #' + (card.collector_number || '—') + '.';
+      }));
+    } catch (_) { status.textContent = 'Could not reach the local catalog search.'; }
+  }
+  document.getElementById('inventoryCatalogSearchButton').addEventListener('click', searchCatalog);
+  search.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); searchCatalog(); } });
 })();
 </script>
 </body>

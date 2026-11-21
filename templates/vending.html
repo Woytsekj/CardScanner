@@ -3,16 +3,17 @@
 <meta charset="utf-8">
 <meta name="csrf-token" content="{{ csrf_token }}"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vending · MTG Scanner Inventory</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.12.5') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.17.0') }}">
 <script src="{{ url_for('static', filename='security.js') }}" defer></script>
-<script src="{{ url_for('static', filename='theme.js', v='39.12.4') }}" defer></script>
+<script src="{{ url_for('static', filename='theme.js', v='39.13.0') }}" defer></script>
 <script src="{{ url_for('static', filename='price-history.js', v='39.12.4') }}" defer></script>
 </head><body data-vending-mode="browse">
-<header class="topbar">
-  <div><h1>Vending View</h1><div class="subtle">Cards marked for vending across all storage locations · {{ result_count }} matching rows</div></div>
-  <div class="actions">{% if admin_user %}<a class="button secondary" href="{{ url_for('index') }}">Inventory</a><a class="button secondary" href="{{ url_for('decks_page') }}">Decks</a>{% endif %}<a class="button" href="{{ url_for('vending_export_csv', owner=selected_owner, q=search, min_value=min_value) }}">Export Vendor CSV</a></div>
-</header>
+{% set page_title = 'Vending' %}
+{% set page_subtitle = 'Sale-eligible cards across storage locations · ' ~ result_count|string ~ ' matching rows' %}
+{% set active_page = 'vending' %}
+{% include '_app_header.html' %}
 <main>
+<section class="page-actions-bar"><a class="button secondary" href="{{ url_for('vending_export_csv', owner=selected_owner, q=search, min_value=min_value) }}">Export vendor CSV</a></section>
 <section class="toolbar vending-toolbar">
   <form method="get" action="{{ url_for('vending_view') }}" class="search-form" id="vendingSearchForm">
     <div class="inventory-search-box vending-search-box">

@@ -32,14 +32,14 @@ function seriesPath(points, key, xFn, yFn) {
   return path.trim();
 }
 
-function renderHistoryChart(points) {
-  historyChart.innerHTML = '';
+function renderHistoryChart(points, targetChart = historyChart) {
+  targetChart.innerHTML = '';
   const NS = 'http://www.w3.org/2000/svg';
   const W = 820, H = 360, left = 58, right = 18, top = 18, bottom = 48;
   const plotW = W-left-right, plotH = H-top-bottom;
   const values = points.flatMap(p => [p.normal, p.foil]).filter(v => v != null && Number.isFinite(Number(v))).map(Number);
   if (!values.length) {
-    historyChart.innerHTML = '<text x="410" y="185" text-anchor="middle" fill="#888" font-size="16">No price history yet</text>';
+    targetChart.innerHTML = '<text x="410" y="185" text-anchor="middle" fill="#888" font-size="16">No price history yet</text>';
     return;
   }
   let min = Math.min(...values), max = Math.max(...values);
@@ -50,17 +50,17 @@ function renderHistoryChart(points) {
   for (let i=0;i<5;i++) {
     const v = min + (max-min)*(i/4);
     const y = yFn(v);
-    const line = document.createElementNS(NS,'line'); line.setAttribute('x1',left); line.setAttribute('x2',W-right); line.setAttribute('y1',y); line.setAttribute('y2',y); line.setAttribute('stroke','#2f2f2f'); line.setAttribute('stroke-width','1'); historyChart.appendChild(line);
-    const txt = document.createElementNS(NS,'text'); txt.setAttribute('x',left-8); txt.setAttribute('y',y+4); txt.setAttribute('text-anchor','end'); txt.setAttribute('fill','#888'); txt.setAttribute('font-size','12'); txt.textContent=formatMoney(v); historyChart.appendChild(txt);
+    const line = document.createElementNS(NS,'line'); line.setAttribute('x1',left); line.setAttribute('x2',W-right); line.setAttribute('y1',y); line.setAttribute('y2',y); line.setAttribute('stroke','#2f2f2f'); line.setAttribute('stroke-width','1'); targetChart.appendChild(line);
+    const txt = document.createElementNS(NS,'text'); txt.setAttribute('x',left-8); txt.setAttribute('y',y+4); txt.setAttribute('text-anchor','end'); txt.setAttribute('fill','#888'); txt.setAttribute('font-size','12'); txt.textContent=formatMoney(v); targetChart.appendChild(txt);
   }
   const gridDates = [0, Math.floor((points.length-1)/2), Math.max(0,points.length-1)];
   [...new Set(gridDates)].forEach(i => {
-    const x=xFn(i); const line=document.createElementNS(NS,'line'); line.setAttribute('x1',x); line.setAttribute('x2',x); line.setAttribute('y1',top); line.setAttribute('y2',H-bottom); line.setAttribute('stroke','#242424'); line.setAttribute('stroke-width','1'); historyChart.appendChild(line);
-    const txt=document.createElementNS(NS,'text'); txt.setAttribute('x',x); txt.setAttribute('y',H-17); txt.setAttribute('text-anchor','middle'); txt.setAttribute('fill','#888'); txt.setAttribute('font-size','12'); txt.textContent=localLabel(points[i].captured_at); historyChart.appendChild(txt);
+    const x=xFn(i); const line=document.createElementNS(NS,'line'); line.setAttribute('x1',x); line.setAttribute('x2',x); line.setAttribute('y1',top); line.setAttribute('y2',H-bottom); line.setAttribute('stroke','#242424'); line.setAttribute('stroke-width','1'); targetChart.appendChild(line);
+    const txt=document.createElementNS(NS,'text'); txt.setAttribute('x',x); txt.setAttribute('y',H-17); txt.setAttribute('text-anchor','middle'); txt.setAttribute('fill','#888'); txt.setAttribute('font-size','12'); txt.textContent=localLabel(points[i].captured_at); targetChart.appendChild(txt);
   });
-  const pNormal=document.createElementNS(NS,'path'); pNormal.setAttribute('d',seriesPath(points,'normal',xFn,yFn)); pNormal.setAttribute('fill','none'); pNormal.setAttribute('stroke','#35b7e6'); pNormal.setAttribute('stroke-width','3'); pNormal.setAttribute('stroke-linejoin','round'); pNormal.setAttribute('stroke-linecap','round'); historyChart.appendChild(pNormal);
-  const pFoil=document.createElementNS(NS,'path'); pFoil.setAttribute('d',seriesPath(points,'foil',xFn,yFn)); pFoil.setAttribute('fill','none'); pFoil.setAttribute('stroke','#f3c842'); pFoil.setAttribute('stroke-width','3'); pFoil.setAttribute('stroke-linejoin','round'); pFoil.setAttribute('stroke-linecap','round'); historyChart.appendChild(pFoil);
-  [[...points.entries()].find(([_,p])=>p.normal!=null), [...points.entries()].find(([_,p])=>p.foil!=null)].filter(Boolean).forEach(([idx,p])=>{ const key=p.normal!=null?'normal':'foil'; const c=document.createElementNS(NS,'circle'); c.setAttribute('cx',xFn(idx)); c.setAttribute('cy',yFn(Number(p[key]))); c.setAttribute('r','4'); c.setAttribute('fill',key==='normal'?'#35b7e6':'#f3c842'); historyChart.appendChild(c); });
+  const pNormal=document.createElementNS(NS,'path'); pNormal.setAttribute('d',seriesPath(points,'normal',xFn,yFn)); pNormal.setAttribute('fill','none'); pNormal.setAttribute('stroke','#35b7e6'); pNormal.setAttribute('stroke-width','3'); pNormal.setAttribute('stroke-linejoin','round'); pNormal.setAttribute('stroke-linecap','round'); targetChart.appendChild(pNormal);
+  const pFoil=document.createElementNS(NS,'path'); pFoil.setAttribute('d',seriesPath(points,'foil',xFn,yFn)); pFoil.setAttribute('fill','none'); pFoil.setAttribute('stroke','#f3c842'); pFoil.setAttribute('stroke-width','3'); pFoil.setAttribute('stroke-linejoin','round'); pFoil.setAttribute('stroke-linecap','round'); targetChart.appendChild(pFoil);
+  [[...points.entries()].find(([_,p])=>p.normal!=null), [...points.entries()].find(([_,p])=>p.foil!=null)].filter(Boolean).forEach(([idx,p])=>{ const key=p.normal!=null?'normal':'foil'; const c=document.createElementNS(NS,'circle'); c.setAttribute('cx',xFn(idx)); c.setAttribute('cy',yFn(Number(p[key]))); c.setAttribute('r','4'); c.setAttribute('fill',key==='normal'?'#35b7e6':'#f3c842'); targetChart.appendChild(c); });
 }
 
 async function loadPriceHistory(days) {
@@ -100,3 +100,48 @@ document.querySelectorAll('.price-history-button').forEach(button => {
 document.querySelectorAll('.history-range').forEach(button => {
   button.addEventListener('click', () => { document.querySelectorAll('.history-range').forEach(b => b.classList.remove('active')); button.classList.add('active'); loadPriceHistory(Number(button.dataset.days)); });
 });
+
+
+// Inventory's unified card details show history inline. Vending retains its own dialog.
+let inlineHistoryRequest = 0;
+async function loadCardDetailHistory(tcg, days, requestId) {
+  const status = document.getElementById('cardDetailHistoryStatus');
+  const stats = document.getElementById('cardDetailHistoryStats');
+  const chart = document.getElementById('cardDetailPriceHistoryChart');
+  if (!status || !stats || !chart) return;
+  stats.innerHTML = ''; chart.innerHTML = '';
+  if (!tcg) { status.textContent = 'No TCGplayer product is linked to this printing, so price history is unavailable.'; return; }
+  status.textContent = `Loading ${days}-day price history…`;
+  try {
+    const response = await fetch(`/api/price-history/${encodeURIComponent(tcg)}?days=${days}`);
+    const data = await response.json().catch(() => ({}));
+    if (requestId !== inlineHistoryRequest) return;
+    if (!response.ok || !data.success) { status.textContent = data.error || 'Could not load price history.'; return; }
+    const points = data.points || [];
+    status.textContent = points.length ? `${points.length} recorded price points · timezone ${data.timezone}` : 'No historical snapshots have been recorded yet. History will appear after the updater records price observations.';
+    if (!points.length) return;
+    const start = points[0], end = points[points.length - 1], changes = [];
+    [['Normal','normal'],['Foil','foil']].forEach(([label,key]) => {
+      if (start[key] != null && end[key] != null && Number(start[key]) > 0) {
+        const delta = Number(end[key]) - Number(start[key]), pct = (delta / Number(start[key])) * 100;
+        changes.push(`<div><span>${label}</span><strong>${formatMoney(end[key])}</strong><small>${delta >= 0 ? '+' : ''}${formatMoney(delta)} (${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%)</small></div>`);
+      }
+    });
+    stats.innerHTML = changes.join('');
+    renderHistoryChart(points, chart);
+  } catch (_) { if (requestId === inlineHistoryRequest) status.textContent = 'Could not load price history.'; }
+}
+window.openCardDetailPriceHistory = function(tcg, name) {
+  const requestId = ++inlineHistoryRequest;
+  const status = document.getElementById('cardDetailHistoryStatus');
+  if (status) status.textContent = tcg ? 'Preparing price history…' : 'No TCGplayer product is linked to this printing, so price history is unavailable.';
+  document.querySelectorAll('.card-detail-history-range').forEach(button => button.classList.toggle('active', Number(button.dataset.days) === 90));
+  if (tcg) void loadCardDetailHistory(tcg, 90, requestId);
+};
+document.querySelectorAll('.card-detail-history-range').forEach(button => button.addEventListener('click', () => {
+  document.querySelectorAll('.card-detail-history-range').forEach(other => other.classList.remove('active'));
+  button.classList.add('active');
+  const link = document.getElementById('oracleTcgplayerLink');
+  const tcg = link && !link.hidden ? link.href.split('/').pop() : '';
+  void loadCardDetailHistory(tcg, Number(button.dataset.days), ++inlineHistoryRequest);
+}));

@@ -11,21 +11,23 @@ class UIRelease39123Tests(unittest.TestCase):
     def test_inventory_defaults_to_grid(self):
         self.assertIn('view = request.args.get("view", "grid")', self.read("app.py"))
 
-    def test_grid_price_order_is_scanned_normal_then_row_foil(self):
+    def test_grid_cards_show_artwork_finish_per_card_price_and_trend(self):
         source = self.read("templates/index.html")
-        price_grid = source.split('<div class="price-grid">', 1)[1].split('</div>\n          <div class="tile-controls">', 1)[0]
-        labels = ["price-scanned", "price-normal", "price-row", "price-foil"]
-        positions = [price_grid.index(label) for label in labels]
-        self.assertEqual(positions, sorted(positions))
+        self.assertIn('class="card-art-trigger"', source)
+        self.assertIn('class="finish-badge {{ item.finish }}"', source)
+        self.assertIn('class="tile-price-badge"', source)
+        self.assertIn("item.calculated_unit_price", source)
+        self.assertIn("price-trend-indicator", source)
+        self.assertNotIn('<div class="price-grid">', source)
 
     def test_inventory_has_pagination_above_and_below_results(self):
         source = self.read("templates/index.html")
         self.assertEqual(source.count('class="inventory-pagination'), 2)
 
     def test_theme_picker_is_loaded_on_main_app_pages(self):
-        for name in ("index.html", "vending.html", "decks.html", "deck_view.html", "admin.html"):
+        for name in ("index.html", "vending.html", "decks.html", "deck_view.html", "admin.html", "analytics.html", "preferences.html", "search_guide.html"):
             with self.subTest(template=name):
-                self.assertIn("filename='theme.js', v='39.12.4'", self.read(f"templates/{name}"))
+                self.assertIn("filename='theme.js', v='39.13.0'", self.read(f"templates/{name}"))
         script = self.read("static/theme.js")
         for theme in ("dark", "midnight", "forest", "light"):
             self.assertIn(f"id: '{theme}'", script)

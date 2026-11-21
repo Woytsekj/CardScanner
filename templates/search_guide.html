@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Search guide · CardScanner</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.17.0') }}">
+  <script src="{{ url_for('static', filename='security.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='theme.js', v='39.13.0') }}" defer></script>
+</head>
+<body>
+  {% set page_title = 'Search guide' %}
+  {% set page_subtitle = 'A quick reference for the search operators CardScanner currently understands.' %}
+  {% set active_page = 'search-guide' %}
+  {% set search_endpoint = 'vending_view' if (current_user["role"]|default("", true)|lower == 'vendor' and current_user["is_admin"]|default(0)|int != 1) else 'index' %}
+  {% include '_app_header.html' %}
+  <main class="search-guide-page">
+    <section class="help-intro admin-panel">
+      <h2>Search your cards</h2>
+      <p>CardScanner supports a useful local subset of Scryfall-style search syntax, plus collection-specific filters. Separate terms are combined as filters. Prefix a term with <code>-</code> to exclude it, and wrap multi-word values in quotes.</p>
+      <p class="search-guide-note"><strong>Compatibility note:</strong> this is CardScanner's local search parser, not the full Scryfall search engine. Operators not listed here are not guaranteed to work as Scryfall operators. This parser does not implement Scryfall's full boolean expression grammar.</p>
+      <a class="button" href="{{ url_for(search_endpoint) }}">Return to {% if search_endpoint == 'vending_view' %}vending{% else %}inventory{% endif %} search</a>
+    </section>
+    <section class="syntax-section admin-panel">
+      <h2>Card identity and printing</h2>
+      <div class="syntax-grid">
+        <article class="syntax-item"><code>name:Sol Ring</code><p>Finds a card by name. <code>card:</code> is an alias.</p><a href="{{ url_for(search_endpoint, q='name:Sol Ring') }}">Try this search →</a></article>
+        <article class="syntax-item"><code>set:mh3</code><p>Matches a set code. <code>s:</code> is an alias.</p><a href="{{ url_for(search_endpoint, q='set:mh3') }}">Try this search →</a></article>
+        <article class="syntax-item"><code>cn:123</code><p>Matches a collector number. <code>collector:</code> and <code>collector_number:</code> also work.</p><a href="{{ url_for(search_endpoint, q='cn:123') }}">Try this search →</a></article>
+        <article class="syntax-item"><code>"Arcane Signet"</code><p>A quoted phrase searches card names, collector numbers, and saved card aliases.</p><a href="{{ url_for(search_endpoint, q='&quot;Arcane Signet&quot;') }}">Try this search →</a></article>
+      </div>
+    </section>
+    <section class="syntax-section admin-panel">
+      <h2>Card characteristics</h2>
+      <div class="syntax-grid">
+        <article class="syntax-item"><code>t:creature</code><p>Matches card type text. <code>type:</code> is an alias. Multiple words in the value must all match.</p><a href="{{ url_for(search_endpoint, q='t:creature') }}">Try this search →</a></article>
+        <article class="syntax-item"><code>o:"draw a card"</code><p>Searches Oracle rules text. <code>oracle:</code> is an alias.</p><a href="{{ url_for(search_endpoint, q='o:&quot;draw a card&quot;') }}">Try this search →</a></article>
+        <article class="syntax-item"><code>c:g</code><p>Matches cards that include green. Other color letters are <code>w</code>, <code>u</code>, <code>b</code>, and <code>r</code>; use <code>c:gu</code> to require both green and blue.</p><a href="{{ url_for(search_endpoint, q='c:g') }}">Try this search →</a></article>
+        <article class="syntax-item"><code>c:colorless</code><p>Matches colorless cards. <code>c:multicolor</code> matches cards with more than one color.</p><a href="{{ url_for(search_endpoint, q='c:colorless') }}">Try this search →</a></article>
+        <article class="syntax-item"><code>r&gt;=rare</code><p>Filters by rarity rank. <code>r:</code> and <code>rarity:</code> support common, uncommon, rare, and mythic comparisons.</p><a href="{{ url_for(search_endpoint, q='r>=rare') }}">Try this search →</a></article>
+      </div>
+    </section>
+    <section class="syntax-section admin-panel">
+      <h2>Finish and collection details</h2>
+      <div class="syntax-grid">
+        <article class="syntax-item"><code>is:foil</code><p>Finds foil and etched finishes. Use <code>is:nonfoil</code> for normal finishes; <code>is:etched</code> is also accepted.</p><a href="{{ url_for(search_endpoint, q='is:foil') }}">Try this search →</a></article>
+        <article class="syntax-item"><code>owner:"Sample Collector"</code><p>Limits results to a collection owner. The value is matched against the owner name.</p><a href="{{ url_for(search_endpoint, q='owner:&quot;Sample Collector&quot;') }}">Try this search →</a></article>
+        <article class="syntax-item"><code>loc:"Storage Box A"</code><p>Matches a physical storage location. <code>location:</code> is an alias.</p><a href="{{ url_for(search_endpoint, q='loc:&quot;Storage Box A&quot;') }}">Try this search →</a></article>
+        <article class="syntax-item"><code>deck:"Sample Deck"</code><p>Matches cards assigned to a named deck. Use <code>deck:none</code> for cards outside a deck.</p><a href="{{ url_for(search_endpoint, q='deck:none') }}">Try this search →</a></article>
+        <article class="syntax-item"><code>vending:true</code><p>Finds cards marked for vending. <code>vending:false</code> finds cards not marked for vending.</p><a href="{{ url_for(search_endpoint, q='vending:true') }}">Try this search →</a></article>
+      </div>
+    </section>
+    <section class="syntax-section admin-panel">
+      <h2>Illustration and Oracle tags</h2>
+      <div class="syntax-grid">
+        <article class="syntax-item"><code>art:showcase</code><p>Searches illustration tags. <code>atag:</code> and <code>arttag:</code> are aliases.</p><a href="{{ url_for(search_endpoint, q='art:showcase') }}">Try this search →</a></article>
+        <article class="syntax-item"><code>otag:ramp</code><p>Searches Oracle/function tags. <code>oracletag:</code>, <code>oracle_tag:</code>, and <code>function:</code> are aliases.</p><a href="{{ url_for(search_endpoint, q='otag:ramp') }}">Try this search →</a></article>
+      </div>
+    </section>
+    <section class="syntax-section admin-panel">
+      <h2>Exclude and sort</h2>
+      <div class="syntax-grid">
+        <article class="syntax-item"><code>t:creature -c:r</code><p>Combines filters and excludes red cards. Prefixing a term with <code>-</code> negates that filter.</p><a href="{{ url_for(search_endpoint, q='t:creature -c:r') }}">Try this search →</a></article>
+        <article class="syntax-item"><code>order:set direction:asc</code><p>Sorts by set in ascending order. <code>order:</code> accepts set, name, collector, usd/price, cmc, date, and released. <code>direction:</code> and <code>dir:</code> accept asc or desc.</p><a href="{{ url_for(search_endpoint, q='order:set direction:asc') }}">Try this search →</a></article>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

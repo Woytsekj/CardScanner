@@ -23,6 +23,10 @@ class PostgreSQLRouteCoverageTests(unittest.TestCase):
         get_endpoints = {
             "login",
             "admin_page",
+            "preferences_page",
+            "server_info_page",
+            "analytics_page",
+            "search_guide",
             "catalog_search",
             "catalog_suggest",
             "search_suggest",
@@ -71,6 +75,7 @@ class PostgreSQLRouteCoverageTests(unittest.TestCase):
             "rename_user",
             "change_user_role",
             "delete_user",
+            "admin_change_password_legacy",
             "change_password",
             "set_counts",
             "update_inventory",

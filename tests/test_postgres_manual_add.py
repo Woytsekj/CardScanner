@@ -205,7 +205,9 @@ class PostgreSQLManualAddTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         html = response.get_data(as_text=True)
 
-        self.assertIn("Add Card Manually", html)
+        self.assertNotIn("Add Card Manually", html)
+        self.assertNotIn("manualAddForm", html)
+        self.assertIn("Catalog search aliases", html)
         self.assertIn("catalogSearch", html)
         self.assertIn("aliasForm", html)
         self.assertIn(self.owner_name, html)
@@ -215,8 +217,8 @@ class PostgreSQLManualAddTests(unittest.TestCase):
         self.assertNotIn("Price History &amp; Discord Alerts", html)
         self.assertIn("Web users</h2>", html)
         self.assertNotIn("Back to inventory", html)
-        self.assertNotIn(">Decks</a>", html)
-        self.assertNotIn(">Vending</a>", html)
+        self.assertIn(">Decks</a>", html)
+        self.assertIn(">Vending</a>", html)
 
     def test_new_manual_card_links_known_catalog_printing(self):
         sid = self.RESOLVED_SCRYFALL_ID

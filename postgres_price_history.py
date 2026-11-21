@@ -131,6 +131,54 @@ def fetch_price_history(conn, tcg_id: str, days: int) -> list[dict]:
     ]
 
 
+def fetch_latest_price_trends(
+    conn,
+    product_ids: list[str] | tuple[str, ...],
+) -> dict[str, list[dict]]:
+    """Return at most two recent normal/foil history points per product."""
+    normalized = sorted({
+        _tcg_product_id(value)
+        for value in product_ids
+        if _tcg_product_id(value)
+    })
+    trends: dict[str, list[dict]] = {}
+    for start in range(0, len(normalized), 400):
+        chunk = normalized[start:start + 400]
+        placeholders = ", ".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"""
+            SELECT external_product_id, captured_at, normal_price, foil_price
+            FROM (
+                SELECT
+                    external_product_id, captured_at, normal_price, foil_price,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY external_product_id
+                        ORDER BY captured_at DESC, id DESC
+                    ) AS history_rank
+                FROM catalog.product_price_history
+                WHERE game_id = 'mtg'
+                  AND provider_id = 'tcgcsv'
+                  AND external_product_id IN ({placeholders})
+            ) recent
+            WHERE history_rank <= 2
+            ORDER BY external_product_id, history_rank
+            """,
+            tuple(chunk),
+        ).fetchall()
+        for row in rows:
+            product_id = _tcg_product_id(row["external_product_id"])
+            trends.setdefault(product_id, []).append({
+                "normal_price": float(row["normal_price"]) if row["normal_price"] is not None else None,
+                "foil_price": float(row["foil_price"]) if row["foil_price"] is not None else None,
+                "captured_at": (
+                    row["captured_at"].isoformat()
+                    if hasattr(row["captured_at"], "isoformat")
+                    else str(row["captured_at"])
+                ),
+            })
+    return trends
+
+
 def latest_history_price(
     conn,
     tcg_id: str,

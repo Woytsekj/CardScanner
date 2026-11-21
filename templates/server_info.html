@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Server info · CardScanner</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.17.0') }}">
+  <script src="{{ url_for('static', filename='security.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='theme.js', v='39.13.0') }}" defer></script>
+</head>
+<body>
+  {% set page_title = 'Server info' %}
+  {% set page_subtitle = 'Operational status and data-source health. Visible to administrators only.' %}
+  {% set active_page = 'server-info' %}
+  {% include '_app_header.html' %}
+  <main class="server-info-page">
+    <section class="server-info-grid">
+      <article class="admin-panel server-info-panel">
+        <div class="panel-eyebrow">Application</div>
+        <h2>Application configuration</h2>
+        <div class="settings-list">
+          <div><span>Database backend</span><strong>{{ 'PostgreSQL' if postgres_mode else 'SQLite' }}</strong></div>
+          <div><span>Display timezone</span><strong>{{ display_timezone }}</strong></div>
+          <div><span>Scanner API</span><strong class="{{ 'api-live' if scanner_api_enabled else 'api-warning' }}">{{ 'Ready' if scanner_api_enabled else 'Not configured' }}</strong></div>
+        </div>
+      </article>
+      <article class="admin-panel server-info-panel">
+        <div class="panel-eyebrow">Pricing</div>
+        <h2>TCGCSV price data</h2>
+        <p class="subtle">Market prices are sourced from the local TCGCSV snapshot. Inventory tiles show a per-copy price; price history appears in card details.</p>
+        <div class="settings-list">
+          <div><span>Price source</span><strong>TCGCSV</strong></div>
+          <div><span>Last price sync</span><strong>{{ price_meta.get('synced_at', 'Not yet synced')|localdt }}</strong></div>
+          <div><span>Price history retention</span><strong>{{ price_history_days }} days</strong></div>
+          <div><span>Discord alerts</span><strong>{{ 'Enabled' if price_alert_enabled and discord_configured else ('Configured, disabled' if discord_configured else 'Not configured') }}</strong></div>
+        </div>
+      </article>
+      <article class="admin-panel server-info-panel">
+        <div class="panel-eyebrow">Card catalog</div>
+        <h2>Scryfall catalog status</h2>
+        {% set catalog_stats = scryfall_catalog_meta.get('catalog', {}) %}
+        <div class="settings-list">
+          <div><span>Last catalog sync</span><strong>{{ scryfall_catalog_meta.get('synced_at', 'Not yet synced')|localdt }}</strong></div>
+          <div><span>Printings with art hashes</span><strong>{{ catalog_stats.get('hashed_printings', 0) }} / {{ catalog_stats.get('printings', 0) }}</strong></div>
+          <div><span>Art tag assignments</span><strong>{{ catalog_stats.get('art_tag_assignments', 0) }}</strong></div>
+          <div><span>Oracle tag assignments</span><strong>{{ catalog_stats.get('oracle_tag_assignments', 0) }}</strong></div>
+          <div><span>Last bulk metadata refresh</span><strong>{{ scryfall_bulk_meta.get('synced_at', 'Not yet refreshed')|localdt }}</strong></div>
+          <div><span>Bulk printings updated</span><strong>{{ scryfall_bulk_meta.get('found', 0) }} / {{ scryfall_bulk_meta.get('needed', 0) }}</strong></div>
+        </div>
+      </article>
+    </section>
+    <p class="subtle server-info-note">Connection strings, passwords, API keys, webhook URLs, and private host details are intentionally not displayed here.</p>
+  </main>
+</body>
+</html>

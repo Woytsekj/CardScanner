@@ -217,7 +217,7 @@ class PostgreSQLPeopleTests(unittest.TestCase):
         self.assertIn("Delete permanently", html)
         self.assertNotIn("Price History &amp; Discord Alerts", html)
         self.assertIn("Web users</h2>", html)
-        self.assertIn("Admin password</h2>", html)
+        self.assertNotIn("Admin password</h2>", html)
 
     def test_add_person_creates_active_person(self):
         name = f"PG People New {self.token}"

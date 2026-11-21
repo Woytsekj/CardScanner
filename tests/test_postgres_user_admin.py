@@ -203,8 +203,8 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
         self.assertIn(self.admin_username, html)
         self.assertIn(self.vendor_username, html)
 
-        self.assertIn("Admin password</h2>", html)
-        self.assertIn('action="/admin/password"', html)
+        self.assertNotIn("Admin password</h2>", html)
+        self.assertNotIn('action="/admin/password"', html)
         self.assertNotIn("Price History &amp; Discord Alerts", html)
         self.assertIn("Scryfall card metadata", html)
         self.assertIn("Download / Refresh Scryfall Bulk Metadata", html)
