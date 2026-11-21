@@ -93,7 +93,7 @@ class Issue28UIFoundationTests(unittest.TestCase):
         self.assertIn('id="cardDetailBackdrop"', source)
         self.assertIn("function closeOraclePanel()", source)
         self.assertNotIn("oracleDialog.showModal()", source)
-        self.assertIn(".inventory-results-layout.has-card-details", css)
+        self.assertIn("main.inventory-page-layout.has-card-details", css)
         self.assertIn('data-display-mode="sidebar"', css)
 
     def test_docked_inspector_spans_the_inventory_page_and_animates_in(self):
