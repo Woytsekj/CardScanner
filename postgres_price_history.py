@@ -579,7 +579,7 @@ def prune_price_history(
         placeholders = ", ".join("?" for _ in product_params)
         product_filter = f"AND external_product_id IN ({placeholders})"
 
-    params = (cutoff, cutoff, *product_params)
+    params = (cutoff, *product_params, cutoff)
     conn.execute(
         f"""
         DELETE FROM catalog.provider_price_observations AS old
