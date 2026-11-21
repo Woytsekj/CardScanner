@@ -194,7 +194,7 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
                 has_owned_product(conn, self.vending_product_id, vending_only=True)
             )
 
-            captured = datetime.now(timezone.utc) - timedelta(days=2)
+            captured = datetime.now(timezone.utc) - timedelta(days=4)
             source_rows = [
                 self._normal_row(direct=0.95),
                 {
@@ -254,7 +254,10 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
 
             # One changed metric stores a complete new state for the subtype.
             changed_at = captured + timedelta(days=2)
-            changed_rows = [self._normal_row(market=1.35, low=1.05, mid=1.15, high=1.60, direct=1.00)]
+            changed_rows = [
+                self._normal_row(market=1.35, low=1.05, mid=1.15, high=1.60, direct=1.00),
+                *source_rows[1:],
+            ]
             self.assertEqual(
                 insert_price_observations(
                     conn, changed_rows, "changed-build", changed_at
@@ -468,22 +471,19 @@ class PostgreSQLPriceHistoryTests(unittest.TestCase):
             now = datetime.now(timezone.utc)
             insert_price_observations(
                 conn,
-                [self._normal_row(1.25)],
+                [
+                    self._normal_row(1.25),
+                    {
+                        "productId": self.vending_product_id,
+                        "subTypeName": "Foil",
+                        "marketPrice": 7.50,
+                        "lowPrice": 7.00,
+                        "midPrice": 7.25,
+                        "highPrice": 8.00,
+                        "directLowPrice": None,
+                    },
+                ],
                 "chart-source-build",
-                now,
-            )
-            insert_price_observations(
-                conn,
-                [{
-                    "productId": self.vending_product_id,
-                    "subTypeName": "Foil",
-                    "marketPrice": 7.50,
-                    "lowPrice": 7.00,
-                    "midPrice": 7.25,
-                    "highPrice": 8.00,
-                    "directLowPrice": None,
-                }],
-                "vending-chart-source-build",
                 now,
             )
             conn.commit()
