@@ -198,6 +198,9 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
 
         self.assertIn("Web accounts</h3>", html)
         self.assertIn("Create User", html)
+        self.assertIn("Collection", html)
+        self.assertNotIn("Collections this account can manage", html)
+        self.assertNotIn("default_person_id", html)
         self.assertIn("Reset password", html)
         self.assertIn(self.superadmin_username, html)
         self.assertIn(self.admin_username, html)
@@ -239,6 +242,43 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
         self.assertEqual(user["person_id"], self.active_person_id)
         self.assertTrue(check_password_hash(user["password_hash"], password))
 
+    def test_admin_creates_managed_user_with_exactly_one_unowned_collection(self):
+        username = f"pg-useradmin-managed-collection-{self.token}"
+        second_username = f"pg-useradmin-managed-collection-taken-{self.token}"
+        self.track_username(username)
+        self.track_username(second_username)
+
+        created = self.post(
+            "/admin/users",
+            {
+                "username": username,
+                "password": f"Long-Enough-Password-{self.token}",
+                "role": "admin",
+                "person_id": str(self.active_person_id),
+            },
+            client=self.admin_client,
+        )
+        self.assertEqual(created.status_code, 302)
+        self.assertEqual(self.message(created), f"Created user {username} and linked to the selected person.")
+
+        user = self.fetch_user(username)
+        self.assertEqual(user["role"], "user")
+        self.assertEqual(user["manager_username"], self.admin_username)
+        self.assertEqual(user["person_id"], self.active_person_id)
+
+        duplicate = self.post(
+            "/admin/users",
+            {
+                "username": second_username,
+                "password": f"Long-Enough-Password-{self.token}",
+                "role": "user",
+                "person_id": str(self.active_person_id),
+            },
+            client=self.admin_client,
+        )
+        self.assertEqual(duplicate.status_code, 302)
+        self.assertEqual(self.message(duplicate), "That person is already assigned to another account.")
+        self.assertIsNone(self.fetch_user(second_username))
     def test_create_user_rejects_short_password_and_inactive_person(self):
         short_password = self.post(
             "/admin/users",
