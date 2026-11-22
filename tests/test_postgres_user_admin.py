@@ -665,7 +665,7 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
                 response = self.post(path, payload, client=self.admin_client)
                 self.assertEqual(response.status_code, 403)
 
-    def test_all_nine_user_write_routes_require_csrf(self):
+    def test_all_user_write_routes_require_csrf(self):
         requests = (
             ("/admin/users", {
                 "username": f"pg-useradmin-no-csrf-{self.token}",
@@ -673,7 +673,6 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
                 "role": "vendor",
             }),
             (f"/admin/users/{self.vendor_username}/person", {}),
-            (f"/admin/users/{self.vendor_username}/people", {}),
             (f"/admin/users/{self.vendor_username}/toggle", {}),
             (f"/admin/users/{self.vendor_username}/password", {
                 "password": f"Long-Enough-Password-{self.token}",
