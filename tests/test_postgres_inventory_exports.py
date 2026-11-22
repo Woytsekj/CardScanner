@@ -50,26 +50,48 @@ class PostgreSQLInventoryExportHTTPTests(unittest.TestCase):
 
         conn = connect_app_database(expected_database="cardscanner_dev")
         try:
-            for username, is_admin, role in (
-                (self.admin_username, True, "admin"),
-                (self.vendor_username, False, "vendor"),
-                (self.user_username, False, "user"),
-            ):
-                conn.execute(
-                    """
-                    INSERT INTO app.users (
-                        username, password_hash, is_admin, role,
-                        is_superadmin, active
-                    )
-                    VALUES (?, ?, ?, ?, FALSE, TRUE)
-                    """,
-                    (
-                        username,
-                        "unused-export-test-password-hash",
-                        is_admin,
-                        role,
-                    ),
+            own_person = conn.execute(
+                "INSERT INTO app.people (name, active) VALUES (?, TRUE) RETURNING id",
+                (self.owner,),
+            ).fetchone()
+            other_person = conn.execute(
+                "INSERT INTO app.people (name, active) VALUES (?, TRUE) RETURNING id",
+                (self.other_owner,),
+            ).fetchone()
+            own_person_id = int(own_person["id"])
+            other_person_id = int(other_person["id"])
+
+            conn.execute(
+                """
+                INSERT INTO app.users (
+                    username, password_hash, is_admin, role,
+                    is_superadmin, active, person_id
                 )
+                VALUES (?, ?, TRUE, 'admin', FALSE, TRUE, ?)
+                """,
+                (self.admin_username, "unused-export-test-password-hash", own_person_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO app.users (
+                    username, password_hash, is_admin, role,
+                    is_superadmin, active
+                )
+                VALUES (?, ?, FALSE, 'vendor', FALSE, TRUE)
+                """,
+                (self.vendor_username, "unused-export-test-password-hash"),
+            )
+            conn.execute(
+                """
+                INSERT INTO app.users (
+                    username, password_hash, is_admin, role,
+                    is_superadmin, active, person_id, manager_username
+                )
+                VALUES (?, ?, FALSE, 'user', FALSE, TRUE, ?, ?)
+                """,
+                (self.user_username, "unused-export-test-password-hash",
+                 other_person_id, self.admin_username),
+            )
 
             conn.execute(
                 """
@@ -125,6 +147,10 @@ class PostgreSQLInventoryExportHTTPTests(unittest.TestCase):
                     self.user_username,
                 ),
             )
+            conn.execute(
+                "DELETE FROM app.people WHERE name IN (?, ?)",
+                (self.owner, self.other_owner),
+            )
             conn.commit()
         except Exception:
             conn.rollback()
@@ -132,7 +158,7 @@ class PostgreSQLInventoryExportHTTPTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_standard_export_preserves_columns_prices_and_all_owners(self):
+    def test_standard_export_preserves_columns_and_scopes_to_own_collection(self):
         response = self.admin_client.get("/export_csv")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.mimetype, "text/csv")
@@ -144,7 +170,7 @@ class PostgreSQLInventoryExportHTTPTests(unittest.TestCase):
             if row["name"] and row["name"].startswith(self.prefix)
         }
 
-        self.assertEqual(set(by_name), {self.normal_name, self.foil_name})
+        self.assertEqual(set(by_name), {self.normal_name})
         self.assertEqual(
             list(rows[0].keys()),
             [
@@ -177,7 +203,20 @@ class PostgreSQLInventoryExportHTTPTests(unittest.TestCase):
         self.assertEqual(float(normal["current_unit_value"]), 2.50)
         self.assertEqual(float(normal["current_total_value"]), 5.00)
 
-        foil = by_name[self.foil_name]
+        self.assertNotIn(self.foil_name, by_name)
+
+        managed_response = self.admin_client.get(
+            "/export_csv",
+            query_string={"owner": self.other_owner},
+        )
+        self.assertEqual(managed_response.status_code, 200)
+        managed_rows = list(csv.DictReader(io.StringIO(managed_response.get_data(as_text=True))))
+        managed_by_name = {
+            row["name"]: row for row in managed_rows
+            if row["name"] and row["name"].startswith(self.prefix)
+        }
+        self.assertEqual(set(managed_by_name), {self.foil_name})
+        foil = managed_by_name[self.foil_name]
         self.assertEqual(foil["finish"], "foil")
         self.assertEqual(foil["for_vending"], "1")
         self.assertEqual(foil["owner"], self.other_owner)
@@ -233,12 +272,12 @@ class PostgreSQLInventoryExportHTTPTests(unittest.TestCase):
             response.headers["Content-Disposition"],
         )
 
-    def test_both_exports_are_admin_only(self):
+    def test_user_can_export_only_their_own_collection(self):
         for path in ("/export_csv", "/export_manabox_csv"):
             with self.subTest(path=path):
                 self.assertEqual(self.admin_client.get(path).status_code, 200)
                 self.assertEqual(self.vendor_client.get(path).status_code, 403)
-                self.assertEqual(self.user_client.get(path).status_code, 403)
+                self.assertEqual(self.user_client.get(path).status_code, 200)
                 self.assertEqual(self.guest_client.get(path).status_code, 302)
 
 
