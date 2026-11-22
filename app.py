@@ -3870,6 +3870,16 @@ def add_user():
     if conn.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone():
         conn.close(); return redirect(url_for("admin_page", message="That username already exists."))
     person_id = None
+    if manager_username:
+        manager = conn.execute(
+            "SELECT username, is_admin, is_superadmin, active FROM users WHERE username=?",
+            (manager_username,),
+        ).fetchone()
+        if not manager or not int(manager["active"]) or not (
+            int(manager["is_admin"]) or int(manager["is_superadmin"])
+        ):
+            conn.close(); return redirect(url_for("admin_page", message="Choose an active administrator as the manager."))
+        manager_username = str(manager["username"])
     if raw_person_id:
         try:
             person_id = int(raw_person_id)
@@ -3880,13 +3890,24 @@ def add_user():
             conn.close(); return redirect(url_for("admin_page", message="Choose an active person for this account."))
         if not actor_superadmin and not _can_manage_person_name(str(person["name"]), actor):
             conn.close(); return redirect(url_for("admin_page", message="You can only assign collections you manage."))
-        if conn.execute("SELECT username FROM users WHERE person_id=?", (person_id,)).fetchone():
-            conn.close(); return redirect(url_for("admin_page", message="That person is already assigned to another account."))
+        assigned = conn.execute(
+            """SELECT username FROM user_people WHERE person_id=?
+               UNION SELECT username FROM users WHERE person_id=? LIMIT 1""",
+            (person_id, person_id),
+        ).fetchone()
+        if assigned:
+            assigned_username = str(assigned["username"])
+            if not actor_superadmin and assigned_username.casefold() not in {
+                name.casefold() for name in _managed_usernames(actor)
+            }:
+                conn.close(); return redirect(url_for("admin_page", message="That collection belongs to an account outside your management scope."))
     conn.execute(
         "INSERT INTO users(username,password_hash,is_admin,role,is_superadmin,active,person_id,manager_username) VALUES (?,?,?,?,?,1,?,?)",
         (username,generate_password_hash(password),1 if role=="admin" else 0,role,0,person_id,manager_username),
     )
     if person_id is not None:
+        conn.execute("UPDATE users SET person_id=NULL WHERE person_id=?", (person_id,))
+        conn.execute("DELETE FROM user_people WHERE person_id=?", (person_id,))
         conn.execute("INSERT INTO user_people(username, person_id) VALUES (?, ?)", (username, person_id))
     conn.commit(); conn.close()
     assignment_note = "" if person_id is None else " and linked to the selected person"
