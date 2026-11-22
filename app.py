@@ -7286,7 +7286,8 @@ def decks_import():
     include_extra = bool(request.form.get("include_extra"))
     add_inventory = bool(request.form.get("add_inventory"))
     store_free = bool(request.form.get("store_free"))
-    owner = str(request.form.get("owner") or "").strip()[:100] or "Me"
+    requested_inventory_owner = str(request.form.get("owner") or "").strip()[:100]
+    owner = requested_inventory_owner or "Me"
     location = str(request.form.get("location") or "").strip()[:120]
     source_file = request.files.get("deck_file")
     imported_tags: list[str] = []
@@ -7359,8 +7360,24 @@ def decks_import():
         # Non-Superadmins import deck cards and optional inventory only into the
         # same collection they selected for the deck.
         if not is_superadmin_user(current_user()):
+            if requested_inventory_owner:
+                owner_conn = _account_connection()
+                try:
+                    active_inventory_owner = owner_conn.execute(
+                        f"""SELECT 1 FROM {_account_table('people')}
+                            WHERE lower(name)=lower(?) AND active IS TRUE LIMIT 1""",
+                        (requested_inventory_owner,),
+                    ).fetchone()
+                finally:
+                    owner_conn.close()
+                if not active_inventory_owner:
+                    raise ValueError("Choose an active collection for imported inventory.")
+                if not _can_manage_person_name(requested_inventory_owner):
+                    raise ValueError("Choose an inventory collection assigned to your account.")
+                if requested_inventory_owner.casefold() != deck_person.casefold():
+                    raise ValueError("Imported inventory must use the selected deck collection.")
             owner = deck_person
-        elif owner and not _can_manage_person_name(owner):
+        elif requested_inventory_owner and not _can_manage_person_name(requested_inventory_owner):
             raise ValueError("Choose an active collection for imported inventory.")
 
         if DATABASE_BACKEND == "postgres":
