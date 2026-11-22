@@ -168,7 +168,7 @@ def handle_add_user():
             "" if person_id is None
             else " and linked to the selected person"
         )
-        return f"Created {role} user {username}{assignment_note}."
+        return f"Created {'Admin' if role == 'admin' else 'user'} {username}{assignment_note}."
 
     return _redirect(_run(operation, lock=True))
 
@@ -398,7 +398,7 @@ def handle_change_user_role(username: str):
     username = str(username)[:150]
     role = str(request.form.get("role") or "user").strip().lower()
     if role not in {"admin", "user", "vendor"}:
-        role = "user"
+        role = "vendor"
     if not bool(session.get("is_superadmin")):
         return _redirect("Only a superadmin can change account roles.")
 
