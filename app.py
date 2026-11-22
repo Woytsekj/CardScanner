@@ -867,7 +867,7 @@ def _person_name_by_id(person_id: int) -> str:
 
 
 def _accessible_person_names(user=None) -> list[str]:
-    """Return collection names this account may edit (read access is broader)."""
+    """Return only collection names this account is allowed to manage."""
     user = user or current_user()
     if not user:
         return []
@@ -994,7 +994,7 @@ def admin_required(view):
             return redirect(url_for("login", next=request.full_path if request.query_string else request.path))
         role = str(user["role"] or "").lower()
         collection_endpoints = {
-            "index", "manual_add", "search_suggest", "catalog_search", "catalog_suggest",
+            "index", "manual_add", "search_suggest",
             "api_card_info", "api_card_rulings",
             "set_counts", "update_inventory", "bulk_update_inventory",
             "move_quantity", "delete_item", "import_csv", "export_csv",
@@ -3163,7 +3163,9 @@ def catalog_suggest():
 def search_suggest():
     """Small, owner-scoped autocomplete endpoint; the main page no longer embeds the full index."""
     q = str(request.args.get("q") or "").strip()[:80]
-    owner = str(request.args.get("owner") or "").strip()
+    owner = _effective_inventory_owner(
+        current_user(), request.args.get("owner", "")
+    )
     if len(q) < 2:
         return jsonify({"success": True, "results": []})
 
