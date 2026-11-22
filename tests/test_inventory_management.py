@@ -42,6 +42,17 @@ class InventoryManagementTests(unittest.TestCase):
         app_module._PRICE_CACHE = {"key": None, "prices": {}}
         app_module._AUTH_READY = False
         app_module.migrate_db()
+        # Most legacy inventory/deck regression tests exercise the unrestricted
+        # administrative workflows. Keep their fixture account explicitly
+        # Superadmin; dedicated hierarchy tests create scoped Admin/User accounts.
+        conn = self.connect()
+        app_module.ensure_people_and_auth(conn)
+        conn.execute(
+            "UPDATE users SET is_admin=1, is_superadmin=1, role='superadmin' "
+            "WHERE username='ci-admin'"
+        )
+        conn.commit()
+        conn.close()
         self.client = app_module.app.test_client()
         self.csrf = "unit-test-csrf-token-012345678901234567890"
         with self.client.session_transaction() as session:
