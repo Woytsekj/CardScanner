@@ -839,14 +839,11 @@ def _can_manage_deck(deck_id: int, user=None) -> bool:
     conn = _account_connection()
     try:
         row = conn.execute(
-            f"SELECT person_id, person_name FROM {_account_table('decklists')} WHERE id=?",
+            f"SELECT person_name FROM {_account_table('decklists')} WHERE id=?",
             (deck_id,),
         ).fetchone()
         if not row:
             return False
-        user = user or current_user()
-        if row["person_id"] is not None:
-            return bool(is_superadmin_user(user) or int(row["person_id"]) in _manageable_person_ids(user))
         return _can_manage_person_name(str(row["person_name"] or ""), user)
     finally:
         conn.close()
@@ -889,20 +886,11 @@ def _person_name_by_id(person_id: int) -> str:
 
 
 def _accessible_person_names(user=None) -> list[str]:
-    """Return the collection names visible to this account."""
+    """Return collection names this account may edit (read access is broader)."""
     user = user or current_user()
     if not user:
         return []
-    if is_admin_user(user):
-        conn = _account_connection()
-        try:
-            rows = conn.execute(
-                f"SELECT name FROM {_account_table('people')} WHERE active=1 ORDER BY lower(name)"
-            ).fetchall()
-            return [str(row["name"]) for row in rows]
-        finally:
-            conn.close()
-    ids = _account_person_ids(str(user["username"]))
+    ids = _manageable_person_ids(user)
     if not ids:
         return []
     conn = _account_connection()
@@ -945,22 +933,16 @@ def _can_manage_inventory_rows(item_ids, user=None) -> bool:
 
 
 def _can_access_deck(deck_id: int, user=None) -> bool:
+    """Authenticated collection users may read every deck; writes are separately scoped."""
     user = user or current_user()
     if not user:
         return False
-    if is_admin_user(user):
-        return True
     conn = _account_connection()
     try:
-        row = conn.execute(
-            f"SELECT person_id, person_name FROM {_account_table('decklists')} WHERE id=?",
+        return conn.execute(
+            f"SELECT 1 FROM {_account_table('decklists')} WHERE id=?",
             (deck_id,),
-        ).fetchone()
-        if not row:
-            return False
-        if row["person_id"] is not None:
-            return int(row["person_id"]) in _account_person_ids(str(user["username"]))
-        return _can_manage_person_name(str(row["person_name"] or ""), user)
+        ).fetchone() is not None
     finally:
         conn.close()
 
@@ -1008,7 +990,8 @@ def admin_required(view):
             return redirect(url_for("login", next=request.full_path if request.query_string else request.path))
         role = str(user["role"] or "").lower()
         collection_endpoints = {
-            "index", "manual_add", "set_counts", "update_inventory", "bulk_update_inventory",
+            "index", "manual_add", "search_suggest", "api_card_info", "api_card_rulings",
+            "set_counts", "update_inventory", "bulk_update_inventory",
             "move_quantity", "delete_item", "import_csv", "export_csv",
             "export_manabox_csv", "decks_page", "decks_import",
             "update_deck_settings", "update_deck_cover", "deck_view",
@@ -4263,21 +4246,7 @@ def index():
     owner_explicit = "owner" in request.args
     owner_filter = request.args.get("owner", "").strip()
     user = current_user()
-    visible_collection_names = _accessible_person_names(user)
-    if not owner_explicit:
-        default_name = str(user["person_name"] or "").strip() if user else ""
-        owner_filter = default_name if default_name in visible_collection_names else (
-            visible_collection_names[0] if visible_collection_names and not is_admin_user(user) else ""
-        )
-    if user and not is_admin_user(user):
-        if owner_filter and owner_filter not in visible_collection_names:
-            return render_template("login.html", next_url="", error="You do not have access to that collection."), 403
-        if not owner_filter:
-            owner_filter = str(user["person_name"] or "").strip() or (
-                visible_collection_names[0] if visible_collection_names else ""
-            )
-        if not owner_filter:
-            return render_template("login.html", next_url="", error="Your account is not linked to a collection."), 403
+    editable_owners = _accessible_person_names(user)
     finish_filter = request.args.get("finish", "").strip().lower()
     type_filter = request.args.get("type", "").strip()
     color_filter = request.args.get("color", "").strip().lower()
@@ -4396,7 +4365,8 @@ def index():
         total_rows=total_rows,
         total_cards=total_cards,
         postgres_mode=(DATABASE_BACKEND == 'postgres'),
-        owners=(visible_collection_names if not is_admin_user(user) else owners),
+        owners=owners,
+        editable_owners=editable_owners,
         admin_user=(current_admin() or (str(user["username"]) if user and str(user["role"]).lower() in {"user", "member"} else None)),
         admin_is_superadmin=is_superadmin_user(user),
     )
@@ -4914,14 +4884,7 @@ def import_csv():
 @app.get("/export_csv")
 @admin_required
 def export_csv():
-    user = current_user()
-    export_owner = ""
-    if user and not is_admin_user(user):
-        names = _accessible_person_names(user)
-        export_owner = str(user["person_name"] or "").strip() or (names[0] if names else "")
-        if not export_owner:
-            return jsonify({"success": False, "error": "Your account is not linked to a collection."}), 403
-    inventory, _, _, _, _, _ = inventory_rows("", export_owner, "", "date", "desc")
+    inventory, _, _, _, _, _ = inventory_rows("", "", "", "date", "desc")
     out = io.StringIO(newline="")
     writer = csv.writer(out)
     writer.writerow([
@@ -4947,14 +4910,6 @@ def export_csv():
 def export_manabox_csv():
     """Export in ManaBox's collection CSV format (Collection > menu > Import)."""
     owner = request.args.get("owner", "").strip()
-    user = current_user()
-    if user and not is_admin_user(user):
-        names = _accessible_person_names(user)
-        if owner and owner not in names:
-            return render_template("login.html", next_url="", error="You do not have access to that collection."), 403
-        owner = owner or (str(user["person_name"] or "").strip() or (names[0] if names else ""))
-        if not owner:
-            return render_template("login.html", next_url="", error="Your account is not linked to a collection."), 403
     inventory, _, _, _, _, _ = inventory_rows("", owner, "", "date", "desc")
     out = io.StringIO(newline="")
     writer = csv.writer(out)
@@ -7152,9 +7107,7 @@ def decks_page():
     selected_tag = str(request.args.get("tag") or "").strip()
     selected_person = str(request.args.get("person") or "").strip()
     user = current_user()
-    visible_collection_names = _accessible_person_names(user)
-    if selected_person and not is_admin_user(user) and selected_person not in visible_collection_names:
-        return render_template("login.html", next_url="", error="You do not have access to that deck owner."), 403
+    editable_owners = _accessible_person_names(user)
     if DATABASE_BACKEND == "postgres":
         from postgres_app_db import connect_app_database
         from postgres_decks import fetch_deck_list_data
@@ -7179,9 +7132,6 @@ def decks_page():
             ).fetchall()
         ]
         conn.close()
-    if user and not is_admin_user(user):
-        rows = [row for row in rows if str(row["person_name"] or "") in visible_collection_names]
-        owners = visible_collection_names
     decks: list[dict[str, Any]] = []
     all_tags: dict[str, str] = {}
     for row in rows:
@@ -7197,6 +7147,7 @@ def decks_page():
             all_tags.setdefault(tag.casefold(), tag)
         deck["cover_url"] = deck_cover_url(deck)
         deck["person_name"] = str(deck.get("person_name") or "").strip()
+        deck["editable"] = deck["person_name"].casefold() in {name.casefold() for name in editable_owners}
         if query and query not in " ".join([deck.get("name") or "", deck.get("source") or "", deck["person_name"], " ".join(deck["tags"])]).casefold():
             continue
         if selected_tag and selected_tag.casefold() not in {t.casefold() for t in deck["tags"]}:
@@ -7206,8 +7157,8 @@ def decks_page():
         decks.append(deck)
     current_user_row = current_user()
     default_person = str(current_user_row["person_name"] or "").strip() if current_user_row else ""
-    if not default_person and owners:
-        default_person = owners[0]
+    if default_person not in editable_owners:
+        default_person = editable_owners[0] if editable_owners else ""
     person_options = sorted({str(d.get("person_name") or "Unassigned") for d in (dict(r) for r in rows)}, key=str.casefold)
     grouped: dict[str, list[dict[str, Any]]] = {}
     for deck in decks:
@@ -7219,6 +7170,8 @@ def decks_page():
         message=request.args.get("message", ""), q=request.args.get("q", ""), selected_tag=selected_tag,
         selected_person=selected_person, tag_options=sorted(all_tags.values(), key=str.casefold),
         person_options=person_options, default_person=default_person,
+        editable_owners=editable_owners,
+        editable_deck_ids={int(deck["id"]) for deck in decks if deck["editable"]},
         postgres_mode=(DATABASE_BACKEND == "postgres"),
     )
 
@@ -7728,6 +7681,8 @@ def deck_view(deck_id:int):
     cover_cards = [card for card in deck_cards if card.get("scryfall_id")]
     owner = str(deck.get("person_name") or default_owner or "Jonathan").strip()
     comparison, stats = deck_comparison(deck_id, owner, fuzzy=fuzzy)
+    deck_editable = _can_manage_deck(deck_id, user)
+    editable_owners = _accessible_person_names(user)
     price_summary = deck_price_summary(comparison, get_tcg_prices())
     price_meta = get_price_meta()
     return render_template(
@@ -7735,6 +7690,8 @@ def deck_view(deck_id:int):
         price_summary=price_summary, price_meta=price_meta,
         owners=owners, selected_owner=owner, fuzzy=fuzzy, cover_cards=cover_cards,
         message=request.args.get("message", ""),
+        deck_editable=deck_editable,
+        editable_owners=editable_owners,
         postgres_mode=(DATABASE_BACKEND == "postgres"),
     )
 
