@@ -15,7 +15,6 @@ All tables in this migration live in the `app` schema:
 | --- | --- |
 | `people` | Named collection owners, with active state |
 | `users` | Web login accounts, password hashes, roles, default person, and manager |
-| `user_people` | Account-to-collection assignments (one account may own multiple people) |
 | `login_attempts` | Login rate-limit state |
 | `app_state` | String-valued application key/value state |
 | `app_migrations` | One-time application data-migration markers |
@@ -36,13 +35,13 @@ or drop an otherwise valid legacy row.
   importer can preserve SQLite IDs.
 - People and usernames have normalized case-insensitive unique indexes to
   reproduce SQLite `NOCASE` uniqueness.
-- One non-null `users.person_id` is the account's default collection.
-  `user_people` supports additional collection assignments while ensuring one
-  person belongs to at most one account. The migration copies every existing
-  `users.person_id` mapping into `user_people`; no inventory rows are moved.
+- `users.person_id` is the account's sole collection link. A unique index
+  ensures one collection belongs to at most one account; an account cannot
+  manage multiple collections.
 - `users.manager_username` establishes the account reporting hierarchy.
   Existing non-superadmin accounts are assigned to the active superadmin by
-  migration; managers can create and administer their assigned regular users.
+  migration. Admins manage their own account plus directly assigned User
+  accounts; Superadmins retain global account and collection access.
 - `inventory.owner` and `decklists.person_name` remain as display/source
   snapshots beside nullable `person_id` references. Deleting a person clears
   the relationship but does not erase the historical label.
@@ -108,18 +107,21 @@ databases. The separate artwork database tables remain represented in the
 
 ## Account and collection hierarchy (Migration 0009)
 
-Migration `0009_account_people_hierarchy.sql` adds:
-- `app.user_people`, a many-people-to-one-account membership table with a
-  unique person constraint and cascading cleanup.
-- `app.users.manager_username`, a self-reference representing the
-  Superadmin → Admin → User reporting chain.
-- A backfill of the previous single `users.person_id` default mappings into
-  `user_people`, preserving `users.person_id` as the default collection.
+Migration `0009_account_people_hierarchy.sql` adds
+`app.users.manager_username`, a self-reference representing the
+Superadmin → Admin → User reporting chain. Existing non-superadmin accounts
+are assigned to the active superadmin by migration.
 
-Inventory ownership remains attached to the person, not the login. This lets an
-account manage several collections without transferring their physical cards.
-Server-side route checks enforce collection-level edit rights; managers can
-administer their assigned regular users, while superadmins retain global access.
+Migration `0010_single_collection_per_account.sql` removes the experimental
+`app.user_people` join table introduced in the first draft of migration 0009.
+The active ownership relationship is solely `app.users.person_id`, which is
+unique for non-null values. No collection or inventory ownership is transferred
+by this cleanup.
+
+Server-side route checks enforce collection-level edit rights. Admins can
+administer User accounts assigned directly to them; Superadmins retain global
+account and collection access. Managing another account does not make that
+account's collection owned by the administrator.
 
 ## Import prerequisites
 
