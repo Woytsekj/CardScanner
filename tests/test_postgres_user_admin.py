@@ -215,6 +215,26 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
         self.assertIn('action="/admin/refresh_scryfall_bulk"', html)
         self.assertNotIn("Back to inventory", html)
 
+    def test_admin_page_keeps_an_inactive_owned_collection_selected(self):
+        conn = connect_app_database(expected_database="cardscanner_dev")
+        try:
+            conn.execute(
+                "UPDATE app.users SET person_id = ? WHERE username = ?",
+                (self.inactive_person_id, self.admin_username),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        response = self.superadmin_client.get("/admin", base_url="http://localhost")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        html = response.get_data(as_text=True)
+        expected = (
+            f'value="{self.inactive_person_id}" selected>'
+            f'{self.inactive_person_name} (inactive)</option>'
+        )
+        self.assertIn(expected, html)
+
     def test_create_user_hashes_password_and_assigns_active_person(self):
         username = f"pg-useradmin-created-{self.token}"
         password = f"Created-Password-{self.token}"
