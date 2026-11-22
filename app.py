@@ -828,6 +828,7 @@ def _editable_deck_ids(user=None) -> set[int]:
 
 
 def _can_manage_deck(deck_id: int, user=None) -> bool:
+    user = user or current_user()
     conn = _account_connection()
     try:
         row = conn.execute(
@@ -837,6 +838,10 @@ def _can_manage_deck(deck_id: int, user=None) -> bool:
         person_name = str(row["person_name"] or "") if row else ""
     finally:
         conn.close()
+    if row is None:
+        return False
+    if is_superadmin_user(user):
+        return True
     return bool(person_name and _can_manage_person_name(person_name, user))
 
 
@@ -4497,8 +4502,6 @@ def bulk_update_inventory():
             return jsonify({"success": False, "error": "You can only edit cards in collections you manage."}), 403
         owner_supplied = "owner" in data and data.get("owner") not in (None, "", "unchanged")
         owner_value = " ".join(str(data.get("owner") or "").split())[:100] if owner_supplied else None
-        if owner_supplied and not _can_manage_person_name(owner_value):
-            return jsonify({"success": False, "error": "You cannot move cards into a collection you do not manage."}), 403
         if owner_supplied:
             owner_conn = _account_connection()
             try:
@@ -4511,12 +4514,25 @@ def bulk_update_inventory():
                 owner_conn.close()
             if not valid_owner:
                 return jsonify({"success": False, "error": "Choose an active owner from the people list."}), 400
+            if not _can_manage_person_name(owner_value):
+                return jsonify({"success": False, "error": "You cannot move cards into a collection you do not manage."}), 403
         raw_deck = data.get("deck_id", "unchanged")
         if "deck_id" in data and raw_deck not in (None, "", "unchanged", "none", "unassigned", "null"):
             try:
                 requested_deck_id = int(raw_deck)
             except (TypeError, ValueError):
                 return jsonify({"success": False, "error": "Invalid deck selection."}), 400
+            deck_conn = _account_connection()
+            try:
+                valid_deck = deck_conn.execute(
+                    f"""SELECT 1 FROM {_account_table('decklists')}
+                        WHERE id=? AND game_id='mtg' LIMIT 1""",
+                    (requested_deck_id,),
+                ).fetchone()
+            finally:
+                deck_conn.close()
+            if not valid_deck:
+                return jsonify({"success": False, "error": "Selected deck does not exist."}), 400
             if not _can_manage_deck(requested_deck_id):
                 return jsonify({"success": False, "error": "You cannot assign cards to a deck you do not manage."}), 403
 
@@ -4808,19 +4824,19 @@ def import_csv():
     owner_override = str(request.form.get("owner") or "").strip()[:100]
     location_override = str(request.form.get("location") or "").strip()[:120]
     actor = current_user()
+    allowed_owners = None
+    default_owner = ""
     if actor and not is_superadmin_user(actor):
-        allowed_owners = _accessible_person_names(actor)
-        owner_lookup = {str(name).casefold(): str(name) for name in allowed_owners}
+        allowed_names = _accessible_person_names(actor)
+        owner_lookup = {str(name).casefold(): str(name) for name in allowed_names}
         if owner_override and owner_override.casefold() not in owner_lookup:
             return jsonify({"success": False, "error": "You can only import cards into collections assigned to your account."}), 403
         if owner_override:
             owner_override = owner_lookup[owner_override.casefold()]
         else:
-            default_owner = str(actor["person_name"] or "").strip()
-            owner_override = owner_lookup.get(default_owner.casefold(), "")
-            if not owner_override and allowed_owners:
-                owner_override = allowed_owners[0]
-        if not owner_override:
+            default_owner = owner_lookup.get(str(actor["person_name"] or "").strip().casefold(), "")
+        allowed_owners = list(owner_lookup.values())
+        if not allowed_owners:
             return jsonify({"success": False, "error": "Your account is not linked to an active collection."}), 403
 
     def manabox_finish(row: dict[str, Any]) -> str:
@@ -4844,6 +4860,8 @@ def import_csv():
                 reader,
                 owner_override=owner_override,
                 location_override=location_override,
+                allowed_owners=allowed_owners,
+                default_owner=default_owner,
                 parse_quantity=parse_qty,
                 normalize_finish=normalize_finish,
                 parse_foil_flag=_import_foil_flag,
@@ -4874,7 +4892,11 @@ def import_csv():
 
     conn = connect_inventory()
     ensure_people_and_auth(conn)
-    known_owners = {n.casefold() for n in active_people(conn)}
+    known_owner_lookup = {n.casefold(): n for n in active_people(conn)}
+    allowed_lookup = (
+        {str(name).casefold(): str(name) for name in allowed_owners}
+        if allowed_owners is not None else None
+    )
     unknown_owners: set[str] = set()
     count = 0
     skipped = 0
@@ -4889,11 +4911,17 @@ def import_csv():
         if rarity.islower():
             rarity = rarity.title()  # ManaBox uses lowercase (common, mythic...)
         price = get(row, "price", "scanned price", "scanned_price", "purchase price", default="0.00")
-        owner = owner_override or str(get(row, "owner", default="Me") or "Me").strip()[:100] or "Me"
-        if owner.casefold() not in known_owners:
-            unknown_owners.add(owner)
+        raw_owner = owner_override or str(
+            get(row, "owner", default=default_owner or "Me") or default_owner or "Me"
+        ).strip()[:100] or default_owner or "Me"
+        canonical_owner = known_owner_lookup.get(raw_owner.casefold())
+        if canonical_owner is None or (
+            allowed_lookup is not None and raw_owner.casefold() not in allowed_lookup
+        ):
+            unknown_owners.add(raw_owner)
             skipped += 1
             continue
+        owner = allowed_lookup.get(raw_owner.casefold(), canonical_owner) if allowed_lookup is not None else canonical_owner
         qty = parse_qty(get(row, "quantity", "qty", default=1))
         finish = manabox_finish(row)
         scan_time = get(row, "scan_date", "scan_time", "scan time", "date", "added", default=datetime.now(timezone.utc).isoformat())
@@ -7185,7 +7213,7 @@ def decks_page():
                         f"""SELECT DISTINCT COALESCE(location, 'Free') AS location
                             FROM {_account_table('inventory')}
                             WHERE lower(COALESCE(owner, 'Me')) IN ({owner_marks})
-                            ORDER BY lower(COALESCE(location, 'Free'))""",
+                            ORDER BY location""",
                         [name.casefold() for name in allowed_names],
                     ).fetchall()
                 ]
