@@ -29,11 +29,11 @@ def import_inventory_csv(
     *,
     owner_override,
     location_override,
-    allowed_owners=None,
-    default_owner="",
     parse_quantity,
     normalize_finish,
     parse_foil_flag,
+    allowed_owners=None,
+    default_owner="",
 ):
     """Import CSV rows in the caller's transaction.
 
