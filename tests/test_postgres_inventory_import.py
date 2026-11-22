@@ -42,6 +42,7 @@ class PostgreSQLInventoryImportHTTPTests(unittest.TestCase):
         self.admin_username = f"pg-import-admin-{self.token}"
         self.vendor_username = f"pg-import-vendor-{self.token}"
         self.user_username = f"pg-import-user-{self.token}"
+        self.user_owner = f"PG Import User Owner {self.token}"
         self.csrf_token = f"csrf-import-{self.token}"
 
         conn = connect_app_database(expected_database="cardscanner_dev")
@@ -61,7 +62,7 @@ class PostgreSQLInventoryImportHTTPTests(unittest.TestCase):
                 VALUES (?, TRUE)
                 RETURNING id
                 """,
-                (f"PG Import User Owner {self.token}",),
+                (self.user_owner,),
             ).fetchone()
             self.user_person_id = int(user_person["id"])
 
@@ -302,9 +303,9 @@ class PostgreSQLInventoryImportHTTPTests(unittest.TestCase):
         response = self.upload(self.admin_client, csv_data)
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         result = response.get_json()
-        self.assertEqual(result["count"], 2)
-        self.assertEqual(result["skipped"], 1)
-        self.assertEqual(result["unknown_owners"], [])
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["skipped"], 2)
+        self.assertEqual(result["unknown_owners"], ["Not An Active Person"])
         rows = self.imported_rows()
         self.assertEqual({row["owner"] for row in rows}, {self.owner})
         self.assertEqual(
@@ -346,19 +347,26 @@ class PostgreSQLInventoryImportHTTPTests(unittest.TestCase):
         self.assertFalse(response.get_json()["success"])
         self.assertEqual(self.imported_rows(), [])
 
-    def test_import_is_admin_only_and_requires_csrf(self):
+    def test_import_is_available_to_scoped_users_and_requires_csrf(self):
         csv_data = self.make_csv(
             ["name", "owner"],
             [[f"{self.prefix} Permissions", self.owner]],
+        )
+        user_csv = self.make_csv(
+            ["name", "owner"],
+            [[f"{self.prefix} User Permissions", self.user_owner]],
         )
 
         self.assertEqual(
             self.upload(self.vendor_client, csv_data).status_code,
             403,
         )
+        user_response = self.upload(self.user_client, user_csv)
+        self.assertEqual(user_response.status_code, 200, user_response.get_data(as_text=True))
+        self.assertEqual(user_response.get_json()["count"], 1)
         self.assertEqual(
-            self.upload(self.user_client, csv_data).status_code,
-            403,
+            {row["owner"] for row in self.imported_rows()},
+            {self.user_owner},
         )
         self.assertEqual(
             self.upload(self.guest_client, csv_data).status_code,
