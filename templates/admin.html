@@ -21,7 +21,7 @@
     <div class="admin-grid admin-account-grid">
       <div class="admin-panel">
   <h3>Collection owners</h3>
-  <p class="subtle">People are collection identities attached to accounts. A person can belong to one account; an account can manage several people. Deleting a person requires a safe inventory transfer when cards remain.
+  <p class="subtle">People are collection identities attached to accounts. A person can belong to one account; an account can manage several people. Deleting a person requires a safe inventory transfer when cards remain.</p>
   <form method="post" action="{{ url_for('add_person') }}" class="add-person-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input name="name" placeholder="New person name" maxlength="100" required><button class="button">Add person</button>
   </form>
@@ -60,8 +60,7 @@
     <div class="form-grid-2">
       <label>Username<input name="username" maxlength="150" required></label>
       <label>Password<input type="password" name="password" minlength="12" autocomplete="new-password" required></label>
-      {% if admin_is_superadmin or (current_role == 'admin' and user.manager_username == admin_user) %}<label>Role<select name="role"><option value="user">User</option><option value="admin">Admin</option><option value="vendor">Vendor</option></select></label>{% else %}<input type="hidden" name="role" value="user"><div class="subtle">New account role: User (managed by you)</div>{% endif %}
-      {% if admin_is_superadmin or (current_role == 'admin' and user.manager_username == admin_user) %}<label>Managed by<select name="manager_username"><option value="">No manager</option>{% for manager in managers %}<option value="{{ manager.username }}">{{ manager.username }}</option>{% endfor %}</select></label>{% endif %}
+      {% if admin_is_superadmin %}<label>Role<select name="role"><option value="user">User</option><option value="admin">Admin</option><option value="vendor">Vendor</option></select></label><label>Managed by<select name="manager_username"><option value="">No manager</option>{% for manager in managers %}<option value="{{ manager.username }}">{{ manager.username }}</option>{% endfor %}</select></label>{% else %}<input type="hidden" name="role" value="user"><div class="subtle">New account role: User (managed by you)</div>{% endif %}
       <label>Linked person (optional)<select name="person_id"><option value="">No linked person</option>{% for person in account_people %}<option value="{{ person.id }}">{{ person.name }}</option>{% endfor %}</select></label>
     </div>
     <button class="button" type="submit">Create User</button>
@@ -101,7 +100,7 @@
         <button class="button secondary" type="submit">Change username</button>
       </form>
 
-      {% if not user.is_superadmin %}
+      {% if admin_is_superadmin and not user.is_superadmin %}
       <form method="post" action="{{ url_for('change_user_role', username=user.username) }}" class="search-inline">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <select name="role" aria-label="Role for {{ user.username }}">
@@ -118,7 +117,7 @@
       {% if user.username|lower != admin_user|lower %}
       <form method="post" action="{{ url_for('toggle_user', username=user.username) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button class="button secondary" type="submit">{{ 'Deactivate' if user.active else 'Activate' }}</button>
+        <button class="button secondary" type="submit" onclick="return confirm('Change access status for {{ user.username|e }}?');">{{ 'Deactivate' if user.active else 'Activate' }}</button>
       </form>
       <form method="post" action="{{ url_for('admin_reset_user_password', username=user.username) }}" class="search-inline">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

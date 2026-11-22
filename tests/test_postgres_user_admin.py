@@ -196,7 +196,7 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
         )
         html = response.get_data(as_text=True)
 
-        self.assertIn("Web users</h2>", html)
+        self.assertIn("Web accounts</h3>", html)
         self.assertIn("Create User", html)
         self.assertIn("Reset password", html)
         self.assertIn(self.superadmin_username, html)

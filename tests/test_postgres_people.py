@@ -212,7 +212,7 @@ class PostgreSQLPeopleTests(unittest.TestCase):
         response = self.admin_client.get("/admin", base_url="http://localhost")
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         html = response.get_data(as_text=True)
-        self.assertIn("People</h2>", html)
+        self.assertIn("Collection owners</h3>", html)
         self.assertIn('action="/admin/people"', html)
         self.assertIn("Delete permanently", html)
         self.assertNotIn("Price History &amp; Discord Alerts", html)
