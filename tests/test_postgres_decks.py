@@ -44,15 +44,20 @@ class PostgreSQLDeckComparisonTests(unittest.TestCase):
 
         conn = connect_app_database(expected_database="cardscanner_dev")
         try:
+            person = conn.execute(
+                "INSERT INTO app.people (name, active) VALUES (?, TRUE) RETURNING id",
+                (self.owner,),
+            ).fetchone()
+            self.person_id = int(person["id"])
             conn.execute(
                 """
                 INSERT INTO app.users (
                     username, password_hash, is_admin, role,
-                    is_superadmin, active
+                    is_superadmin, active, person_id
                 )
-                VALUES (?, ?, TRUE, 'admin', FALSE, TRUE)
+                VALUES (?, ?, TRUE, 'admin', FALSE, TRUE, ?)
                 """,
-                (self.username, "unused-deck-read-test-hash"),
+                (self.username, "unused-deck-read-test-hash", self.person_id),
             )
             self.deck_id = self.add_deck(conn, "Primary")
             self.other_deck_id = self.add_deck(conn, "Other")
@@ -86,6 +91,7 @@ class PostgreSQLDeckComparisonTests(unittest.TestCase):
                 "DELETE FROM app.users WHERE username = ?",
                 (self.username,),
             )
+            conn.execute("DELETE FROM app.people WHERE id = ?", (self.person_id,))
             conn.commit()
         except Exception:
             conn.rollback()
