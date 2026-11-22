@@ -3069,6 +3069,7 @@ def admin_page():
         people=people,
         users=users,
         account_people=[person for person in people if person["active"]],
+        account_people_all=people,
         managers=managers,
         admin_user=current_admin(),
         current_role=str(current_user()["role"] or "user").lower(),

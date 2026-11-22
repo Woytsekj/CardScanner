@@ -85,7 +85,7 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label>Collection<select name="person_id" aria-label="Collection assigned to {{ user.username }}">
           <option value="">Create a new collection for this account</option>
-          {% for person in account_people %}<option value="{{ person.id }}" {% if user.person_id == person.id %}selected{% endif %}>{{ person.name }}</option>{% endfor %}
+          {% for person in account_people_all %}<option value="{{ person.id }}" {% if user.person_id == person.id %}selected{% endif %}>{{ person.name }}{% if not person.active %} (inactive){% endif %}</option>{% endfor %}
         </select></label>
         <button class="button secondary" type="submit">Save collection</button>
       </form>
