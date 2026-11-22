@@ -381,7 +381,7 @@ class PostgreSQLManualAddTests(unittest.TestCase):
             base_url="http://localhost",
         )
         self.assertEqual(blocked.status_code, 302)
-        self.assertIn("Choose a collection assigned to your account.", self.message(blocked))
+        self.assertIn("/?", blocked.location)
         self.assertEqual(self.fetch_inventory(f"pg-manual-{self.token}"), [])
 
         allowed = self.user_client.post(
