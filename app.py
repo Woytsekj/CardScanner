@@ -2678,7 +2678,9 @@ def insert_or_increment_scan(payload: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError("person_id must identify an active server person")
             person = owner_conn.execute(
                 """SELECT p.id, p.name, u.username AS account_id
-                   FROM people p LEFT JOIN users u ON u.person_id=p.id AND u.active=1
+                   FROM people p
+                   LEFT JOIN user_people up ON up.person_id=p.id
+                   LEFT JOIN users u ON u.username=up.username AND u.active=1
                    WHERE p.id=? AND p.active=1""",
                 (person_id,),
             ).fetchone()
@@ -3363,6 +3365,8 @@ def manual_add():
         return redirect(url_for("admin_page", message="Card name is required."))
 
     owner = str(request.form.get("owner") or "").strip()[:100]
+    if not _can_manage_person_name(owner):
+        return redirect(url_for("index", message="Choose a collection assigned to your account."))
     finish = normalize_finish(request.form.get("finish"))
     qty_raw = request.form.get("quantity", "1")
     try:
@@ -3864,6 +3868,8 @@ def add_user():
         person = conn.execute("SELECT id, name, active FROM people WHERE id=?", (person_id,)).fetchone()
         if not person or not int(person["active"]):
             conn.close(); return redirect(url_for("admin_page", message="Choose an active person for this account."))
+        if not actor_superadmin and not _can_manage_person_name(str(person["name"]), actor):
+            conn.close(); return redirect(url_for("admin_page", message="You can only assign collections you manage."))
         if conn.execute("SELECT username FROM users WHERE person_id=?", (person_id,)).fetchone():
             conn.close(); return redirect(url_for("admin_page", message="That person is already assigned to another account."))
     conn.execute(
@@ -3931,6 +3937,24 @@ def assign_user_person(username: str):
 def assign_user_people(username: str):
     if not _can_manage_user_account(username):
         return redirect(url_for("admin_page", message="You can only manage accounts assigned to you."))
+    selected_ids = []
+    for raw in request.form.getlist("person_ids"):
+        try:
+            selected_id = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if selected_id > 0 and selected_id not in selected_ids:
+            selected_ids.append(selected_id)
+    try:
+        default_id = int(request.form.get("default_person_id") or 0) or None
+    except (TypeError, ValueError):
+        default_id = None
+    if default_id is not None and default_id not in selected_ids:
+        selected_ids.append(default_id)
+    if not is_superadmin_user(current_user()):
+        for selected_id in selected_ids:
+            if not _can_manage_person_name(_person_name_by_id(selected_id)):
+                return redirect(url_for("admin_page", message="You can only assign collections you manage."))
     if DATABASE_BACKEND == "postgres":
         from postgres_user_admin import handle_assign_user_people
         return handle_assign_user_people(username)
@@ -4767,6 +4791,18 @@ def import_csv():
     )
     owner_override = str(request.form.get("owner") or "").strip()[:100]
     location_override = str(request.form.get("location") or "").strip()[:120]
+    actor = current_user()
+    if actor and not is_admin_user(actor):
+        allowed_owners = _accessible_person_names(actor)
+        if owner_override and owner_override not in allowed_owners:
+            return jsonify({"success": False, "error": "You can only import cards into collections assigned to your account."}), 403
+        if not owner_override:
+            default_owner = str(actor["person_name"] or "").strip()
+            owner_override = default_owner if default_owner in allowed_owners else (
+                allowed_owners[0] if allowed_owners else ""
+            )
+        if not owner_override:
+            return jsonify({"success": False, "error": "Your account is not linked to an active collection."}), 403
 
     def manabox_finish(row: dict[str, Any]) -> str:
         # ManaBox exports a dedicated Foil boolean. It must override a generic
@@ -4977,7 +5013,9 @@ def _scanner_person_options(conn: sqlite3.Connection, people_rows=None) -> list[
     if people_rows is None:
         people_rows = conn.execute(
             """SELECT p.id, p.name, u.username AS account_id
-               FROM people p LEFT JOIN users u ON u.person_id=p.id AND u.active=1
+               FROM people p
+               LEFT JOIN user_people up ON up.person_id=p.id
+               LEFT JOIN users u ON u.username=up.username AND u.active=1
                WHERE p.active=1 ORDER BY p.name COLLATE NOCASE"""
         ).fetchall()
     return [
@@ -5070,17 +5108,19 @@ def _scanner_mobile_authorized_people(conn: sqlite3.Connection, user) -> list[di
     if _scanner_user_is_admin(user):
         rows = conn.execute(
             """SELECT p.id,p.name,u.username AS account_id
-               FROM people p LEFT JOIN users u ON u.person_id=p.id AND u.active=1
+               FROM people p
+               LEFT JOIN user_people up ON up.person_id=p.id
+               LEFT JOIN users u ON u.username=up.username AND u.active=1
                WHERE p.active=1 ORDER BY p.name COLLATE NOCASE"""
         ).fetchall()
     else:
-        if user["person_id"] is None:
-            return []
         rows = conn.execute(
             """SELECT p.id,p.name,u.username AS account_id
-               FROM people p JOIN users u ON u.person_id=p.id
-               WHERE p.active=1 AND u.active=1 AND u.username=? AND p.id=?""",
-            (user["username"], user["person_id"]),
+               FROM user_people up
+               JOIN people p ON p.id=up.person_id AND p.active=1
+               JOIN users u ON u.username=up.username AND u.active=1
+               WHERE up.username=? ORDER BY p.name COLLATE NOCASE""",
+            (user["username"],),
         ).fetchall()
     return _scanner_person_options(conn, rows)
 

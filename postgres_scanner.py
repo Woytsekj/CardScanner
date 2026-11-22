@@ -56,8 +56,10 @@ def _person_rows(conn, *, username: str | None = None, person_id=None):
             """
             SELECT p.id, p.name, u.username AS account_id
             FROM app.people AS p
+            LEFT JOIN app.user_people AS up
+              ON up.person_id = p.id
             LEFT JOIN app.users AS u
-              ON u.person_id = p.id
+              ON u.username = up.username
              AND u.active IS TRUE
             WHERE p.active IS TRUE
             ORDER BY LOWER(p.name), p.name
@@ -67,15 +69,17 @@ def _person_rows(conn, *, username: str | None = None, person_id=None):
     return conn.execute(
         """
         SELECT p.id, p.name, u.username AS account_id
-        FROM app.people AS p
+        FROM app.user_people AS up
+        JOIN app.people AS p
+          ON p.id = up.person_id
+         AND p.active IS TRUE
         JOIN app.users AS u
-          ON u.person_id = p.id
+          ON u.username = up.username
          AND u.active IS TRUE
-        WHERE p.active IS TRUE
-          AND u.username = ?
-          AND p.id = ?
+        WHERE u.username = ?
+        ORDER BY LOWER(p.name), p.name
         """,
-        (username, person_id),
+        (username,),
     ).fetchall()
 
 
@@ -116,12 +120,9 @@ def fetch_mobile_authorized_people(conn, user, *, is_admin: bool) -> list[dict]:
     if is_admin:
         rows = _person_rows(conn)
     else:
-        if user["person_id"] is None:
-            return []
         rows = _person_rows(
             conn,
             username=str(user["username"]),
-            person_id=user["person_id"],
         )
     return _format_person_options(rows)
 
@@ -237,8 +238,10 @@ def insert_or_increment_scan(
             """
             SELECT p.id, p.name, u.username AS account_id
             FROM app.people AS p
+            LEFT JOIN app.user_people AS up
+              ON up.person_id = p.id
             LEFT JOIN app.users AS u
-              ON u.person_id = p.id AND u.active IS TRUE
+              ON u.username = up.username AND u.active IS TRUE
             WHERE p.id = ? AND p.active IS TRUE
             LIMIT 1
             """,

@@ -114,7 +114,7 @@
       <span class="subtle">Highest power</span>
       {% endif %}
 
-      {% if user.username|lower != admin_user|lower %}
+      {% if user.username|lower != admin_user|lower and (admin_is_superadmin or (current_role == 'admin' and user.manager_username == admin_user)) %}
       <form method="post" action="{{ url_for('toggle_user', username=user.username) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button class="button secondary" type="submit" onclick="return confirm('Change access status for {{ user.username|e }}?');">{{ 'Deactivate' if user.active else 'Activate' }}</button>
