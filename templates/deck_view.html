@@ -92,9 +92,7 @@
   <form method="get" action="{{ url_for('deck_view', deck_id=deck.id) }}" class="owner-filter deck-compare-controls">
     <label class="check-row"><input type="checkbox" name="fuzzy" value="1" {% if fuzzy %}checked{% endif %} onchange="this.form.submit()"> Fuzzy mode — match any printing of the same Oracle card</label>
   </form>
-{% if not postgres_mode %}
-  <a class="button secondary" href="{{ url_for('deck_missing_csv', deck_id=deck.id, fuzzy='1' if fuzzy else '0') }}">Export Buy List CSV</a>
-{% endif %}
+<a class="button secondary" href="{{ url_for('deck_missing_csv', deck_id=deck.id, fuzzy='1' if fuzzy else '0') }}">Export Buy List CSV</a>
 </section>
 
 {% if deck_editable %}
