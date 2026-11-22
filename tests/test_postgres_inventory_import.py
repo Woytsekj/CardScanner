@@ -55,27 +55,51 @@ class PostgreSQLInventoryImportHTTPTests(unittest.TestCase):
                 (self.owner,),
             ).fetchone()
             self.person_id = int(person["id"])
+            user_person = conn.execute(
+                """
+                INSERT INTO app.people (name, active)
+                VALUES (?, TRUE)
+                RETURNING id
+                """,
+                (f"PG Import User Owner {self.token}",),
+            ).fetchone()
+            self.user_person_id = int(user_person["id"])
 
-            for username, is_admin, role in (
-                (self.admin_username, True, "admin"),
-                (self.vendor_username, False, "vendor"),
-                (self.user_username, False, "user"),
-            ):
-                conn.execute(
-                    """
-                    INSERT INTO app.users (
-                        username, password_hash, is_admin, role,
-                        is_superadmin, active
-                    )
-                    VALUES (?, ?, ?, ?, FALSE, TRUE)
-                    """,
-                    (
-                        username,
-                        "unused-import-test-password-hash",
-                        is_admin,
-                        role,
-                    ),
+            conn.execute(
+                """
+                INSERT INTO app.users (
+                    username, password_hash, is_admin, role,
+                    is_superadmin, active, person_id
                 )
+                VALUES (?, ?, TRUE, 'admin', FALSE, TRUE, ?)
+                """,
+                (self.admin_username, "unused-import-test-password-hash", self.person_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO app.users (
+                    username, password_hash, is_admin, role,
+                    is_superadmin, active
+                )
+                VALUES (?, ?, FALSE, 'vendor', FALSE, TRUE)
+                """,
+                (self.vendor_username, "unused-import-test-password-hash"),
+            )
+            conn.execute(
+                """
+                INSERT INTO app.users (
+                    username, password_hash, is_admin, role,
+                    is_superadmin, active, person_id, manager_username
+                )
+                VALUES (?, ?, FALSE, 'user', FALSE, TRUE, ?, ?)
+                """,
+                (
+                    self.user_username,
+                    "unused-import-test-password-hash",
+                    self.user_person_id,
+                    self.admin_username,
+                ),
+            )
             conn.commit()
         except Exception:
             conn.rollback()
@@ -155,8 +179,8 @@ class PostgreSQLInventoryImportHTTPTests(unittest.TestCase):
                 ),
             )
             conn.execute(
-                "DELETE FROM app.people WHERE id = ?",
-                (self.person_id,),
+                "DELETE FROM app.people WHERE id IN (?, ?)",
+                (self.person_id, self.user_person_id),
             )
             conn.commit()
         except Exception:
@@ -198,7 +222,7 @@ class PostgreSQLInventoryImportHTTPTests(unittest.TestCase):
         self.assertEqual(row["rarity"], "Mythic")
         self.assertEqual(row["price"], "1.25")
         self.assertEqual(row["quantity"], 3)
-        self.assertEqual(row["owner"], self.owner.upper())
+        self.assertEqual(row["owner"], self.owner)
         self.assertEqual(row["person_id"], self.person_id)
         self.assertEqual(row["finish"], "normal")
         self.assertEqual(row["collector_number"], "007")
@@ -278,9 +302,11 @@ class PostgreSQLInventoryImportHTTPTests(unittest.TestCase):
         response = self.upload(self.admin_client, csv_data)
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         result = response.get_json()
-        self.assertEqual(result["count"], 1)
-        self.assertEqual(result["skipped"], 2)
-        self.assertEqual(result["unknown_owners"], ["Not An Active Person"])
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["unknown_owners"], [])
+        rows = self.imported_rows()
+        self.assertEqual({row["owner"] for row in rows}, {self.owner})
         self.assertEqual(
             result["note"],
             "Rows for unknown owners were skipped. Add those people in Admin, then re-import.",
