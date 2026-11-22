@@ -48,13 +48,5 @@ def fetch_admin_page_data(conn, *, username=None, superadmin=False):
     ).fetchall()
 
     users = [dict(account) for account in users]
-    for account in users:
-        rows = conn.execute(
-            "SELECT person_id FROM app.user_people WHERE lower(username)=lower(?) ORDER BY person_id",
-            (account["username"],),
-        ).fetchall()
-        account["person_ids"] = sorted({int(row["person_id"]) for row in rows} | (
-            {int(account["person_id"])} if account["person_id"] is not None else set()
-        ))
 
     return people, users
