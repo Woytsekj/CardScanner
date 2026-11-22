@@ -877,13 +877,36 @@ def _accessible_person_names(user=None) -> list[str]:
     conn = _account_connection()
     try:
         marks = ", ".join("?" for _ in ids)
+        active_clause = "active IS TRUE" if DATABASE_BACKEND == "postgres" else "active=1"
         rows = conn.execute(
-            f"SELECT name FROM {_account_table('people')} WHERE active=1 AND id IN ({marks}) ORDER BY lower(name)",
+            f"SELECT name FROM {_account_table('people')} WHERE {active_clause} AND id IN ({marks}) ORDER BY lower(name)",
             list(ids),
         ).fetchall()
         return [str(row["name"]) for row in rows]
     finally:
         conn.close()
+
+
+def _effective_inventory_owner(user=None, requested_owner: str = "") -> str:
+    """Resolve a non-superadmin inventory view to a collection in their scope."""
+    user = user or current_user()
+    if not user:
+        return "__no_assigned_collection__"
+    requested = " ".join(str(requested_owner or "").strip().split())
+    if is_superadmin_user(user):
+        return requested
+
+    allowed = _accessible_person_names(user)
+    by_key = {name.casefold(): name for name in allowed}
+    own = str(user["person_name"] or "").strip()
+    if is_admin_user(user):
+        if requested and requested.casefold() in by_key:
+            return by_key[requested.casefold()]
+        if own and own.casefold() in by_key:
+            return by_key[own.casefold()]
+        return sorted(allowed, key=str.casefold)[0] if allowed else "__no_assigned_collection__"
+
+    return own if own and own.casefold() in by_key else "__no_assigned_collection__"
 
 
 def _can_manage_inventory_rows(item_ids, user=None) -> bool:
@@ -4159,9 +4182,10 @@ def set_counts():
 def index():
     search = request.args.get("q", "").strip()
     owner_explicit = "owner" in request.args
-    owner_filter = request.args.get("owner", "").strip()
+    requested_owner = request.args.get("owner", "").strip()
     user = current_user()
     editable_owners = _accessible_person_names(user)
+    owner_filter = _effective_inventory_owner(user, requested_owner)
     editable_deck_ids = _editable_deck_ids(user)
     finish_filter = request.args.get("finish", "").strip().lower()
     type_filter = request.args.get("type", "").strip()
@@ -4238,9 +4262,15 @@ def index():
             )
         finally:
             conn.close()
+        if not is_superadmin_user(user):
+            allowed = {name.casefold() for name in editable_owners}
+            owners = [name for name in owners if str(name).casefold() in allowed]
     else:
         conn = connect_inventory()
         owners = active_people(conn)
+        if not is_superadmin_user(user):
+            allowed = {name.casefold() for name in editable_owners}
+            owners = [name for name in owners if str(name).casefold() in allowed]
         decks = conn.execute("SELECT id, name FROM decklists ORDER BY name COLLATE NOCASE").fetchall()
         total_rows = conn.execute("SELECT COUNT(*) FROM inventory").fetchone()[0]
         total_cards = conn.execute("SELECT COALESCE(SUM(IFNULL(quantity,1)),0) FROM inventory").fetchone()[0]
@@ -4248,6 +4278,16 @@ def index():
         if "Free" not in locations:
             locations.insert(0, "Free")
         conn.close()
+
+    if not is_superadmin_user(user):
+        allowed = {name.casefold() for name in editable_owners}
+        owner_totals = {name: value for name, value in owner_totals.items() if name.casefold() in allowed}
+        owner_counts = {name: value for name, value in owner_counts.items() if name.casefold() in allowed}
+        grand_total = sum(float(value or 0) for value in owner_totals.values())
+        global_finish_totals = {
+            finish: sum(int(counts.get(finish, 0) or 0) for counts in owner_counts.values())
+            for finish in ("normal", "foil")
+        }
 
     return render_template(
         "index.html",
@@ -4800,7 +4840,8 @@ def import_csv():
 @app.get("/export_csv")
 @admin_required
 def export_csv():
-    inventory, _, _, _, _, _ = inventory_rows("", "", "", "date", "desc")
+    owner = _effective_inventory_owner(current_user())
+    inventory, _, _, _, _, _ = inventory_rows("", owner, "", "date", "desc")
     out = io.StringIO(newline="")
     writer = csv.writer(out)
     writer.writerow([
@@ -4825,7 +4866,7 @@ def export_csv():
 @admin_required
 def export_manabox_csv():
     """Export in ManaBox's collection CSV format (Collection > menu > Import)."""
-    owner = request.args.get("owner", "").strip()
+    owner = _effective_inventory_owner(current_user(), request.args.get("owner", ""))
     inventory, _, _, _, _, _ = inventory_rows("", owner, "", "date", "desc")
     out = io.StringIO(newline="")
     writer = csv.writer(out)
