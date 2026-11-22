@@ -249,7 +249,7 @@ class PostgreSQLScannerPersistenceTests(unittest.TestCase):
                 "is_superadmin": False,
                 "role": "user",
             }
-            visible = fetch_mobile_authorized_people(conn, user, is_admin=False)
+            visible = fetch_mobile_authorized_people(conn, user, is_superadmin=False)
             self.assertEqual(len(visible), 1)
             self.assertEqual(visible[0]["id"], self.person_id)
             self.assertEqual(visible[0]["name"], self.owner)
