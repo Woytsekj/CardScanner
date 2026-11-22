@@ -4979,25 +4979,25 @@ def _scanner_mobile_authorized_people(conn: sqlite3.Connection, user) -> list[di
         )
 
     ensure_people_and_auth(conn)
-    if _scanner_user_is_admin(user):
+    if is_superadmin_user(user):
         rows = conn.execute(
             """SELECT p.id,p.name,u.username AS account_id
                FROM people p
-               LEFT JOIN users u
-                 ON u.active=1 AND (
-                   u.person_id=p.id
-                 )
+               LEFT JOIN users u ON u.active=1 AND u.person_id=p.id
                WHERE p.active=1 ORDER BY p.name COLLATE NOCASE"""
         ).fetchall()
     else:
+        managed = _managed_usernames(user)
+        if not managed:
+            return []
+        placeholders = ", ".join("?" for _ in managed)
         rows = conn.execute(
-            """SELECT p.id,p.name,u.username AS account_id
-               FROM people p
-               JOIN users u ON u.active=1 AND u.username=? AND (
-                 u.person_id=p.id
-               )
-               WHERE p.active=1 ORDER BY p.name COLLATE NOCASE""",
-            (user["username"],),
+            f"""SELECT p.id,p.name,u.username AS account_id
+                FROM people p
+                JOIN users u ON u.active=1 AND u.person_id=p.id
+                WHERE p.active=1 AND lower(u.username) IN ({placeholders})
+                ORDER BY p.name COLLATE NOCASE""",
+            [name.casefold() for name in managed],
         ).fetchall()
     return _scanner_person_options(conn, rows)
 
