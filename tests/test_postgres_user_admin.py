@@ -231,7 +231,7 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 302)
-        self.assertIn(f"Created admin user {username}", self.message(response))
+        self.assertEqual(self.message(response), f"Created Admin {username} and linked to the selected person.")
 
         user = self.fetch_user(username)
         self.assertIsNotNone(user)
