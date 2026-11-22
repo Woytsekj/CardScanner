@@ -778,15 +778,20 @@ def _can_manage_person_name(person_name: str, user=None) -> bool:
         conn.close()
 
 
-def _can_manage_inventory_row(item_id: int, user=None) -> bool:
+def _inventory_row_for_write(item_id: int):
     conn = _account_connection()
     try:
-        row = conn.execute(
-            f"SELECT owner FROM {_account_table('inventory')} WHERE id=?",
+        return conn.execute(
+            f"""SELECT owner FROM {_account_table('inventory')}
+                WHERE id=? AND game_id='mtg'""",
             (item_id,),
         ).fetchone()
     finally:
         conn.close()
+
+
+def _can_manage_inventory_row(item_id: int, user=None) -> bool:
+    row = _inventory_row_for_write(item_id)
     return bool(row and _can_manage_person_name(str(row["owner"] or ""), user))
 
 
@@ -4343,6 +4348,8 @@ def update_inventory():
         return jsonify({"success": False, "error": "Invalid id"}), 400
     field = data.get("field")
     value = data.get("value")
+    if not _inventory_row_for_write(item_id):
+        return jsonify({"success": False, "error": "Inventory row not found."}), 404
     if not _can_manage_inventory_row(item_id):
         return jsonify({"success": False, "error": "You can only edit cards in collections you manage."}), 403
     if field not in {"quantity", "owner", "finish", "location", "for_vending", "deck_id"}:
@@ -4572,6 +4579,8 @@ def move_quantity():
     except (TypeError, ValueError):
         return jsonify({"success": False, "error": "Invalid item or quantity."}), 400
     destination = " ".join(str(data.get("destination") or "").strip().split())[:120] or "Free"
+    if not _inventory_row_for_write(item_id):
+        return jsonify({"success": False, "error": "Inventory row not found."}), 404
     if not _can_manage_inventory_row(item_id):
         return jsonify({"success": False, "error": "You can only move cards in collections you manage."}), 403
     if move_qty < 1:
@@ -4679,6 +4688,8 @@ def move_quantity():
 @app.delete("/delete/<int:item_id>")
 @admin_required
 def delete_item(item_id: int):
+    if not _inventory_row_for_write(item_id):
+        return jsonify({"success": False})
     if not _can_manage_inventory_row(item_id):
         return jsonify({"success": False, "error": "You can only delete cards in collections you manage."}), 403
     if DATABASE_BACKEND == "postgres":
