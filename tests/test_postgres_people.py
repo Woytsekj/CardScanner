@@ -204,7 +204,12 @@ class PostgreSQLPeopleTests(unittest.TestCase):
             reserve_id = int(reserve["id"])
             self.person_ids.append(reserve_id)
             conn.execute(
-                "UPDATE app.users SET person_id = ? WHERE username = ?",
+                """
+                UPDATE app.users
+                SET person_id = ?, is_admin = TRUE, is_superadmin = TRUE,
+                    role = 'superadmin'
+                WHERE username = ?
+                """,
                 (reserve_id, self.admin_username),
             )
             conn.commit()
