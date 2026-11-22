@@ -29,6 +29,8 @@ def import_inventory_csv(
     *,
     owner_override,
     location_override,
+    allowed_owners=None,
+    default_owner="",
     parse_quantity,
     normalize_finish,
     parse_foil_flag,
@@ -82,6 +84,11 @@ def import_inventory_csv(
 
     owner_override = str(owner_override or "").strip()[:100]
     location_override = str(location_override or "").strip()[:120]
+    allowed_lookup = (
+        {str(name).strip().casefold(): str(name).strip() for name in allowed_owners}
+        if allowed_owners is not None else None
+    )
+    default_owner = str(default_owner or "").strip()[:100]
 
     prepared = []
     unknown_owners = set()
@@ -95,9 +102,20 @@ def import_inventory_csv(
             continue
 
         owner_value = owner_override or str(
-            get(row, "owner", default="Me") or "Me"
-        ).strip()[:100] or "Me"
-        owner = owner_value.strip()[:100] or "Me"
+            get(row, "owner", default=default_owner or "Me") or default_owner or "Me"
+        ).strip()[:100] or default_owner or "Me"
+        owner = owner_value.strip()[:100] or default_owner or "Me"
+        canonical_owner = next(
+            (str(person["name"]) for person in people if str(person["name"]).strip().casefold() == owner.casefold()),
+            None,
+        )
+        if canonical_owner is None or (
+            allowed_lookup is not None and owner.casefold() not in allowed_lookup
+        ):
+            unknown_owners.add(owner)
+            skipped += 1
+            continue
+        owner = allowed_lookup.get(owner.casefold(), canonical_owner) if allowed_lookup is not None else canonical_owner
         person_id = person_ids.get(owner.casefold())
         if person_id is None:
             unknown_owners.add(owner)
