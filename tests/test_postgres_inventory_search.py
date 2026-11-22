@@ -322,7 +322,10 @@ class PostgreSQLInventorySearchHTTPTests(unittest.TestCase):
             base_url="http://localhost",
         )
 
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        payload = response.get_json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["results"], [])
 
 
 if __name__ == "__main__":
