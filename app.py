@@ -8863,7 +8863,7 @@ def enrich_metadata():
                 "WHERE scryfall_id IS NOT NULL AND scryfall_id != '' "
                 "AND scryfall_id NOT IN (SELECT scryfall_id FROM card_metadata) "
                 + owner_sql + " LIMIT ?",
-                tuple(params if allowed_owners is None or not allowed_owners else [*params[:-1], params[-1]]),
+                tuple(params),
             ).fetchall()
         ]
         conn.close()
