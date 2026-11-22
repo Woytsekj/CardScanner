@@ -7365,28 +7365,28 @@ def decks_import():
             deck_person = str(current["person_name"] or "").strip() if current else ""
         if not deck_person or not _can_manage_person_name(deck_person):
             raise ValueError("Choose a deck owner assigned to your account.")
-        # Non-Superadmins import deck cards and optional inventory only into the
-        # same collection they selected for the deck.
-        if not is_superadmin_user(current_user()):
+        if requested_inventory_owner:
+            owner_conn = _account_connection()
+            try:
+                active_inventory_owner = owner_conn.execute(
+                    f"""SELECT 1 FROM {_account_table('people')}
+                        WHERE lower(name)=lower(?) AND active IS TRUE LIMIT 1""",
+                    (requested_inventory_owner,),
+                ).fetchone()
+            finally:
+                owner_conn.close()
+            if not active_inventory_owner:
+                raise ValueError("Choose an active collection for imported inventory.")
+
+        if is_superadmin_user(current_user()):
+            owner = requested_inventory_owner or deck_person
+        else:
             if requested_inventory_owner:
-                owner_conn = _account_connection()
-                try:
-                    active_inventory_owner = owner_conn.execute(
-                        f"""SELECT 1 FROM {_account_table('people')}
-                            WHERE lower(name)=lower(?) AND active IS TRUE LIMIT 1""",
-                        (requested_inventory_owner,),
-                    ).fetchone()
-                finally:
-                    owner_conn.close()
-                if not active_inventory_owner:
-                    raise ValueError("Choose an active collection for imported inventory.")
                 if not _can_manage_person_name(requested_inventory_owner):
                     raise ValueError("Choose an inventory collection assigned to your account.")
                 if requested_inventory_owner.casefold() != deck_person.casefold():
                     raise ValueError("Imported inventory must use the selected deck collection.")
             owner = deck_person
-        elif requested_inventory_owner and not _can_manage_person_name(requested_inventory_owner):
-            raise ValueError("Choose an active collection for imported inventory.")
 
         if DATABASE_BACKEND == "postgres":
             from postgres_app_db import connect_app_database
