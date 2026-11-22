@@ -2679,8 +2679,12 @@ def insert_or_increment_scan(payload: dict[str, Any]) -> dict[str, Any]:
             person = owner_conn.execute(
                 """SELECT p.id, p.name, u.username AS account_id
                    FROM people p
-                   LEFT JOIN user_people up ON up.person_id=p.id
-                   LEFT JOIN users u ON u.username=up.username AND u.active=1
+                   LEFT JOIN users u ON u.active=1 AND (
+                     u.person_id=p.id OR EXISTS (
+                       SELECT 1 FROM user_people up
+                       WHERE up.username=u.username AND up.person_id=p.id
+                     )
+                   )
                    WHERE p.id=? AND p.active=1""",
                 (person_id,),
             ).fetchone()
@@ -5014,8 +5018,13 @@ def _scanner_person_options(conn: sqlite3.Connection, people_rows=None) -> list[
         people_rows = conn.execute(
             """SELECT p.id, p.name, u.username AS account_id
                FROM people p
-               LEFT JOIN user_people up ON up.person_id=p.id
-               LEFT JOIN users u ON u.username=up.username AND u.active=1
+               LEFT JOIN users u
+                 ON u.active=1 AND (
+                   u.person_id=p.id OR EXISTS (
+                     SELECT 1 FROM user_people up
+                     WHERE up.username=u.username AND up.person_id=p.id
+                   )
+                 )
                WHERE p.active=1 ORDER BY p.name COLLATE NOCASE"""
         ).fetchall()
     return [
@@ -5109,17 +5118,26 @@ def _scanner_mobile_authorized_people(conn: sqlite3.Connection, user) -> list[di
         rows = conn.execute(
             """SELECT p.id,p.name,u.username AS account_id
                FROM people p
-               LEFT JOIN user_people up ON up.person_id=p.id
-               LEFT JOIN users u ON u.username=up.username AND u.active=1
+               LEFT JOIN users u
+                 ON u.active=1 AND (
+                   u.person_id=p.id OR EXISTS (
+                     SELECT 1 FROM user_people up
+                     WHERE up.username=u.username AND up.person_id=p.id
+                   )
+                 )
                WHERE p.active=1 ORDER BY p.name COLLATE NOCASE"""
         ).fetchall()
     else:
         rows = conn.execute(
             """SELECT p.id,p.name,u.username AS account_id
-               FROM user_people up
-               JOIN people p ON p.id=up.person_id AND p.active=1
-               JOIN users u ON u.username=up.username AND u.active=1
-               WHERE up.username=? ORDER BY p.name COLLATE NOCASE""",
+               FROM people p
+               JOIN users u ON u.active=1 AND u.username=? AND (
+                 u.person_id=p.id OR EXISTS (
+                   SELECT 1 FROM user_people up
+                   WHERE up.username=u.username AND up.person_id=p.id
+                 )
+               )
+               WHERE p.active=1 ORDER BY p.name COLLATE NOCASE""",
             (user["username"],),
         ).fetchall()
     return _scanner_person_options(conn, rows)

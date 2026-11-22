@@ -701,7 +701,7 @@ class PostgreSQLFoundationTests(unittest.TestCase):
             try:
                 with conn.transaction():
                     expected_tables = {
-                        "people", "users", "login_attempts", "app_state",
+                        "people", "users", "user_people", "login_attempts", "app_state",
                         "app_migrations", "inventory", "scan_log",
                         "decklists", "deck_cards",
                     }
