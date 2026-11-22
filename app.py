@@ -4975,7 +4975,7 @@ def _scanner_mobile_authorized_people(conn: sqlite3.Connection, user) -> list[di
         from postgres_scanner import fetch_mobile_authorized_people
 
         return fetch_mobile_authorized_people(
-            conn, user, is_admin=_scanner_user_is_admin(user)
+            conn, user, is_superadmin=is_superadmin_user(user)
         )
 
     ensure_people_and_auth(conn)
