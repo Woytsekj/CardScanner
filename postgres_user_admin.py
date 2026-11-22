@@ -107,6 +107,20 @@ def handle_add_user():
             ).fetchone()
             if not person or not bool(person["active"]):
                 return "Choose an active person for this account."
+            if not actor_superadmin:
+                membership = conn.execute(
+                    """
+                    SELECT 1 FROM app.user_people
+                    WHERE lower(username)=lower(?) AND person_id=?
+                    UNION
+                    SELECT 1 FROM app.users
+                    WHERE lower(username)=lower(?) AND person_id=?
+                    LIMIT 1
+                    """,
+                    (actor_username, person_id, actor_username, person_id),
+                ).fetchone()
+                if not membership:
+                    return "You can only assign collections you manage."
 
             assigned = conn.execute(
                 "SELECT username FROM app.users WHERE person_id = ?",
@@ -215,6 +229,21 @@ def handle_assign_user_person(username: str):
             ).fetchone()
             if not person or not bool(person["active"]):
                 return "Choose an active person."
+            if not bool(session.get("is_superadmin")):
+                actor_username = str(session.get("username") or "")
+                membership = conn.execute(
+                    """
+                    SELECT 1 FROM app.user_people
+                    WHERE lower(username)=lower(?) AND person_id=?
+                    UNION
+                    SELECT 1 FROM app.users
+                    WHERE lower(username)=lower(?) AND person_id=?
+                    LIMIT 1
+                    """,
+                    (actor_username, person_id, actor_username, person_id),
+                ).fetchone()
+                if not membership:
+                    return "You can only assign collections you manage."
 
             person_name = str(person["name"])
             other = conn.execute(
@@ -290,6 +319,21 @@ def handle_assign_user_people(username: str):
             ).fetchone()
             if not person or not bool(person["active"]):
                 return "Choose only active people."
+            if not bool(session.get("is_superadmin")):
+                actor_username = str(session.get("username") or "")
+                membership = conn.execute(
+                    """
+                    SELECT 1 FROM app.user_people
+                    WHERE lower(username)=lower(?) AND person_id=?
+                    UNION
+                    SELECT 1 FROM app.users
+                    WHERE lower(username)=lower(?) AND person_id=?
+                    LIMIT 1
+                    """,
+                    (actor_username, person_id, actor_username, person_id),
+                ).fetchone()
+                if not membership:
+                    return "You can only assign collections you manage."
             assigned = conn.execute(
                 "SELECT username FROM app.user_people WHERE person_id=? AND lower(username)<>lower(?)",
                 (person_id, actual),
