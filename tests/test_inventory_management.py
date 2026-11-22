@@ -48,8 +48,14 @@ class InventoryManagementTests(unittest.TestCase):
         conn = self.connect()
         app_module.ensure_people_and_auth(conn)
         conn.execute(
-            "UPDATE users SET is_admin=1, is_superadmin=1, role='superadmin' "
-            "WHERE username='ci-admin'"
+            """
+            INSERT INTO users(
+                username, password_hash, is_admin, role, is_superadmin, active
+            )
+            VALUES('ci-admin', 'unused-test-password-hash', 1, 'superadmin', 1, 1)
+            ON CONFLICT(username) DO UPDATE SET
+                is_admin=1, is_superadmin=1, role='superadmin', active=1
+            """
         )
         conn.commit()
         conn.close()
@@ -382,6 +388,13 @@ class InventoryManagementTests(unittest.TestCase):
         self.assertIn("Nick Vending Card", vending_page, "vending is shared across owners by default")
 
         deck_id = self.add_deck("Jonathan Deck")
+        deck_conn = self.connect()
+        deck_conn.execute(
+            "UPDATE decklists SET person_name='Jonathan' WHERE id=?",
+            (deck_id,),
+        )
+        deck_conn.commit()
+        deck_conn.close()
         deck_response = self.client.get(f"/decks/{deck_id}", base_url="http://localhost")
         self.assertEqual(deck_response.status_code, 200)
         deck_page = deck_response.get_data(as_text=True)
