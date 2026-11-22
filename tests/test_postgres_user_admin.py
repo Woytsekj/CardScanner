@@ -724,11 +724,14 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
         for path, payload in requests:
             with self.subTest(path=path):
                 response = self.post(path, payload, client=self.admin_client)
-                self.assertEqual(response.status_code, 302)
-                self.assertEqual(
-                    self.message(response),
-                    "You can only manage accounts assigned to you.",
-                )
+                if path.endswith("/role"):
+                    self.assertEqual(response.status_code, 403)
+                else:
+                    self.assertEqual(response.status_code, 302)
+                    self.assertEqual(
+                        self.message(response),
+                        "You can only manage accounts assigned to you.",
+                    )
                 unchanged = self.fetch_user(self.vendor_username)
                 self.assertIsNotNone(unchanged)
                 self.assertEqual(unchanged["password_hash"], original_password_hash)
