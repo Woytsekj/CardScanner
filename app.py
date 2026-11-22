@@ -441,7 +441,7 @@ def _ensure_people_and_auth(conn: sqlite3.Connection) -> None:
         BEGIN
             INSERT INTO people(name, active)
             VALUES (
-                substr(NEW.username, 1, 60) || ' Collection (' || lower(hex(randomblob(4))) || ')',
+                substr(NEW.username, 1, 60) || ' Collection (' || lower(hex(randomblob(8))) || ')',
                 1
             );
             UPDATE users SET person_id=last_insert_rowid() WHERE rowid=NEW.rowid;
@@ -454,7 +454,7 @@ def _ensure_people_and_auth(conn: sqlite3.Connection) -> None:
         BEGIN
             INSERT INTO people(name, active)
             VALUES (
-                substr(NEW.username, 1, 60) || ' Collection (' || lower(hex(randomblob(4))) || ')',
+                substr(NEW.username, 1, 60) || ' Collection (' || lower(hex(randomblob(8))) || ')',
                 1
             );
             UPDATE users SET person_id=last_insert_rowid() WHERE rowid=NEW.rowid;

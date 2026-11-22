@@ -2,6 +2,14 @@
 -- Preserve all existing account-to-person links; only unlinked accounts receive
 -- newly-created, dedicated collections. No existing collection is reassigned.
 
+-- Explicit-ID imports may not have advanced the identity sequence yet.
+-- Synchronize it before the backfill trigger creates any new people rows.
+SELECT setval(
+    pg_get_serial_sequence('app.people', 'id')::regclass,
+    COALESCE((SELECT MAX(id) FROM app.people), 1),
+    EXISTS (SELECT 1 FROM app.people)
+);
+
 CREATE OR REPLACE FUNCTION app.ensure_user_collection()
 RETURNS TRIGGER
 LANGUAGE plpgsql
