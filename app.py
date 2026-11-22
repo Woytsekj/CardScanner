@@ -8822,9 +8822,15 @@ def enrich_metadata():
         from postgres_app_db import connect_app_database
         from postgres_scryfall_metadata import fetch_missing_scryfall_ids
 
+        allowed_owners = (
+            None if is_superadmin_user(current_user())
+            else _accessible_person_names(current_user())
+        )
         conn = connect_app_database()
         try:
-            ids = fetch_missing_scryfall_ids(conn, limit)
+            ids = fetch_missing_scryfall_ids(
+                conn, limit, owners=allowed_owners
+            )
         finally:
             conn.close()
 
@@ -8835,13 +8841,29 @@ def enrich_metadata():
             time.sleep(0.12)
     else:
         conn = connect_inventory()
+        allowed_owners = (
+            None if is_superadmin_user(current_user())
+            else _accessible_person_names(current_user())
+        )
+        owner_sql = ""
+        params = [limit]
+        if allowed_owners is not None:
+            if not allowed_owners:
+                owner_sql = " AND 1=0"
+            else:
+                owner_marks = ", ".join("?" for _ in allowed_owners)
+                owner_sql = (
+                    f" AND lower(COALESCE(owner, 'Me')) IN ({owner_marks})"
+                )
+                params = [*sorted(name.casefold() for name in allowed_owners), limit]
+                # SQL placeholders for collection names precede LIMIT.
         ids = [
             row[0] for row in conn.execute(
                 "SELECT DISTINCT scryfall_id FROM inventory "
                 "WHERE scryfall_id IS NOT NULL AND scryfall_id != '' "
                 "AND scryfall_id NOT IN (SELECT scryfall_id FROM card_metadata) "
-                "LIMIT ?",
-                (limit,),
+                + owner_sql + " LIMIT ?",
+                tuple(params if allowed_owners is None or not allowed_owners else [*params[:-1], params[-1]]),
             ).fetchall()
         ]
         conn.close()
