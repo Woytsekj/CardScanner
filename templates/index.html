@@ -175,10 +175,10 @@
         <button type="button" class="button secondary" id="clearInventorySelection">Clear selection</button>
       </div>
       <div class="bulk-controls-row">
-        <label>Owner<select id="bulkOwner"><option value="unchanged">No change</option>{% for owner in owners %}<option value="{{ owner }}">{{ owner }}</option>{% endfor %}</select></label>
+        <label>Owner<select id="bulkOwner"><option value="unchanged">No change</option>{% for owner in editable_owners %}<option value="{{ owner }}">{{ owner }}</option>{% endfor %}</select></label>
         <label>For vending<select id="bulkVending"><option value="unchanged">No change</option><option value="1">Mark for vending</option><option value="0">Remove from vending</option></select></label>
         <label>Storage location<input id="bulkLocation" type="text" list="location-options" placeholder="Leave unchanged"></label>
-        <label>Deck assignment<select id="bulkDeck"><option value="unchanged">No change</option><option value="none">Unassigned / free pool</option>{% for deck in decks %}<option value="{{ deck.id }}">{{ deck.name }}</option>{% endfor %}</select></label>
+        <label>Deck assignment<select id="bulkDeck"><option value="unchanged">No change</option><option value="none">Unassigned / free pool</option>{% for deck in decks %}{% if deck.id in editable_deck_ids %}<option value="{{ deck.id }}">{{ deck.name }}</option>{% endif %}{% endfor %}</select></label>
         <button type="button" class="button" id="applyBulkEdit">Apply to selected</button>
       </div>
       <div class="status" id="bulkEditStatus" role="status" aria-live="polite"></div>
@@ -202,8 +202,9 @@
     {% if view == 'grid' %}
     <section class="card-grid" aria-label="Card collection">
       {% for item in inventory %}
+      {% set item_editable = item.owner in editable_owners %}
       <article class="card-tile" id="tile-{{ item.id }}">
-        {% if admin_user %}<label class="inventory-select-label"><input class="inventory-select" type="checkbox" value="{{ item.id }}" aria-label="Select {{ item.name }} for bulk editing"> Select</label>{% endif %}
+        {% if admin_user and item_editable %}<label class="inventory-select-label"><input class="inventory-select" type="checkbox" value="{{ item.id }}" aria-label="Select {{ item.name }} for bulk editing"> Select</label>{% endif %}
         <button type="button" class="card-art-trigger" title="{{ item.name|e }} · {{ item.set_code or '—' }} #{{ item.collector_number or '—' }}" aria-label="View details and price history for {{ item.name|e }}"
           data-scryfall="{{ item.scryfall_id or '' }}" data-tcg="{{ item.tcgplayer_id or '' }}" data-image="{{ item.image_url or '' }}" data-name="{{ item.name|e }}"
           data-set="{{ item.set_code or '' }}" data-collector="{{ item.collector_number or '' }}" data-rarity="{{ item.rarity or '' }}" data-finish="{{ item.finish }}"
@@ -224,7 +225,7 @@
             </span>
           </span>
         </button>
-        {% if admin_user %}
+        {% if admin_user and item_editable %}
         <details class="tile-manage-menu edit-only-control">
           <summary>Manage inventory row</summary>
           <div class="tile-manage-controls">
@@ -238,7 +239,7 @@
               <label>Finish<select class="finish-input" data-id="{{ item.id }}" data-field="finish"><option value="normal" {% if item.finish == 'normal' %}selected{% endif %}>Normal</option><option value="foil" {% if item.finish == 'foil' %}selected{% endif %}>Foil</option></select></label>
               <label>Quantity<input class="qty-input" type="number" min="1" step="1" data-id="{{ item.id }}" data-field="quantity" value="{{ item.quantity }}" aria-label="Quantity for {{ item.name }}"></label>
               <label>Location<input class="location-input" type="text" data-id="{{ item.id }}" data-field="location" value="{{ item.location|e }}" aria-label="Location for {{ item.name }}"></label>
-              <label>Owner<select class="inline-input owner-input" data-id="{{ item.id }}" data-field="owner" aria-label="Owner for {{ item.name }}">{% for owner in owners %}<option value="{{ owner }}" {% if owner == item.owner %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select></label>
+              <label>Owner<select class="inline-input owner-input" data-id="{{ item.id }}" data-field="owner" aria-label="Owner for {{ item.name }}">{% for owner in editable_owners %}<option value="{{ owner }}" {% if owner == item.owner %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select></label>
               <button class="icon-button delete-button" data-id="{{ item.id }}" title="Delete">×</button>
             </div>
           </div>
@@ -261,8 +262,9 @@
           </thead>
           <tbody>
           {% for item in inventory %}
+            {% set item_editable = item.owner in editable_owners %}
             <tr id="row-{{ item.id }}">
-              <td class="selection-column">{% if admin_user %}<input class="inventory-select" type="checkbox" value="{{ item.id }}" aria-label="Select {{ item.name }} for bulk editing">{% endif %}</td>
+              <td class="selection-column">{% if admin_user and item_editable %}<input class="inventory-select" type="checkbox" value="{{ item.id }}" aria-label="Select {{ item.name }} for bulk editing">{% endif %}</td>
               <td class="name-cell">
                 <div class="name-with-thumb">
                   {% if item.image_url %}<img src="{{ item.image_url }}" class="thumb oracle-image-trigger" alt="" data-scryfall="{{ item.scryfall_id or '' }}" data-tcg="{{ item.tcgplayer_id or '' }}" data-name="{{ item.name|e }}" data-image="{{ item.image_url }}" data-set="{{ item.set_code or '' }}" data-collector="{{ item.collector_number or '' }}" data-rarity="{{ item.rarity or '' }}" data-finish="{{ item.finish }}" data-owner="{{ item.owner|e }}" data-quantity="{{ item.quantity }}" data-location="{{ item.location|e }}" data-price="{{ '%.2f'|format(item.calculated_unit_price|float) }}" loading="lazy" onerror="imageFailed(this)">{% else %}<div class="thumb placeholder-thumb">—</div>{% endif %}
@@ -278,17 +280,17 @@
               <td><span class="finish-pill {{ item.finish }}">{{ item.finish|capitalize }}</span></td>
               <td>
                 <span class="edit-value">{{ item.owner }}</span>
-                {% if admin_user %}<select class="inline-input owner-input edit-only-control" data-id="{{ item.id }}" data-field="owner" aria-label="Owner for {{ item.name }}">{% for owner in owners %}<option value="{{ owner }}" {% if owner == item.owner %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select>{% endif %}
+                {% if admin_user and item_editable %}<select class="inline-input owner-input edit-only-control" data-id="{{ item.id }}" data-field="owner" aria-label="Owner for {{ item.name }}">{% for owner in owners %}<option value="{{ owner }}" {% if owner == item.owner %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select>{% endif %}
               </td>
-              <td><span class="edit-value">{{ item.quantity }}</span>{% if admin_user %}<input class="qty-input edit-only-control" type="number" min="1" step="1" data-id="{{ item.id }}" data-field="quantity" value="{{ item.quantity }}" aria-label="Quantity for {{ item.name }}">{% endif %}</td>
-              <td><span class="edit-value">{{ item.location }}</span>{% if admin_user %}<input class="location-input edit-only-control" type="text" data-id="{{ item.id }}" data-field="location" value="{{ item.location|e }}" aria-label="Storage location for {{ item.name }}">{% endif %}</td>
+              <td><span class="edit-value">{{ item.quantity }}</span>{% if admin_user and item_editable %}<input class="qty-input edit-only-control" type="number" min="1" step="1" data-id="{{ item.id }}" data-field="quantity" value="{{ item.quantity }}" aria-label="Quantity for {{ item.name }}">{% endif %}</td>
+              <td><span class="edit-value">{{ item.location }}</span>{% if admin_user and item_editable %}<input class="location-input edit-only-control" type="text" data-id="{{ item.id }}" data-field="location" value="{{ item.location|e }}" aria-label="Storage location for {{ item.name }}">{% endif %}</td>
               <td>
                 <span class="edit-value">{% if item.deck_id %}{% for deck in decks %}{% if deck.id == item.deck_id %}{{ deck.name }}{% endif %}{% endfor %}{% else %}Unassigned{% endif %}</span>
-                {% if admin_user %}<select class="inline-input deck-input edit-only-control" data-id="{{ item.id }}" data-field="deck_id" aria-label="Deck assignment for {{ item.name }}"><option value="none" {% if not item.deck_id %}selected{% endif %}>Unassigned</option>{% for deck in decks %}<option value="{{ deck.id }}" {% if item.deck_id == deck.id %}selected{% endif %}>{{ deck.name }}</option>{% endfor %}</select>{% endif %}
+                {% if admin_user and item_editable %}<select class="inline-input deck-input edit-only-control" data-id="{{ item.id }}" data-field="deck_id" aria-label="Deck assignment for {{ item.name }}"><option value="none" {% if not item.deck_id %}selected{% endif %}>Unassigned</option>{% for deck in decks %}<option value="{{ deck.id }}" {% if item.deck_id == deck.id %}selected{% endif %}>{{ deck.name }}</option>{% endfor %}</select>{% endif %}
               </td>
               <td>
                 <span class="edit-value">{{ 'Yes' if item.for_vending else 'No' }}</span>
-                {% if admin_user %}<label class="check-row vending-cell edit-only-control"><input type="checkbox" class="vending-input" data-id="{{ item.id }}" data-field="for_vending" {% if item.for_vending %}checked{% endif %} {% if item.deck_id %}disabled{% endif %} aria-label="For vending: {{ item.name }}"></label>{% endif %}
+                {% if admin_user and item_editable %}<label class="check-row vending-cell edit-only-control"><input type="checkbox" class="vending-input" data-id="{{ item.id }}" data-field="for_vending" {% if item.for_vending %}checked{% endif %} {% if item.deck_id %}disabled{% endif %} aria-label="For vending: {{ item.name }}"></label>{% endif %}
               </td>
               <td><span class="count-pair">N {{ item.card_normal_qty }} · F {{ item.card_foil_qty }}</span></td>
               <td><span class="pill scanned">${{ '%.2f'|format(item.scanned_price|float) }}</span></td>
@@ -299,7 +301,7 @@
               <td class="row-actions">
                 {% if item.tcgplayer_id %}<button class="button secondary price-history-button" data-tcg="{{ item.tcgplayer_id }}" data-name="{{ item.name|e }}" data-finish="{{ item.finish }}">History</button>{% endif %}
                 {% if item.scryfall_id %}<button class="button secondary oracle-button" data-scryfall="{{ item.scryfall_id }}" data-name="{{ item.name|e }}" data-image="{{ item.image_url or '' }}">Oracle / Image</button>{% endif %}
-                {% if admin_user %}
+                {% if admin_user and item_editable %}
                 <button class="button secondary counts-button edit-only-control" data-scryfall="{{ item.scryfall_id }}" data-owner="{{ item.owner|e }}" data-name="{{ item.name|e }}" data-normal="{{ item.owner_normal_qty }}" data-foil="{{ item.owner_foil_qty }}">Counts</button>
                 <button class="button secondary move-button edit-only-control" data-id="{{ item.id }}" data-name="{{ item.name|e }}" data-qty="{{ item.quantity }}" data-location="{{ item.location|e }}">Move</button>
                 <select class="finish-input edit-only-control" data-id="{{ item.id }}" data-field="finish">
