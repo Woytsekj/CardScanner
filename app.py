@@ -4278,7 +4278,6 @@ def index():
         total_rows=total_rows,
         total_cards=total_cards,
         postgres_mode=(DATABASE_BACKEND == 'postgres'),
-        owners=owners,
         editable_owners=editable_owners,
         admin_user=(current_admin() or (str(user["username"]) if user and str(user["role"]).lower() in {"user", "member"} else None)),
         admin_is_superadmin=is_superadmin_user(user),
