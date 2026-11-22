@@ -3050,25 +3050,29 @@ def admin_page():
 
     manageable_people_ids = _manageable_person_ids(current_user())
     assignable_people_ids = set(manageable_people_ids)
-    if is_admin_user(current_user()) and not is_superadmin_user(current_user()):
-        assign_conn = _account_connection()
-        try:
-            unassigned = assign_conn.execute(
-                f"""SELECT p.id FROM {_account_table('people')} p
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM {_account_table('users')} u
-                        WHERE u.person_id=p.id
-                    )"""
-            ).fetchall()
-            assignable_people_ids.update(int(row["id"]) for row in unassigned)
-        finally:
-            assign_conn.close()
+    assign_conn = _account_connection()
+    try:
+        unassigned = assign_conn.execute(
+            f"""SELECT p.id FROM {_account_table('people')} p
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM {_account_table('users')} u
+                    WHERE u.person_id=p.id
+                )"""
+        ).fetchall()
+        unassigned_people_ids = {int(row["id"]) for row in unassigned}
+        if is_admin_user(current_user()) and not is_superadmin_user(current_user()):
+            assignable_people_ids.update(unassigned_people_ids)
+    finally:
+        assign_conn.close()
     people = [person for person in people if int(person["id"]) in assignable_people_ids]
     return render_template(
         "admin.html",
         people=people,
         users=users,
-        account_people=[person for person in people if person["active"]],
+        account_people=[
+            person for person in people
+            if person["active"] and int(person["id"]) in unassigned_people_ids
+        ],
         account_people_all=people,
         managers=managers,
         admin_user=current_admin(),
