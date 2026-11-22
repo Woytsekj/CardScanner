@@ -432,19 +432,9 @@ def _ensure_people_and_auth(conn: sqlite3.Connection) -> None:
     # Each person can be the default collection for at most one web account.
     # A partial index preserves the ability to leave service/vendor accounts unlinked.
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_person_id_unique ON users(person_id) WHERE person_id IS NOT NULL")
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS user_people (
-            username TEXT NOT NULL COLLATE NOCASE REFERENCES users(username) ON DELETE CASCADE,
-            person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (username, person_id),
-            UNIQUE (person_id)
-        )
-    """)
-    c.execute("""
-        INSERT OR IGNORE INTO user_people(username, person_id)
-        SELECT username, person_id FROM users WHERE person_id IS NOT NULL
-    """)
+    # Remove the experimental join table from databases bootstrapped by an
+    # earlier draft. users.person_id is the single account-to-collection link.
+    c.execute("DROP TABLE IF EXISTS user_people")
     c.execute("UPDATE users SET role='admin' WHERE is_admin=1 AND (role IS NULL OR role='')")
     c.execute("UPDATE users SET role='vendor' WHERE is_admin=0 AND (role IS NULL OR role='')")
     c.execute("UPDATE users SET is_superadmin=1, is_admin=1, role='superadmin' WHERE is_superadmin=1")
@@ -716,28 +706,6 @@ def _account_connection():
     return conn
 
 
-def _account_person_ids(username: str) -> set[int]:
-    username = str(username or "").strip()
-    if not username:
-        return set()
-    conn = _account_connection()
-    try:
-        rows = conn.execute(
-            f"SELECT person_id FROM {_account_table('user_people')} WHERE lower(username)=lower(?)",
-            (username,),
-        ).fetchall()
-        ids = {int(row["person_id"]) for row in rows if row["person_id"] is not None}
-        default = conn.execute(
-            f"SELECT person_id FROM {_account_table('users')} WHERE lower(username)=lower(?)",
-            (username,),
-        ).fetchone()
-        if default and default["person_id"] is not None:
-            ids.add(int(default["person_id"]))
-        return ids
-    finally:
-        conn.close()
-
-
 def _managed_usernames(user) -> set[str]:
     if not user:
         return set()
@@ -754,24 +722,14 @@ def _managed_usernames(user) -> set[str]:
     conn = _account_connection()
     try:
         rows = conn.execute(
-            f"SELECT username, manager_username FROM {_account_table('users')}"
+            f"""SELECT username FROM {_account_table('users')}
+                WHERE lower(manager_username)=lower(?)
+                  AND lower(role) IN ('user', 'member')""",
+            (root,),
         ).fetchall()
+        return {root} | {str(row["username"]) for row in rows}
     finally:
         conn.close()
-    children: dict[str, list[str]] = {}
-    for row in rows:
-        manager = str(row["manager_username"] or "").casefold()
-        if manager:
-            children.setdefault(manager, []).append(str(row["username"]))
-    result = {root}
-    pending = [root]
-    while pending:
-        current = pending.pop()
-        for child in children.get(current.casefold(), []):
-            if child not in result:
-                result.add(child)
-                pending.append(child)
-    return result
 
 
 def _manageable_person_ids(user=None) -> set[int]:
@@ -789,17 +747,22 @@ def _manageable_person_ids(user=None) -> set[int]:
         placeholders = ", ".join("?" for _ in usernames)
         lowered = [name.casefold() for name in usernames]
         rows = conn.execute(
-            f"SELECT person_id FROM {_account_table('user_people')} "
-            f"WHERE lower(username) IN ({placeholders})",
-            lowered,
-        ).fetchall()
-        ids = {int(row["person_id"]) for row in rows if row["person_id"] is not None}
-        rows = conn.execute(
             f"SELECT person_id FROM {_account_table('users')} "
             f"WHERE lower(username) IN ({placeholders}) AND person_id IS NOT NULL",
             lowered,
         ).fetchall()
-        ids.update(int(row["person_id"]) for row in rows)
+        ids = {int(row["person_id"]) for row in rows if row["person_id"] is not None}
+        # Admins can also create and assign currently unowned collections.
+        if is_admin_user(user):
+            rows = conn.execute(
+                f"""SELECT p.id FROM {_account_table('people')} p
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM {_account_table('users')} u
+                        WHERE u.person_id=p.id
+                    )"""
+            ).fetchall()
+            ids.update(int(row["id"]) for row in rows)
+
         return ids
     finally:
         conn.close()
@@ -881,11 +844,11 @@ def _can_manage_user_account(username: str, actor=None) -> bool:
             f"SELECT role, manager_username FROM {_account_table('users')} WHERE lower(username)=lower(?)",
             (str(username or ""),),
         ).fetchone()
-        managed = {name.casefold() for name in _managed_usernames(actor)}
         return bool(
             target
-            and str(target["role"] or "").lower() == "user"
-            and str(target["manager_username"] or "").casefold() in managed
+            and str(target["role"] or "").lower() in {"user", "member"}
+            and str(target["manager_username"] or "").casefold()
+                == str(actor["username"] or "").casefold()
         )
     finally:
         conn.close()
@@ -1178,7 +1141,6 @@ def security_gate():
             "delete_person": "POST",
             "add_user": "POST",
             "assign_user_person": "POST",
-            "assign_user_people": "POST",
             "toggle_user": "POST",
             "admin_reset_user_password": "POST",
             "rename_user": "POST",
@@ -2687,10 +2649,7 @@ def insert_or_increment_scan(payload: dict[str, Any]) -> dict[str, Any]:
                 """SELECT p.id, p.name, u.username AS account_id
                    FROM people p
                    LEFT JOIN users u ON u.active=1 AND (
-                     u.person_id=p.id OR EXISTS (
-                       SELECT 1 FROM user_people up
-                       WHERE up.username=u.username AND up.person_id=p.id
-                     )
+                     u.person_id=p.id
                    )
                    WHERE p.id=? AND p.active=1""",
                 (person_id,),
@@ -3012,8 +2971,6 @@ def admin_page():
             (1 if is_superadmin_user(current_user()) else 0, current_user()["username"], current_user()["username"]),
         ).fetchall()
         users = [dict(account) for account in users]
-        for account in users:
-            account["person_ids"] = sorted(_account_person_ids(account["username"]))
         managers = conn.execute(
             "SELECT username FROM users WHERE (is_admin=1 OR is_superadmin=1) AND active=1 ORDER BY username COLLATE NOCASE"
         ).fetchall()
@@ -3541,13 +3498,6 @@ def add_person():
         conn = connect_app_database()
         try:
             postgres_add_person(conn, name)
-            if not is_superadmin_user(current_user()):
-                person_row = conn.execute("SELECT id FROM app.people WHERE lower(name)=lower(?)", (name,)).fetchone()
-                if person_row:
-                    conn.execute(
-                        "INSERT INTO app.user_people(username, person_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
-                        (str(current_user()["username"]), int(person_row["id"])),
-                    )
             conn.commit()
         finally:
             conn.close()
@@ -3556,12 +3506,6 @@ def add_person():
         ensure_people_and_auth(conn)
         try:
             conn.execute("INSERT INTO people(name, active) VALUES (?, 1)", (name,))
-            person_row = conn.execute("SELECT id FROM people WHERE name=? COLLATE NOCASE", (name,)).fetchone()
-            if person_row and not is_superadmin_user(current_user()):
-                conn.execute(
-                    "INSERT OR IGNORE INTO user_people(username, person_id) VALUES (?, ?)",
-                    (str(current_user()["username"]), int(person_row["id"])),
-                )
             conn.commit()
         except sqlite3.IntegrityError:
             conn.execute("UPDATE people SET active = 1 WHERE name = ?", (name,))
@@ -3892,24 +3836,15 @@ def add_user():
         if not actor_superadmin and not _can_manage_person_name(str(person["name"]), actor):
             conn.close(); return redirect(url_for("admin_page", message="You can only assign collections you manage."))
         assigned = conn.execute(
-            """SELECT username FROM user_people WHERE person_id=?
-               UNION SELECT username FROM users WHERE person_id=? LIMIT 1""",
-            (person_id, person_id),
+            "SELECT username FROM users WHERE person_id=? LIMIT 1",
+            (person_id,),
         ).fetchone()
         if assigned:
-            assigned_username = str(assigned["username"])
-            if not actor_superadmin and assigned_username.casefold() not in {
-                name.casefold() for name in _managed_usernames(actor)
-            }:
-                conn.close(); return redirect(url_for("admin_page", message="That collection belongs to an account outside your management scope."))
+            conn.close(); return redirect(url_for("admin_page", message=f"That collection is already assigned to {assigned['username']}."))
     conn.execute(
         "INSERT INTO users(username,password_hash,is_admin,role,is_superadmin,active,person_id,manager_username) VALUES (?,?,?,?,?,1,?,?)",
         (username,generate_password_hash(password),1 if role=="admin" else 0,role,0,person_id,manager_username),
     )
-    if person_id is not None:
-        conn.execute("UPDATE users SET person_id=NULL WHERE person_id=?", (person_id,))
-        conn.execute("DELETE FROM user_people WHERE person_id=?", (person_id,))
-        conn.execute("INSERT INTO user_people(username, person_id) VALUES (?, ?)", (username, person_id))
     conn.commit(); conn.close()
     assignment_note = "" if person_id is None else " and linked to the selected person"
     return redirect(url_for("admin_page", message=f"Created {role} user {username}{assignment_note}."))
@@ -3947,25 +3882,15 @@ def assign_user_person(username: str):
             if not is_superadmin_user(current_user()) and not _can_manage_person_name(str(person["name"])):
                 return redirect(url_for("admin_page", message="You can only assign collections you manage."))
             assigned = conn.execute(
-                """SELECT username FROM user_people WHERE person_id=? AND username<>? COLLATE NOCASE
-                   UNION SELECT username FROM users WHERE person_id=? AND username<>? COLLATE NOCASE LIMIT 1""",
-                (person_id, username, person_id, username),
+                """SELECT username FROM users
+                   WHERE person_id=? AND lower(username)<>lower(?) LIMIT 1""",
+                (person_id, username),
             ).fetchone()
             if assigned:
-                allowed = {name.casefold() for name in _managed_usernames(current_user())}
-                if not is_superadmin_user(current_user()) and str(assigned["username"]).casefold() not in allowed:
-                    return redirect(url_for("admin_page", message=f"{person['name']} belongs to an account outside your management scope."))
-                conn.execute("DELETE FROM user_people WHERE person_id=?", (person_id,))
-                conn.execute("UPDATE users SET person_id=NULL WHERE person_id=?", (person_id,))
-            conn.execute(
-                "INSERT OR IGNORE INTO user_people(username, person_id) VALUES (?, ?)",
-                (username, person_id),
-            )
-        elif user["person_id"] is not None:
-            conn.execute(
-                "DELETE FROM user_people WHERE username=? AND person_id=?",
-                (username, user["person_id"]),
-            )
+                return redirect(url_for(
+                    "admin_page",
+                    message=f"{person['name']} is already linked to {assigned['username']}. Unlink that account first.",
+                ))
         conn.execute("UPDATE users SET person_id=? WHERE username=?", (person_id, username))
         conn.commit()
         person_name = conn.execute("SELECT name FROM people WHERE id=?", (person_id,)).fetchone()[0] if person_id is not None else None
@@ -3979,87 +3904,6 @@ def assign_user_person(username: str):
 
 
 
-
-@app.post("/admin/users/<username>/people")
-@admin_required
-def assign_user_people(username: str):
-    if not _can_manage_user_account(username):
-        return redirect(url_for("admin_page", message="You can only manage accounts assigned to you."))
-    selected_ids = []
-    for raw in request.form.getlist("person_ids"):
-        try:
-            selected_id = int(raw)
-        except (TypeError, ValueError):
-            continue
-        if selected_id > 0 and selected_id not in selected_ids:
-            selected_ids.append(selected_id)
-    try:
-        default_id = int(request.form.get("default_person_id") or 0) or None
-    except (TypeError, ValueError):
-        default_id = None
-    if default_id is not None and default_id not in selected_ids:
-        selected_ids.append(default_id)
-    if not is_superadmin_user(current_user()):
-        for selected_id in selected_ids:
-            if not _can_manage_person_name(_person_name_by_id(selected_id)):
-                return redirect(url_for("admin_page", message="You can only assign collections you manage."))
-    if DATABASE_BACKEND == "postgres":
-        from postgres_user_admin import handle_assign_user_people
-        return handle_assign_user_people(username)
-
-    username = str(username)[:150]
-    person_ids = []
-    for raw in request.form.getlist("person_ids"):
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            continue
-        if value > 0 and value not in person_ids:
-            person_ids.append(value)
-    try:
-        default_id = int(request.form.get("default_person_id") or 0) or None
-    except (TypeError, ValueError):
-        default_id = None
-    if default_id is not None and default_id not in person_ids:
-        person_ids.insert(0, default_id)
-
-    conn = connect_inventory()
-    ensure_people_and_auth(conn)
-    try:
-        target = conn.execute("SELECT username FROM users WHERE username=?", (username,)).fetchone()
-        if not target:
-            return redirect(url_for("admin_page", message="Web user not found."))
-        for person_id in person_ids:
-            person = conn.execute("SELECT id,name,active FROM people WHERE id=?", (person_id,)).fetchone()
-            if not person or not int(person["active"]):
-                return redirect(url_for("admin_page", message="Choose only active people."))
-            if not is_superadmin_user(current_user()) and not _can_manage_person_name(str(person["name"])):
-                return redirect(url_for("admin_page", message="You can only assign collections you manage."))
-            assigned = conn.execute(
-                """SELECT username FROM user_people WHERE person_id=? AND username<>? COLLATE NOCASE
-                   UNION SELECT username FROM users WHERE person_id=? AND username<>? COLLATE NOCASE LIMIT 1""",
-                (person_id, username, person_id, username),
-            ).fetchone()
-            if assigned:
-                managed = {name.casefold() for name in _managed_usernames(current_user())}
-                if not is_superadmin_user(current_user()) and str(assigned["username"]).casefold() not in managed:
-                    return redirect(url_for("admin_page", message=f"{person['name']} is assigned outside your management scope."))
-        conn.execute("BEGIN IMMEDIATE")
-        for person_id in person_ids:
-            conn.execute("DELETE FROM user_people WHERE person_id=?", (person_id,))
-            conn.execute("UPDATE users SET person_id=NULL WHERE person_id=?", (person_id,))
-        conn.execute("DELETE FROM user_people WHERE username=?", (username,))
-        for person_id in person_ids:
-            conn.execute("INSERT INTO user_people(username, person_id) VALUES (?, ?)", (username, person_id))
-        new_default = default_id if default_id in person_ids else (person_ids[0] if person_ids else None)
-        conn.execute("UPDATE users SET person_id=? WHERE username=?", (new_default, username))
-        conn.commit()
-        return redirect(url_for("admin_page", message=f"Updated collections for {username}."))
-    except sqlite3.IntegrityError:
-        conn.rollback()
-        return redirect(url_for("admin_page", message="A collection is already assigned to another account."))
-    finally:
-        conn.close()
 
 @app.post("/admin/users/<username>/toggle")
 @admin_required
@@ -5044,10 +4888,7 @@ def _scanner_person_options(conn: sqlite3.Connection, people_rows=None) -> list[
                FROM people p
                LEFT JOIN users u
                  ON u.active=1 AND (
-                   u.person_id=p.id OR EXISTS (
-                     SELECT 1 FROM user_people up
-                     WHERE up.username=u.username AND up.person_id=p.id
-                   )
+                   u.person_id=p.id
                  )
                WHERE p.active=1 ORDER BY p.name COLLATE NOCASE"""
         ).fetchall()
@@ -5144,10 +4985,7 @@ def _scanner_mobile_authorized_people(conn: sqlite3.Connection, user) -> list[di
                FROM people p
                LEFT JOIN users u
                  ON u.active=1 AND (
-                   u.person_id=p.id OR EXISTS (
-                     SELECT 1 FROM user_people up
-                     WHERE up.username=u.username AND up.person_id=p.id
-                   )
+                   u.person_id=p.id
                  )
                WHERE p.active=1 ORDER BY p.name COLLATE NOCASE"""
         ).fetchall()
@@ -5156,10 +4994,7 @@ def _scanner_mobile_authorized_people(conn: sqlite3.Connection, user) -> list[di
             """SELECT p.id,p.name,u.username AS account_id
                FROM people p
                JOIN users u ON u.active=1 AND u.username=? AND (
-                 u.person_id=p.id OR EXISTS (
-                   SELECT 1 FROM user_people up
-                   WHERE up.username=u.username AND up.person_id=p.id
-                 )
+                 u.person_id=p.id
                )
                WHERE p.active=1 ORDER BY p.name COLLATE NOCASE""",
             (user["username"],),
