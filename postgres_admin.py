@@ -41,7 +41,7 @@ def fetch_admin_page_data(conn, *, username=None, superadmin=False):
             p.name AS person_name
         FROM app.users AS u
         LEFT JOIN app.people AS p ON p.id = u.person_id
-        WHERE (? IS TRUE OR lower(u.manager_username) = lower(?) OR lower(u.username) = lower(?))
+        WHERE (? IS TRUE OR lower(u.username) = lower(?) OR (lower(u.manager_username) = lower(?) AND lower(u.role) IN ('user', 'member')))
         ORDER BY u.is_superadmin DESC, lower(u.username) COLLATE "C"
         """,
         (bool(superadmin), username, username),
