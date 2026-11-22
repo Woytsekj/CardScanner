@@ -103,6 +103,17 @@ def delete_person(conn, person_id: int, transfer_to: str = "") -> dict:
         return {"status": "not_found"}
 
     source_name = str(person["name"])
+    assigned_user = conn.execute(
+        "SELECT username FROM app.users WHERE person_id = ? LIMIT 1",
+        (person_id,),
+    ).fetchone()
+    if assigned_user:
+        return {
+            "status": "assigned",
+            "name": source_name,
+            "username": str(assigned_user["username"]),
+        }
+
     rows = conn.execute(
         """
         SELECT
@@ -204,11 +215,8 @@ def delete_person(conn, person_id: int, transfer_to: str = "") -> dict:
                     (target_name, target_id, row["id"]),
                 )
 
-    # Decklist person_id is also protected by ON DELETE SET NULL.
-    conn.execute(
-        "UPDATE app.users SET person_id = NULL WHERE person_id = ?",
-        (person_id,),
-    )
+    # An assigned collection cannot be deleted; the guard above ensures there
+    # is no account link to clear or replace here.
     conn.execute("DELETE FROM app.people WHERE id = ?", (person_id,))
 
     return {

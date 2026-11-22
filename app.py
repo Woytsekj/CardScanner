@@ -429,9 +429,45 @@ def _ensure_people_and_auth(conn: sqlite3.Connection) -> None:
     ):
         try: c.execute(ddl)
         except sqlite3.OperationalError: pass
-    # Each person can be the default collection for at most one web account.
-    # A partial index preserves the ability to leave service/vendor accounts unlinked.
+    # Each login owns exactly one collection. SQLite cannot assign NEW values in
+    # a BEFORE trigger, so AFTER triggers create a unique people row and write
+    # its id back to the account. Setting person_id to NULL creates a replacement
+    # collection rather than leaving an account unassigned.
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_person_id_unique ON users(person_id) WHERE person_id IS NOT NULL")
+    c.execute("""
+        CREATE TRIGGER IF NOT EXISTS users_ensure_collection_after_insert
+        AFTER INSERT ON users
+        WHEN NEW.person_id IS NULL
+        BEGIN
+            INSERT INTO people(name, active)
+            VALUES (
+                substr(NEW.username, 1, 60) || ' Collection (' || lower(hex(randomblob(4))) || ')',
+                1
+            );
+            UPDATE users SET person_id=last_insert_rowid() WHERE rowid=NEW.rowid;
+        END
+    """)
+    c.execute("""
+        CREATE TRIGGER IF NOT EXISTS users_ensure_collection_after_unlink
+        AFTER UPDATE OF person_id ON users
+        WHEN NEW.person_id IS NULL
+        BEGIN
+            INSERT INTO people(name, active)
+            VALUES (
+                substr(NEW.username, 1, 60) || ' Collection (' || lower(hex(randomblob(4))) || ')',
+                1
+            );
+            UPDATE users SET person_id=last_insert_rowid() WHERE rowid=NEW.rowid;
+        END
+    """)
+    c.execute("""
+        CREATE TRIGGER IF NOT EXISTS people_prevent_account_collection_delete
+        BEFORE DELETE ON people
+        WHEN EXISTS (SELECT 1 FROM users WHERE person_id=OLD.id)
+        BEGIN
+            SELECT RAISE(ABORT, 'Collection is assigned to an account and cannot be deleted');
+        END
+    """)
     # Remove the experimental join table from databases bootstrapped by an
     # earlier draft. users.person_id is the single account-to-collection link.
     c.execute("DROP TABLE IF EXISTS user_people")
@@ -478,6 +514,10 @@ def _ensure_people_and_auth(conn: sqlite3.Connection) -> None:
         exists=c.execute("SELECT username FROM users WHERE username=?",(VENDOR_USERNAME,)).fetchone()
         if not exists:
             c.execute("INSERT INTO users(username,password_hash,is_admin,role,is_superadmin,active) VALUES(?,?,?,?,?,1)",(VENDOR_USERNAME,generate_password_hash(VENDOR_INITIAL_PASSWORD),0,"vendor",0))
+
+    # Backfill every legacy account without changing any existing assignment.
+    # The update trigger supplies a fresh, unique collection for each NULL link.
+    c.execute("UPDATE users SET person_id=NULL WHERE person_id IS NULL")
     conn.commit()
 
 
@@ -3658,6 +3698,19 @@ def delete_person(person_id: int):
     source_person_name = _person_name_by_id(person_id)
     if not _can_manage_person_name(source_person_name):
         return redirect(url_for("admin_page", message="You can only delete collections you manage."))
+    owner_conn = _account_connection()
+    try:
+        assigned_account = owner_conn.execute(
+            f"SELECT username FROM {_account_table('users')} WHERE person_id=? LIMIT 1",
+            (person_id,),
+        ).fetchone()
+    finally:
+        owner_conn.close()
+    if assigned_account:
+        return redirect(url_for(
+            "admin_page",
+            message=f"{source_person_name} is the collection owned by {assigned_account['username']}. Delete that account before deleting its collection.",
+        ))
     transfer_to = " ".join(
         str(request.form.get("transfer_to") or "").strip().split()
     )[:100]
@@ -3709,6 +3762,14 @@ def delete_person(person_id: int):
                 conn.rollback()
                 return redirect(
                     url_for("admin_page", message="Person not found.")
+                )
+            if status == "assigned":
+                conn.rollback()
+                return redirect(
+                    url_for(
+                        "admin_page",
+                        message=f"{result['name']} is the collection owned by {result['username']}. Delete that account before deleting its collection.",
+                    )
                 )
 
             conn.commit()
@@ -3832,10 +3893,6 @@ def delete_person(person_id: int):
         else:
             conn.execute("BEGIN IMMEDIATE")
 
-        conn.execute(
-            "UPDATE users SET person_id = NULL WHERE person_id = ?",
-            (person_id,),
-        )
         conn.execute("DELETE FROM people WHERE id = ?", (person_id,))
         conn.commit()
 
@@ -3920,8 +3977,12 @@ def add_user():
         "INSERT INTO users(username,password_hash,is_admin,role,is_superadmin,active,person_id,manager_username) VALUES (?,?,?,?,?,1,?,?)",
         (username,generate_password_hash(password),1 if role=="admin" else 0,role,0,person_id,manager_username),
     )
+    linked = conn.execute(
+        "SELECT p.name FROM users u JOIN people p ON p.id=u.person_id WHERE u.username=?",
+        (username,),
+    ).fetchone()
     conn.commit(); conn.close()
-    assignment_note = "" if person_id is None else " and linked to the selected person"
+    assignment_note = f" and assigned collection {linked['name']}" if linked else ""
     return redirect(url_for("admin_page", message=f"Created {'Admin' if role == 'admin' else 'user'} {username}{assignment_note}."))
 
 
@@ -3974,9 +4035,15 @@ def assign_user_person(username: str):
                 if owner is None:
                     return redirect(url_for("admin_page", message="You can only assign unassigned collections or collections you manage."))
         conn.execute("UPDATE users SET person_id=? WHERE username=?", (person_id, username))
+        linked = conn.execute(
+            "SELECT p.id,p.name FROM users u JOIN people p ON p.id=u.person_id WHERE lower(u.username)=lower(?)",
+            (username,),
+        ).fetchone()
         conn.commit()
-        person_name = conn.execute("SELECT name FROM people WHERE id=?", (person_id,)).fetchone()[0] if person_id is not None else None
-        message = f"Linked {username} to {person_name}." if person_name else f"Removed the person assignment for {username}."
+        if linked and person_id is None:
+            message = f"Assigned {username} a new collection ({linked['name']})."
+        else:
+            message = f"Linked {username} to {linked['name']}." if linked else f"Could not resolve a collection for {username}."
         return redirect(url_for("admin_page", message=message))
     except sqlite3.IntegrityError:
         conn.rollback()

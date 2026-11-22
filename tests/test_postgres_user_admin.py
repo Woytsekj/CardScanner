@@ -231,7 +231,7 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(self.message(response), f"Created Admin {username} and linked to the selected person.")
+        self.assertEqual(self.message(response), f"Created Admin {username} and assigned collection {self.active_person_name}.")
 
         user = self.fetch_user(username)
         self.assertIsNotNone(user)
@@ -259,7 +259,7 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
             client=self.admin_client,
         )
         self.assertEqual(created.status_code, 302)
-        self.assertEqual(self.message(created), f"Created user {username} and linked to the selected person.")
+        self.assertEqual(self.message(created), f"Created user {username} and assigned collection {self.active_person_name}.")
 
         user = self.fetch_user(username)
         self.assertEqual(user["role"], "user")
@@ -366,7 +366,7 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
         )
         self.assertIsNone(self.fetch_user(username))
 
-    def test_assign_person_enforces_unique_assignment_and_can_unlink(self):
+    def test_assign_person_enforces_unique_assignment_and_blank_creates_replacement(self):
         assigned = self.post(
             f"/admin/users/{self.admin_username}/person",
             {"person_id": str(self.active_person_id)},
@@ -387,18 +387,37 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
         )
         self.assertEqual(conflict.status_code, 302)
         self.assertIn("already linked", self.message(conflict))
-        self.assertIsNone(self.fetch_user(self.vendor_username)["person_id"])
+        vendor_person_id = self.fetch_user(self.vendor_username)["person_id"]
+        self.assertIsNotNone(vendor_person_id)
 
-        unlinked = self.post(
+        replacement = self.post(
             f"/admin/users/{self.admin_username}/person",
             {"person_id": ""},
         )
-        self.assertEqual(unlinked.status_code, 302)
-        self.assertEqual(
-            self.message(unlinked),
-            f"Removed the person assignment for {self.admin_username}.",
+        self.assertEqual(replacement.status_code, 302)
+        self.assertIn(
+            f"Assigned {self.admin_username} a new collection (",
+            self.message(replacement),
         )
-        self.assertIsNone(self.fetch_user(self.admin_username)["person_id"])
+        replacement_id = self.fetch_user(self.admin_username)["person_id"]
+        self.assertIsNotNone(replacement_id)
+        self.assertNotEqual(replacement_id, self.active_person_id)
+
+    def test_assigned_collection_cannot_be_deleted_while_account_exists(self):
+        assigned_person_id = int(self.fetch_user(self.admin_username)["person_id"])
+        response = self.post(
+            f"/admin/people/{assigned_person_id}/delete",
+            {},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(
+            f"is the collection owned by {self.admin_username}",
+            self.message(response),
+        )
+        self.assertEqual(
+            self.fetch_user(self.admin_username)["person_id"],
+            assigned_person_id,
+        )
 
     def test_assign_person_rejects_inactive_or_invalid_person(self):
         inactive = self.post(
@@ -688,7 +707,8 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
             client=self.admin_client,
         )
         self.assertEqual(created.status_code, 302)
-        self.assertEqual(self.message(created), f"Created user {username}.")
+        self.assertIn(f"Created user {username} and assigned collection ", self.message(created))
+        self.assertIsNotNone(self.fetch_user(username)["person_id"])
 
         managed = self.fetch_user(username)
         self.assertEqual(managed["role"], "user")

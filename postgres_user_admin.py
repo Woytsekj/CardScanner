@@ -164,10 +164,16 @@ def handle_add_user():
                 return "That person is already assigned to another account."
             return "Could not create the account because of a database conflict."
 
-        assignment_note = (
-            "" if person_id is None
-            else " and linked to the selected person"
-        )
+        linked = conn.execute(
+            """
+            SELECT p.name
+            FROM app.users u
+            JOIN app.people p ON p.id = u.person_id
+            WHERE lower(u.username) = lower(?)
+            """,
+            (username,),
+        ).fetchone()
+        assignment_note = f" and assigned collection {linked['name']}" if linked else ""
         return f"Created {'Admin' if role == 'admin' else 'user'} {username}{assignment_note}."
 
     return _redirect(_run(operation, lock=True))
@@ -256,10 +262,20 @@ def handle_assign_user_person(username: str):
             "UPDATE app.users SET person_id = ? WHERE username = ?",
             (person_id, actual_username),
         )
-
-        if person_name:
-            return f"Linked {actual_username} to {person_name}."
-        return f"Removed the person assignment for {actual_username}."
+        linked = conn.execute(
+            """
+            SELECT p.id, p.name
+            FROM app.users u
+            JOIN app.people p ON p.id = u.person_id
+            WHERE u.username = ?
+            """,
+            (actual_username,),
+        ).fetchone()
+        if not linked:
+            return f"Could not resolve a collection for {actual_username}."
+        if person_id is None:
+            return f"Assigned {actual_username} a new collection ({linked['name']})."
+        return f"Linked {actual_username} to {linked['name']}."
 
     return _redirect(_run(operation, lock=True))
 

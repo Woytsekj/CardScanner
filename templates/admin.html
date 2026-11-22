@@ -21,7 +21,7 @@
     <div class="admin-grid admin-account-grid">
       <div class="admin-panel">
   <h3>Collection owners</h3>
-  <p class="subtle">Each account owns one collection. Admins manage User accounts assigned to them; Superadmins can manage every account. Managing an account does not change collection ownership. Deleting a person requires a safe inventory transfer when cards remain.</p>
+  <p class="subtle">Every account owns exactly one collection. New accounts receive a dedicated collection automatically, or can be assigned an unassigned collection. Admins manage User accounts assigned to them; Superadmins can manage every account. An account’s collection cannot be deleted while the account exists.</p>
   <form method="post" action="{{ url_for('add_person') }}" class="add-person-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input name="name" placeholder="New person name" maxlength="100" required><button class="button">Add person</button>
   </form>
@@ -61,7 +61,7 @@
       <label>Username<input name="username" maxlength="150" required></label>
       <label>Password<input type="password" name="password" minlength="12" autocomplete="new-password" required></label>
       {% if admin_is_superadmin %}<label>Role<select name="role"><option value="user">User</option><option value="admin">Admin</option><option value="vendor">Vendor</option></select></label><label>Managed by<select name="manager_username"><option value="">No manager</option>{% for manager in managers %}<option value="{{ manager.username }}">{{ manager.username }}</option>{% endfor %}</select></label>{% else %}<input type="hidden" name="role" value="user"><div class="subtle">New account role: User (managed by you)</div>{% endif %}
-      <label>Linked person (optional)<select name="person_id"><option value="">No linked person</option>{% for person in account_people %}<option value="{{ person.id }}">{{ person.name }}</option>{% endfor %}</select></label>
+      <label>Collection<select name="person_id"><option value="">Create a new collection for this account</option>{% for person in account_people %}<option value="{{ person.id }}">{{ person.name }}</option>{% endfor %}</select></label>
     </div>
     <button class="button" type="submit">Create User</button>
   </form>
@@ -84,7 +84,7 @@
       <form method="post" action="{{ url_for('assign_user_person', username=user.username) }}" class="account-collection-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label>Collection<select name="person_id" aria-label="Collection assigned to {{ user.username }}">
-          <option value="">No linked collection</option>
+          <option value="">Create a new collection for this account</option>
           {% for person in account_people %}<option value="{{ person.id }}" {% if user.person_id == person.id %}selected{% endif %}>{{ person.name }}</option>{% endfor %}
         </select></label>
         <button class="button secondary" type="submit">Save collection</button>

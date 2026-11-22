@@ -400,6 +400,54 @@ class InventoryManagementTests(unittest.TestCase):
         deck_page = deck_response.get_data(as_text=True)
         self.assertIn('<option value="Jonathan" selected>', deck_page)
 
+    def test_accounts_always_keep_one_collection_and_assigned_collection_cannot_be_deleted(self) -> None:
+        conn = self.connect()
+        conn.execute(
+            "INSERT INTO users(username,password_hash,is_admin,role,is_superadmin,active) VALUES(?,?,?,?,?,1)",
+            ("collection-owner", app_module.generate_password_hash("collection-owner-password"), 0, "user", 0),
+        )
+        owner = conn.execute(
+            "SELECT person_id FROM users WHERE username='collection-owner'"
+        ).fetchone()
+        self.assertIsNotNone(owner["person_id"])
+        original_person_id = int(owner["person_id"])
+        conn.commit()
+        conn.close()
+
+        # A blank assignment creates a replacement collection; it never unlinks.
+        response = self.client.post(
+            "/admin/users/collection-owner/person",
+            data={"person_id": "", "csrf_token": self.csrf},
+            base_url="http://localhost",
+        )
+        self.assertEqual(response.status_code, 302)
+        conn = self.connect()
+        updated = conn.execute(
+            "SELECT person_id FROM users WHERE username='collection-owner'"
+        ).fetchone()
+        self.assertIsNotNone(updated["person_id"])
+        self.assertNotEqual(int(updated["person_id"]), original_person_id)
+        assigned_person_id = int(updated["person_id"])
+        conn.commit()
+        conn.close()
+
+        blocked = self.client.post(
+            f"/admin/people/{assigned_person_id}/delete",
+            data={"csrf_token": self.csrf},
+            base_url="http://localhost",
+        )
+        self.assertEqual(blocked.status_code, 302)
+        conn = self.connect()
+        still_assigned = conn.execute(
+            "SELECT person_id FROM users WHERE username='collection-owner'"
+        ).fetchone()
+        still_exists = conn.execute(
+            "SELECT id FROM people WHERE id=?", (assigned_person_id,)
+        ).fetchone()
+        conn.close()
+        self.assertEqual(int(still_assigned["person_id"]), assigned_person_id)
+        self.assertIsNotNone(still_exists)
+
     def test_regular_user_can_only_view_and_edit_assigned_collections(self) -> None:
         conn = self.connect()
         my_person = conn.execute("SELECT id FROM people WHERE name='Me'").fetchone()
@@ -568,7 +616,8 @@ class InventoryManagementTests(unittest.TestCase):
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
                 self.assertIn("person_id", columns)
                 row = conn.execute("SELECT username,password_hash,person_id FROM users WHERE username='legacy-admin'").fetchone()
-                self.assertEqual(row, ("legacy-admin", "already-hashed-password", None))
+                self.assertEqual(row[:2], ("legacy-admin", "already-hashed-password"))
+                self.assertIsNotNone(row[2], "legacy accounts receive a dedicated collection during migration")
         finally:
             app_module.DB_INV = original_db
             app_module._AUTH_READY = original_auth

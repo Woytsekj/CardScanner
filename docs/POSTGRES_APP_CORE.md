@@ -114,9 +114,15 @@ are assigned to the active superadmin by migration.
 
 Migration `0010_single_collection_per_account.sql` removes the experimental
 `app.user_people` table if it remains from an earlier preview deployment.
-The active ownership relationship is solely `app.users.person_id`, which is
-unique for non-null values. No collection or inventory ownership is transferred
-by this cleanup.
+
+Migration `0011_required_account_collections.sql` makes `app.users.person_id`
+NOT NULL and unique. Every existing account without a collection receives a
+new dedicated person row; existing non-null ownership links remain unchanged.
+Database triggers automatically create a collection for newly inserted
+accounts and replace a link if an application explicitly submits an empty
+assignment. Collections cannot be deleted while an account owns them. Deleting
+an account leaves its collection intact and unassigned; no collection or
+inventory is transferred to the account's manager.
 
 Server-side route checks enforce collection-level edit rights. Admins can
 administer User accounts assigned directly to them; Superadmins retain global
