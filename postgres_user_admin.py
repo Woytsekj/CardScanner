@@ -107,20 +107,33 @@ def handle_add_user():
             ).fetchone()
             if not person or not bool(person["active"]):
                 return "Choose an active person for this account."
+            assigned = conn.execute(
+                """SELECT username FROM app.user_people WHERE person_id=?
+                   UNION SELECT username FROM app.users WHERE person_id=? LIMIT 1""",
+                (person_id, person_id),
+            ).fetchone()
             if not actor_superadmin:
-                membership = conn.execute(
-                    """
-                    SELECT 1 FROM app.user_people
-                    WHERE lower(username)=lower(?) AND person_id=?
-                    UNION
-                    SELECT 1 FROM app.users
-                    WHERE lower(username)=lower(?) AND person_id=?
-                    LIMIT 1
-                    """,
-                    (actor_username, person_id, actor_username, person_id),
-                ).fetchone()
-                if not membership:
+                if not assigned:
                     return "You can only assign collections you manage."
+                managed = conn.execute(
+                    """
+                    WITH RECURSIVE managed(username) AS (
+                        SELECT username FROM app.users WHERE lower(username)=lower(?)
+                        UNION
+                        SELECT child.username
+                        FROM app.users AS child
+                        JOIN managed AS parent
+                          ON lower(child.manager_username)=lower(parent.username)
+                    )
+                    SELECT 1 FROM managed WHERE lower(username)=lower(?) LIMIT 1
+                    """,
+                    (actor_username, str(assigned["username"])),
+                ).fetchone()
+                if not managed:
+                    return "You can only assign collections you manage."
+            if assigned:
+                conn.execute("DELETE FROM app.user_people WHERE person_id=?", (person_id,))
+                conn.execute("UPDATE app.users SET person_id=NULL WHERE person_id=?", (person_id,))
 
             assigned = conn.execute(
                 "SELECT username FROM app.users WHERE person_id = ?",
