@@ -35,6 +35,14 @@ function metricLabel(metric) {
   return ({market:'Market', low:'Low', mid:'Mid', high:'High', direct_low:'Direct low'})[metric] || 'Market';
 }
 
+const expandedHistoryDialog = document.getElementById('cardDetailHistoryExpanded');
+const expandedHistoryTitle = document.getElementById('cardDetailHistoryExpandedTitle');
+const expandedHistoryStatus = document.getElementById('cardDetailExpandedHistoryStatus');
+const expandedHistoryStats = document.getElementById('cardDetailExpandedHistoryStats');
+const expandedHistoryChart = document.getElementById('cardDetailExpandedPriceHistoryChart');
+const expandedHistoryLegend = document.getElementById('cardDetailExpandedHistoryLegend');
+const expandedHistoryMetric = document.getElementById('cardDetailExpandedHistoryMetric');
+
 function appendSvg(target, tag, attributes, text) {
   const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
   Object.entries(attributes || {}).forEach(([key, value]) => node.setAttribute(key, value));
@@ -63,6 +71,127 @@ function seriesPath(points, metric, xFn, yFn) {
     drawing = true;
   });
   return path.trim();
+}
+
+
+function attachHistoryChartInteraction(targetChart, series, metric, labels, layout) {
+  const {W, right, left, top, plotW, plotH, xFn} = layout;
+  const count = labels.length;
+  if (!count || !series.length) return;
+
+  const tooltipWidth = Math.min(248, plotW - 16);
+  const tooltipHeight = 42 + series.length * 20;
+  const hitArea = appendSvg(targetChart, 'rect', {
+    x: left, y: top, width: plotW, height: plotH,
+    fill: 'transparent', stroke: 'transparent',
+    'pointer-events': 'all', tabindex: '0', focusable: 'true',
+    role: 'slider', 'aria-orientation': 'horizontal',
+    'aria-label': 'Price history chart. Use the left and right arrow keys to inspect dates and prices.',
+    'aria-valuemin': '1', 'aria-valuemax': String(count),
+    'aria-valuenow': String(Math.max(1, Math.ceil(count / 2))),
+    class: 'price-history-hit-area'
+  });
+  const hoverLayer = appendSvg(targetChart, 'g', {
+    visibility: 'hidden', 'pointer-events': 'none', 'aria-hidden': 'true'
+  });
+  const crosshair = appendSvg(hoverLayer, 'line', {
+    x1: left, x2: left, y1: top, y2: top + plotH,
+    stroke: 'var(--muted)', 'stroke-width': '1',
+    'stroke-dasharray': '4 4', opacity: '0.85'
+  });
+  const tooltip = appendSvg(hoverLayer, 'g', {});
+  appendSvg(tooltip, 'rect', {
+    x: 0, y: 0, width: tooltipWidth, height: tooltipHeight,
+    rx: 6, fill: 'var(--panel)', stroke: 'var(--border)',
+    'stroke-width': '1', opacity: '0.98'
+  });
+  const dateLabel = appendSvg(tooltip, 'text', {
+    x: 10, y: 18, fill: 'var(--text)',
+    'font-size': '12', 'font-weight': '700'
+  }, '');
+  const valueLabels = series.map((item, index) => appendSvg(tooltip, 'text', {
+    x: 10, y: 39 + index * 20,
+    fill: SERIES_COLORS[index % SERIES_COLORS.length],
+    'font-size': '12', 'font-weight': '600'
+  }, item.subtype_name));
+
+  let currentIndex = Math.max(0, Math.floor((count - 1) / 2));
+
+  function tooltipDetails(index) {
+    const timestamp = labels[index]?.captured_at;
+    const date = new Date(timestamp);
+    const dateText = Number.isNaN(date.getTime())
+      ? String(timestamp || 'Date unavailable')
+      : date.toLocaleString(undefined, {
+          year: 'numeric', month: 'short', day: 'numeric',
+          hour: 'numeric', minute: '2-digit'
+        });
+    const values = series.map(item => {
+      const point = item.points?.[index];
+      const value = point?.available ? point[metric] : null;
+      return item.subtype_name + ': ' + formatMoney(value);
+    });
+    return {dateText, values};
+  }
+
+  function showIndex(index) {
+    currentIndex = Math.max(0, Math.min(count - 1, index));
+    const x = xFn(currentIndex);
+    const details = tooltipDetails(currentIndex);
+    dateLabel.textContent = details.dateText;
+    details.values.forEach((value, valueIndex) => {
+      if (valueLabels[valueIndex]) valueLabels[valueIndex].textContent = value;
+    });
+
+    let tooltipX = x + 14;
+    if (tooltipX + tooltipWidth > W - right - 4) tooltipX = x - tooltipWidth - 14;
+    tooltipX = Math.max(left + 4, Math.min(tooltipX, W - right - tooltipWidth - 4));
+    tooltip.setAttribute('transform', 'translate(' + tooltipX + ',' + (top + 10) + ')');
+    crosshair.setAttribute('x1', String(x));
+    crosshair.setAttribute('x2', String(x));
+    hoverLayer.setAttribute('visibility', 'visible');
+
+    hitArea.setAttribute('aria-valuenow', String(currentIndex + 1));
+    hitArea.setAttribute(
+      'aria-valuetext',
+      details.dateText + '. ' + details.values.join('. ')
+    );
+  }
+
+  function indexFromPointer(event) {
+    const matrix = targetChart.getScreenCTM();
+    if (!matrix) return currentIndex;
+    try {
+      const point = targetChart.createSVGPoint();
+      point.x = event.clientX;
+      point.y = event.clientY;
+      const local = point.matrixTransform(matrix.inverse());
+      const fraction = Math.max(0, Math.min(1, (local.x - left) / plotW));
+      return Math.round(fraction * (count - 1));
+    } catch (_) {
+      return currentIndex;
+    }
+  }
+
+  hitArea.addEventListener('pointermove', event => showIndex(indexFromPointer(event)));
+  hitArea.addEventListener('pointerdown', event => showIndex(indexFromPointer(event)));
+  hitArea.addEventListener('pointerleave', () => {
+    hoverLayer.setAttribute('visibility', 'hidden');
+  });
+  hitArea.addEventListener('focus', () => showIndex(currentIndex));
+  hitArea.addEventListener('blur', () => {
+    hoverLayer.setAttribute('visibility', 'hidden');
+  });
+  hitArea.addEventListener('keydown', event => {
+    let nextIndex = currentIndex;
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') nextIndex -= 1;
+    else if (event.key === 'ArrowRight' || event.key === 'ArrowUp') nextIndex += 1;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = count - 1;
+    else return;
+    event.preventDefault();
+    showIndex(nextIndex);
+  });
 }
 
 function renderHistoryChart(series, targetChart = historyChart, metric = 'market', targetLegend = historyLegend) {
@@ -97,10 +226,10 @@ function renderHistoryChart(series, targetChart = historyChart, metric = 'market
     const value = min + (max-min)*(i/4);
     const y = yFn(value);
     appendSvg(targetChart, 'line', {
-      x1:left, x2:W-right, y1:y, y2:y, stroke:'#2f2f2f', 'stroke-width':'1'
+      x1:left, x2:W-right, y1:y, y2:y, stroke:'var(--border)', 'stroke-width':'1', opacity:'0.8'
     });
     appendSvg(targetChart, 'text', {
-      x:left-8, y:y+4, 'text-anchor':'end', fill:'#888', 'font-size':'12'
+      x:left-8, y:y+4, 'text-anchor':'end', fill:'var(--muted)', 'font-size':'12'
     }, formatMoney(value));
   }
 
@@ -108,10 +237,10 @@ function renderHistoryChart(series, targetChart = historyChart, metric = 'market
   [...new Set(gridDates)].forEach(index => {
     const x=xFn(index);
     appendSvg(targetChart, 'line', {
-      x1:x, x2:x, y1:top, y2:H-bottom, stroke:'#242424', 'stroke-width':'1'
+      x1:x, x2:x, y1:top, y2:H-bottom, stroke:'var(--border)', 'stroke-width':'1', opacity:'0.65'
     });
     appendSvg(targetChart, 'text', {
-      x, y:H-17, 'text-anchor':'middle', fill:'#888', 'font-size':'12'
+      x, y:H-17, 'text-anchor':'middle', fill:'var(--muted)', 'font-size':'12'
     }, labels[index] ? localLabel(labels[index].captured_at) : '');
   });
 
@@ -120,6 +249,28 @@ function renderHistoryChart(series, targetChart = historyChart, metric = 'market
     const color = SERIES_COLORS[index % SERIES_COLORS.length];
     const d = seriesPath(points, metric, xFn, yFn);
     if (d) {
+      // A small marker with a native SVG title exposes the exact date and
+      // price on hover/focus without adding a permanent tooltip over the line.
+      let previousValue = null;
+      points.forEach((point, pointIndex) => {
+        const value = point[metric];
+        if (!point.available || value == null || !Number.isFinite(Number(value))) {
+          previousValue = null;
+          return;
+        }
+        const numericValue = Number(value);
+        const isLastPoint = pointIndex === points.length - 1;
+        if (numericValue !== previousValue || isLastPoint) {
+          const date = new Date(point.captured_at);
+          const dateText = Number.isNaN(date.getTime()) ? String(point.captured_at || '') : date.toLocaleString();
+          const pointTitle = `${item.subtype_name} · ${dateText} · ${metricLabel(metric)}: ${formatMoney(value)}`;
+          const marker = appendSvg(targetChart, 'circle', {
+            cx:xFn(pointIndex), cy:yFn(numericValue), r:'3.2', fill:color, opacity:'0.9'
+          });
+          appendSvg(marker, 'title', {}, pointTitle);
+        }
+        previousValue = numericValue;
+      });
       appendSvg(targetChart, 'path', {
         d, fill:'none', stroke:color, 'stroke-width':'2.8',
         'stroke-linejoin':'round', 'stroke-linecap':'round'
@@ -149,6 +300,9 @@ function renderHistoryChart(series, targetChart = historyChart, metric = 'market
       label.appendChild(document.createTextNode(item.subtype_name));
       targetLegend.appendChild(label);
     }
+  });
+  attachHistoryChartInteraction(targetChart, series, metric, labels, {
+    W, left, right, top, plotW, plotH, xFn
   });
 }
 
@@ -180,6 +334,30 @@ function renderHistoryStats(series, targetStats, metric) {
 function renderHistoryData(series, targetChart, targetStats, targetLegend, metric) {
   renderHistoryStats(series, targetStats, metric);
   renderHistoryChart(series, targetChart, metric, targetLegend);
+}
+
+function refreshExpandedCardHistory() {
+  if (!expandedHistoryDialog?.open) return;
+  const currentName = document.getElementById('oracleTitle')?.textContent || 'Selected card';
+  const currentStatus = document.getElementById('cardDetailHistoryStatus');
+  const inlineMetric = document.getElementById('cardDetailHistoryMetric');
+  const activeRange = document.querySelector('.card-detail-history-range.active');
+  if (expandedHistoryTitle) expandedHistoryTitle.textContent = currentName + ' · Price History';
+  if (expandedHistoryStatus) expandedHistoryStatus.textContent = currentStatus?.textContent || '';
+  if (expandedHistoryMetric && inlineMetric) expandedHistoryMetric.value = inlineMetric.value;
+  document.querySelectorAll('.card-detail-expanded-range').forEach(button => {
+    button.classList.toggle('active', Number(button.dataset.days) === Number(activeRange?.dataset.days || 90));
+  });
+  if (inlineHistorySeries.length && expandedHistoryChart) {
+    renderHistoryData(
+      inlineHistorySeries, expandedHistoryChart, expandedHistoryStats,
+      expandedHistoryLegend, inlineMetric?.value || 'market'
+    );
+  } else {
+    if (expandedHistoryChart) expandedHistoryChart.innerHTML = '';
+    if (expandedHistoryStats) expandedHistoryStats.innerHTML = '';
+    if (expandedHistoryLegend) expandedHistoryLegend.innerHTML = '';
+  }
 }
 
 async function loadPriceHistory(days) {
@@ -245,15 +423,18 @@ async function loadCardDetailHistory(tcg, days, requestId) {
   if (legend) legend.innerHTML = '';
   if (!tcg) {
     status.textContent = 'No TCGplayer product is linked to this printing, so price history is unavailable.';
+    refreshExpandedCardHistory();
     return;
   }
   status.textContent = `Loading ${days}-day price history…`;
+  refreshExpandedCardHistory();
   try {
     const response = await fetch(`/api/price-history/${encodeURIComponent(tcg)}?days=${days}`);
     const data = await response.json().catch(() => ({}));
     if (requestId !== inlineHistoryRequest) return;
     if (!response.ok || !data.success) {
       status.textContent = data.error || 'Could not load price history.';
+      refreshExpandedCardHistory();
       return;
     }
     inlineHistorySeries = data.series || [];
@@ -267,8 +448,12 @@ async function loadCardDetailHistory(tcg, days, requestId) {
         metricSelect?.value || 'market'
       );
     }
+    refreshExpandedCardHistory();
   } catch (_) {
-    if (requestId === inlineHistoryRequest) status.textContent = 'Could not load price history.';
+    if (requestId === inlineHistoryRequest) {
+      status.textContent = 'Could not load price history.';
+      refreshExpandedCardHistory();
+    }
   }
 }
 
@@ -279,24 +464,63 @@ window.openCardDetailPriceHistory = function(tcg, name) {
   if (status) status.textContent = tcg
     ? 'Preparing price history…'
     : 'No TCGplayer product is linked to this printing, so price history is unavailable.';
-  document.querySelectorAll('.card-detail-history-range').forEach(button =>
+  if (!tcg) {
+    inlineHistorySeries = [];
+    const stats = document.getElementById('cardDetailHistoryStats');
+    const chart = document.getElementById('cardDetailPriceHistoryChart');
+    const legend = document.getElementById('cardDetailHistoryLegend');
+    if (stats) stats.innerHTML = '';
+    if (chart) chart.innerHTML = '';
+    if (legend) legend.innerHTML = '';
+  }
+  if (expandedHistoryDialog?.open) expandedHistoryDialog.close();
+  document.querySelectorAll('.card-detail-history-range, .card-detail-expanded-range').forEach(button =>
     button.classList.toggle('active', Number(button.dataset.days) === 90)
   );
   if (metricSelect) metricSelect.value = 'market';
+  if (expandedHistoryMetric) expandedHistoryMetric.value = 'market';
   if (tcg) void loadCardDetailHistory(tcg, 90, requestId);
 };
-document.querySelectorAll('.card-detail-history-range').forEach(button => button.addEventListener('click', () => {
-  document.querySelectorAll('.card-detail-history-range').forEach(other => other.classList.remove('active'));
-  button.classList.add('active');
+function setCardDetailHistoryRange(days) {
+  document.querySelectorAll('.card-detail-history-range, .card-detail-expanded-range').forEach(button =>
+    button.classList.toggle('active', Number(button.dataset.days) === Number(days))
+  );
   const link = document.getElementById('oracleTcgplayerLink');
   const tcg = link && !link.hidden ? link.href.split('/').pop() : '';
-  void loadCardDetailHistory(tcg, Number(button.dataset.days), ++inlineHistoryRequest);
-}));
-document.getElementById('cardDetailHistoryMetric')?.addEventListener('change', event => {
-  const chart = document.getElementById('cardDetailPriceHistoryChart');
-  const stats = document.getElementById('cardDetailHistoryStats');
-  const legend = document.getElementById('cardDetailHistoryLegend');
+  void loadCardDetailHistory(tcg, Number(days), ++inlineHistoryRequest);
+}
+document.querySelectorAll('.card-detail-history-range, .card-detail-expanded-range').forEach(button =>
+  button.addEventListener('click', () => setCardDetailHistoryRange(button.dataset.days))
+);
+function setCardDetailHistoryMetric(metric) {
+  const inlineMetric = document.getElementById('cardDetailHistoryMetric');
+  if (inlineMetric) inlineMetric.value = metric;
+  if (expandedHistoryMetric) expandedHistoryMetric.value = metric;
   if (inlineHistorySeries.length) {
-    renderHistoryData(inlineHistorySeries, chart, stats, legend, event.target.value);
+    renderHistoryData(
+      inlineHistorySeries,
+      document.getElementById('cardDetailPriceHistoryChart'),
+      document.getElementById('cardDetailHistoryStats'),
+      document.getElementById('cardDetailHistoryLegend'),
+      metric
+    );
   }
+  refreshExpandedCardHistory();
+}
+document.getElementById('cardDetailHistoryMetric')?.addEventListener('change', event =>
+  setCardDetailHistoryMetric(event.target.value)
+);
+expandedHistoryMetric?.addEventListener('change', event =>
+  setCardDetailHistoryMetric(event.target.value)
+);
+document.getElementById('expandCardDetailHistory')?.addEventListener('click', () => {
+  if (!expandedHistoryDialog || expandedHistoryDialog.open) return;
+  expandedHistoryDialog.showModal();
+  refreshExpandedCardHistory();
+});
+document.getElementById('closeCardDetailHistoryExpanded')?.addEventListener('click', () => {
+  if (expandedHistoryDialog?.open) expandedHistoryDialog.close();
+});
+expandedHistoryDialog?.addEventListener('click', event => {
+  if (event.target === expandedHistoryDialog) expandedHistoryDialog.close();
 });

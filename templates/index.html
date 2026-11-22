@@ -5,10 +5,10 @@
 <meta name="csrf-token" content="{{ csrf_token }}">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MTG Scanner Inventory</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.18.0') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.19.0') }}">
 <script src="{{ url_for('static', filename='security.js') }}" defer></script>
 <script src="{{ url_for('static', filename='theme.js', v='39.13.0') }}" defer></script>
-<script src="{{ url_for('static', filename='price-history.js', v='39.14.0') }}" defer></script>
+<script src="{{ url_for('static', filename='price-history.js', v='39.15.0') }}" defer></script>
 </head>
 <body data-inventory-mode="browse">
   {% set page_title = 'Inventory' %}
@@ -323,6 +323,7 @@
       </div>
       <div class="card-detail-backdrop" id="cardDetailBackdrop" hidden></div>
         <aside id="oracleDialog" class="price-history-dialog oracle-dialog" aria-label="Selected card details" hidden>
+          <div id="cardDetailResizeHandle" class="card-detail-resize-handle" role="separator" aria-label="Resize selected card details panel" aria-orientation="vertical" aria-valuemin="400" aria-valuemax="760" aria-valuenow="520" tabindex="0"></div>
           <div class="card-detail-panel-heading">
             <div><span class="panel-eyebrow">Selected card</span><h2 id="oracleTitle">Card Details</h2></div>
             <button class="dialog-close" id="closeCardDetail" type="button" aria-label="Close card details">×</button>
@@ -343,24 +344,27 @@
                 <div id="oraclePrintingLine" class="subtle"></div><div id="oracleCollectionLine" class="subtle"></div>
                 <div class="card-detail-price-row"><strong id="oracleUnitPrice">Per-card price: —</strong><a id="oracleTcgplayerLink" class="button secondary" href="#" target="_blank" rel="noopener noreferrer" hidden>View on TCGplayer ↗</a></div>
               </div>
-              <section class="card-detail-history-panel" aria-label="Card price history">
-                <div class="card-detail-history-heading"><h3>Price history</h3><span class="subtle">TCGCSV market observations</span></div>
-                <div class="history-range-buttons" id="cardDetailHistoryRanges">
-                  <button type="button" class="button secondary card-detail-history-range" data-days="3">3 Days</button><button type="button" class="button secondary card-detail-history-range" data-days="7">1 Week</button><button type="button" class="button secondary card-detail-history-range" data-days="30">1 Month</button><button type="button" class="button secondary card-detail-history-range active" data-days="90">3 Months</button><button type="button" class="button secondary card-detail-history-range" data-days="180">6 Months</button><button type="button" class="button secondary card-detail-history-range" data-days="365">1 Year</button>
-                </div>
-                <label class="history-metric-control">Price metric
-                  <select id="cardDetailHistoryMetric">
-                    <option value="market" selected>Market</option>
-                    <option value="low">Low</option>
-                    <option value="mid">Mid</option>
-                    <option value="high">High</option>
-                    <option value="direct_low">Direct low</option>
-                  </select>
-                </label>
-                <div id="cardDetailHistoryStats" class="history-stats"></div><div id="cardDetailHistoryStatus" class="status" role="status" aria-live="polite"></div>
-                <div class="history-chart-wrap"><svg id="cardDetailPriceHistoryChart" viewBox="0 0 820 360" role="img" aria-label="Selected card price history chart"></svg></div>
-                <div id="cardDetailHistoryLegend" class="chart-legend"></div>
-              </section>
+            </div>
+          </div>
+            <section class="card-detail-history-panel" aria-label="Card price history">
+            <div class="card-detail-history-heading"><div><h3>Price history</h3><span class="subtle">TCGCSV market observations</span></div><button type="button" class="button secondary history-expand-button" id="expandCardDetailHistory" aria-haspopup="dialog">Expand chart ↗</button></div>
+            <div class="history-range-buttons" id="cardDetailHistoryRanges">
+              <button type="button" class="button secondary card-detail-history-range" data-days="3">3 Days</button><button type="button" class="button secondary card-detail-history-range" data-days="7">1 Week</button><button type="button" class="button secondary card-detail-history-range" data-days="30">1 Month</button><button type="button" class="button secondary card-detail-history-range active" data-days="90">3 Months</button><button type="button" class="button secondary card-detail-history-range" data-days="180">6 Months</button><button type="button" class="button secondary card-detail-history-range" data-days="365">1 Year</button>
+            </div>
+            <label class="history-metric-control">Price metric
+              <select id="cardDetailHistoryMetric">
+                <option value="market" selected>Market</option>
+                <option value="low">Low</option>
+                <option value="mid">Mid</option>
+                <option value="high">High</option>
+                <option value="direct_low">Direct low</option>
+              </select>
+            </label>
+            <div id="cardDetailHistoryStats" class="history-stats"></div><div id="cardDetailHistoryStatus" class="status" role="status" aria-live="polite"></div>
+            <div class="history-chart-wrap"><svg id="cardDetailPriceHistoryChart" viewBox="0 0 820 360" role="group" aria-label="Selected card price history chart"></svg></div>
+            <div id="cardDetailHistoryLegend" class="chart-legend"></div>
+          </section>
+          <div class="oracle-detail-content oracle-detail-secondary-content">
               <div id="oracleTypeLine" class="oracle-type-line"></div>
               <div id="oracleManaCost" class="oracle-mana-cost"></div>
               <pre id="oracleText" class="oracle-text"></pre>
@@ -380,8 +384,8 @@
               <div id="oracleLegalities" class="legality-grid"></div>
               <div id="oracleUpdated" class="subtle"></div>
               <div id="oracleStatus" class="status"></div>
-            </div>
           </div>
+
         </aside>
     </div>
 
@@ -397,6 +401,36 @@
     </nav>
     {% endif %}
   </main>
+
+  <dialog id="cardDetailHistoryExpanded" class="history-expanded-dialog" aria-labelledby="cardDetailHistoryExpandedTitle">
+    <div class="history-expanded-heading">
+      <div><span class="panel-eyebrow">Card price history</span><h2 id="cardDetailHistoryExpandedTitle">Price history</h2></div>
+      <button type="button" class="dialog-close" id="closeCardDetailHistoryExpanded" aria-label="Close expanded price history">×</button>
+    </div>
+    <div class="history-expanded-controls">
+      <div class="history-range-buttons" aria-label="Expanded chart time range">
+        <button type="button" class="button secondary card-detail-expanded-range" data-days="3">3 Days</button>
+        <button type="button" class="button secondary card-detail-expanded-range" data-days="7">1 Week</button>
+        <button type="button" class="button secondary card-detail-expanded-range" data-days="30">1 Month</button>
+        <button type="button" class="button secondary card-detail-expanded-range" data-days="90">3 Months</button>
+        <button type="button" class="button secondary card-detail-expanded-range" data-days="180">6 Months</button>
+        <button type="button" class="button secondary card-detail-expanded-range" data-days="365">1 Year</button>
+      </div>
+      <label class="history-metric-control">Price metric
+        <select id="cardDetailExpandedHistoryMetric">
+          <option value="market" selected>Market</option>
+          <option value="low">Low</option>
+          <option value="mid">Mid</option>
+          <option value="high">High</option>
+          <option value="direct_low">Direct low</option>
+        </select>
+      </label>
+    </div>
+    <div id="cardDetailExpandedHistoryStats" class="history-stats"></div>
+    <div id="cardDetailExpandedHistoryStatus" class="status" role="status" aria-live="polite"></div>
+    <div class="history-chart-wrap expanded-history-chart-wrap"><svg id="cardDetailExpandedPriceHistoryChart" viewBox="0 0 820 360" role="group" aria-label="Expanded selected card price history chart"></svg></div>
+    <div id="cardDetailExpandedHistoryLegend" class="chart-legend"></div>
+  </dialog>
   <datalist id="location-options">{% for location in locations %}<option value="{{ location }}">{% endfor %}</datalist>
 
   <dialog id="manualAddDialog" class="manual-add-dialog">
@@ -510,7 +544,7 @@
     </label>
     <div id="priceHistoryStats" class="history-stats"></div>
     <div id="priceHistoryStatus" class="status"></div>
-    <div class="history-chart-wrap"><svg id="priceHistoryChart" viewBox="0 0 820 360" role="img" aria-label="Card price history chart"></svg></div>
+    <div class="history-chart-wrap"><svg id="priceHistoryChart" viewBox="0 0 820 360" role="group" aria-label="Card price history chart"></svg></div>
     <div id="priceHistoryLegend" class="chart-legend"></div>
   </dialog>
 
@@ -764,7 +798,10 @@ if (inventoryHeader && 'ResizeObserver' in window) {
 }
 window.addEventListener('resize', () => {
   updateInventoryHeaderOffset();
-  if (!oracleDialog.hidden) applyCardDetailMode();
+  if (!oracleDialog.hidden) {
+    applyCardDetailMode();
+    setCardDetailWidth(cardDetailResizeWidth);
+  }
 }, { passive: true });
 
 function applyOracleRotation() {
@@ -945,6 +982,73 @@ async function openOracle(sid, name, imageUrl = '', cardMeta = {}) {
     if (requestId === activeOracleRequest) oracleStatus.textContent = 'Could not load cached metadata.';
   }
 }
+const cardDetailResizeHandle = document.getElementById('cardDetailResizeHandle');
+const CARD_DETAIL_WIDTH_MIN = 400;
+const CARD_DETAIL_WIDTH_MAX = 760;
+let cardDetailResizePointer = null;
+let cardDetailResizeWidth = 520;
+
+function cardDetailWidthBounds() {
+  const viewportLimit = Math.max(CARD_DETAIL_WIDTH_MIN, Math.floor(window.innerWidth * 0.62));
+  return {
+    min: Math.min(CARD_DETAIL_WIDTH_MIN, viewportLimit),
+    max: Math.max(Math.min(CARD_DETAIL_WIDTH_MIN, viewportLimit), Math.min(CARD_DETAIL_WIDTH_MAX, viewportLimit))
+  };
+}
+function setCardDetailWidth(requestedWidth, persist = false) {
+  const bounds = cardDetailWidthBounds();
+  const width = Math.round(Math.min(bounds.max, Math.max(bounds.min, Number(requestedWidth) || 520)));
+  document.documentElement.style.setProperty('--inventory-inspector-width', width + 'px');
+  cardDetailResizeWidth = width;
+  if (cardDetailResizeHandle) {
+    cardDetailResizeHandle.setAttribute('aria-valuemin', String(bounds.min));
+    cardDetailResizeHandle.setAttribute('aria-valuemax', String(bounds.max));
+    cardDetailResizeHandle.setAttribute('aria-valuenow', String(width));
+  }
+  if (persist) {
+    try { localStorage.setItem('cardscanner-card-detail-width', String(width)); } catch (_) {}
+  }
+  return width;
+}
+setCardDetailWidth(Math.max(420, Math.min(560, Math.round(window.innerWidth * 0.28))));
+try {
+  const savedWidth = Number(localStorage.getItem('cardscanner-card-detail-width'));
+  if (Number.isFinite(savedWidth) && savedWidth > 0) setCardDetailWidth(savedWidth);
+} catch (_) {}
+if (cardDetailResizeHandle) {
+  cardDetailResizeHandle.addEventListener('pointerdown', event => {
+    if (oracleDialog.dataset.displayMode !== 'sidebar' || event.button !== 0) return;
+    cardDetailResizePointer = event.pointerId;
+    cardDetailResizeHandle.setPointerCapture(event.pointerId);
+    document.documentElement.classList.add('is-resizing-card-detail');
+    event.preventDefault();
+    setCardDetailWidth(window.innerWidth - event.clientX);
+  });
+  cardDetailResizeHandle.addEventListener('pointermove', event => {
+    if (cardDetailResizePointer !== event.pointerId) return;
+    setCardDetailWidth(window.innerWidth - event.clientX);
+  });
+  const finishCardDetailResize = event => {
+    if (cardDetailResizePointer !== event.pointerId) return;
+    cardDetailResizePointer = null;
+    document.documentElement.classList.remove('is-resizing-card-detail');
+    setCardDetailWidth(event.type === 'pointercancel' ? cardDetailResizeWidth : window.innerWidth - event.clientX, true);
+  };
+  cardDetailResizeHandle.addEventListener('pointerup', finishCardDetailResize);
+  cardDetailResizeHandle.addEventListener('pointercancel', finishCardDetailResize);
+  cardDetailResizeHandle.addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const current = Number(oracleDialog.getBoundingClientRect().width) || cardDetailResizeWidth || 520;
+    const bounds = cardDetailWidthBounds();
+    const step = event.shiftKey ? 64 : 24;
+    const next = event.key === 'Home' ? bounds.min
+      : event.key === 'End' ? bounds.max
+      : current + (event.key === 'ArrowLeft' ? step : -step);
+    setCardDetailWidth(next, true);
+  });
+}
+
 function applyCardDetailMode() {
   updateInventoryHeaderOffset();
   const popup = cardDetailDisplayMode === 'popup';
