@@ -47,7 +47,7 @@ def fetch_deck_list_data(conn):
                 FROM app.inventory
                 WHERE game_id = 'mtg'
             ) AS inventory_locations
-            ORDER BY LOWER(location), location
+            ORDER BY location
             """
         ).fetchall()
     ]
