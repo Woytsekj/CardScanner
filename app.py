@@ -777,13 +777,16 @@ def _can_manage_person_name(person_name: str, user=None) -> bool:
         return False
     if is_superadmin_user(user):
         return True
+    manageable_ids = _manageable_person_ids(user)
+    if not manageable_ids:
+        return False
     conn = _account_connection()
     try:
         row = conn.execute(
             f"SELECT id FROM {_account_table('people')} WHERE lower(name)=lower(?)",
             (name,),
         ).fetchone()
-        return bool(row and int(row["id"]) in _manageable_person_ids(user))
+        return bool(row and int(row["id"]) in manageable_ids)
     finally:
         conn.close()
 
@@ -831,11 +834,10 @@ def _can_manage_deck(deck_id: int, user=None) -> bool:
             f"SELECT person_name FROM {_account_table('decklists')} WHERE id=?",
             (deck_id,),
         ).fetchone()
-        if not row:
-            return False
-        return _can_manage_person_name(str(row["person_name"] or ""), user)
+        person_name = str(row["person_name"] or "") if row else ""
     finally:
         conn.close()
+    return bool(person_name and _can_manage_person_name(person_name, user))
 
 
 def _can_manage_user_account(username: str, actor=None) -> bool:
