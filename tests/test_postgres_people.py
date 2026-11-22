@@ -77,13 +77,27 @@ class PostgreSQLPeopleTests(unittest.TestCase):
             )
             conn.execute(
                 """
+                INSERT INTO app.user_people (username, person_id)
+                VALUES (?, ?), (?, ?)
+                """,
+                (
+                    self.admin_username, self.target_id,
+                    self.admin_username, self.inactive_id,
+                ),
+            )
+            conn.execute(
+                """
                 INSERT INTO app.users (
                     username, password_hash, is_admin, role,
-                    is_superadmin, active
+                    is_superadmin, active, manager_username
                 )
-                VALUES (?, ?, FALSE, 'user', FALSE, TRUE)
+                VALUES (?, ?, FALSE, 'user', FALSE, TRUE, ?)
                 """,
-                (self.user_username, "unused-people-test-password-hash"),
+                (
+                    self.user_username,
+                    "unused-people-test-password-hash",
+                    self.admin_username,
+                ),
             )
             conn.commit()
         finally:

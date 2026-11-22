@@ -175,7 +175,7 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
             return conn.execute(
                 """
                 SELECT username, password_hash, is_admin, role,
-                       is_superadmin, active, person_id
+                       is_superadmin, active, person_id, manager_username
                 FROM app.users
                 WHERE lower(btrim(username)) = lower(btrim(?))
                 LIMIT 1
@@ -616,44 +616,56 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
         )
         self.assertIsNone(self.fetch_user(target))
 
-    def test_non_superadmin_cannot_create_or_manage_accounts(self):
-        requests = (
-            (
-                "/admin/users",
-                {
-                    "username": f"pg-useradmin-denied-{self.token}",
-                    "password": f"Long-Enough-Password-{self.token}",
-                    "role": "vendor",
-                },
-            ),
-            (
-                f"/admin/users/{self.vendor_username}/toggle",
-                {},
-            ),
-            (
-                f"/admin/users/{self.vendor_username}/password",
-                {"password": f"Long-Enough-Password-{self.token}"},
-            ),
-            (
-                f"/admin/users/{self.vendor_username}/role",
-                {"role": "admin"},
-            ),
-            (
-                f"/admin/users/{self.vendor_username}/delete",
-                {},
-            ),
+    def test_admin_can_create_managed_user_but_cannot_change_roles_or_manage_siblings(self):
+        username = f"pg-useradmin-managed-{self.token}"
+        self.track_username(username)
+        created = self.post(
+            "/admin/users",
+            {
+                "username": username,
+                "password": f"Long-Enough-Password-{self.token}",
+                "role": "admin",
+            },
+            client=self.admin_client,
         )
+        self.assertEqual(created.status_code, 302)
+        self.assertEqual(self.message(created), f"Created user {username}.")
 
+        managed = self.fetch_user(username)
+        self.assertEqual(managed["role"], "user")
+        self.assertFalse(managed["is_admin"])
+        self.assertEqual(managed["manager_username"], self.admin_username)
+
+        # The manager can administer their direct user, but cannot elevate it.
+        deactivate = self.post(
+            f"/admin/users/{username}/toggle", {}, client=self.admin_client,
+        )
+        self.assertEqual(deactivate.status_code, 302)
+        self.assertEqual(self.message(deactivate), f"Deactivated {username}.")
+        self.assertFalse(self.fetch_user(username)["active"])
+
+        role_change = self.post(
+            f"/admin/users/{username}/role",
+            {"role": "admin"},
+            client=self.admin_client,
+        )
+        self.assertEqual(role_change.status_code, 403)
+
+        # Existing unassigned vendor accounts are not implicitly adopted.
+        requests = (
+            (f"/admin/users/{self.vendor_username}/toggle", {}),
+            (f"/admin/users/{self.vendor_username}/password", {
+                "password": f"Long-Enough-Password-{self.token}",
+            }),
+            (f"/admin/users/{self.vendor_username}/role", {"role": "admin"}),
+            (f"/admin/users/{self.vendor_username}/delete", {}),
+        )
         for path, payload in requests:
             with self.subTest(path=path):
-                response = self.post(
-                    path,
-                    payload,
-                    client=self.admin_client,
-                )
+                response = self.post(path, payload, client=self.admin_client)
                 self.assertEqual(response.status_code, 403)
 
-    def test_all_eight_user_write_routes_require_csrf(self):
+    def test_all_nine_user_write_routes_require_csrf(self):
         requests = (
             ("/admin/users", {
                 "username": f"pg-useradmin-no-csrf-{self.token}",
@@ -661,6 +673,7 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
                 "role": "vendor",
             }),
             (f"/admin/users/{self.vendor_username}/person", {}),
+            (f"/admin/users/{self.vendor_username}/people", {}),
             (f"/admin/users/{self.vendor_username}/toggle", {}),
             (f"/admin/users/{self.vendor_username}/password", {
                 "password": f"Long-Enough-Password-{self.token}",

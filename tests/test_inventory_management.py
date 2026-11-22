@@ -376,6 +376,129 @@ class InventoryManagementTests(unittest.TestCase):
         deck_page = deck_response.get_data(as_text=True)
         self.assertIn('<option value="Jonathan" selected>', deck_page)
 
+    def test_regular_user_can_only_view_and_edit_assigned_collections(self) -> None:
+        conn = self.connect()
+        my_person = conn.execute("SELECT id FROM people WHERE name='Me'").fetchone()
+        friend_person = conn.execute("SELECT id FROM people WHERE name='Friend'").fetchone()
+        self.assertIsNotNone(my_person)
+        self.assertIsNotNone(friend_person)
+        conn.execute(
+            """INSERT INTO users(
+                username,password_hash,is_admin,role,is_superadmin,active,
+                person_id,manager_username
+            ) VALUES(?,?,?,?,?,1,?,?)""",
+            (
+                "normal-collector",
+                app_module.generate_password_hash("normal-user-password-123"),
+                0, "user", 0, int(my_person["id"]), "ci-admin",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO user_people(username,person_id) VALUES(?,?)",
+            ("normal-collector", int(my_person["id"])),
+        )
+        conn.commit()
+        conn.close()
+
+        own_id = self.add_card("Only My Card", owner="Me")
+        foreign_id = self.add_card("Other Person Card", owner="Friend")
+        user_client = app_module.app.test_client()
+        with user_client.session_transaction() as session:
+            session["username"] = "normal-collector"
+            session["csrf_token"] = "normal-user-csrf-token-0123456789"
+
+        page = user_client.get("/", base_url="http://localhost")
+        self.assertEqual(page.status_code, 200)
+        html = page.get_data(as_text=True)
+        self.assertIn("Only My Card", html)
+        self.assertNotIn("Other Person Card", html)
+
+        denied_filter = user_client.get("/?owner=Friend", base_url="http://localhost")
+        self.assertEqual(denied_filter.status_code, 403)
+
+        own_update = user_client.post(
+            "/update",
+            json={"id": own_id, "field": "quantity", "value": 2},
+            headers={"X-CSRFToken": "normal-user-csrf-token-0123456789"},
+            base_url="http://localhost",
+        )
+        self.assertEqual(own_update.status_code, 200, own_update.get_data(as_text=True))
+        foreign_update = user_client.post(
+            "/update",
+            json={"id": foreign_id, "field": "quantity", "value": 99},
+            headers={"X-CSRFToken": "normal-user-csrf-token-0123456789"},
+            base_url="http://localhost",
+        )
+        self.assertEqual(foreign_update.status_code, 403)
+
+        mixed_bulk = user_client.post(
+            "/admin/inventory/bulk-update",
+            json={"ids": [own_id, foreign_id], "location": "Binder"},
+            headers={"X-CSRFToken": "normal-user-csrf-token-0123456789"},
+            base_url="http://localhost",
+        )
+        self.assertEqual(mixed_bulk.status_code, 403)
+
+        export = user_client.get("/export_csv", base_url="http://localhost")
+        self.assertEqual(export.status_code, 200)
+        exported = export.get_data(as_text=True)
+        self.assertIn("Only My Card", exported)
+        self.assertNotIn("Other Person Card", exported)
+
+    def test_regular_user_cannot_import_or_manually_add_to_another_collection(self) -> None:
+        conn = self.connect()
+        my_person = conn.execute("SELECT id FROM people WHERE name='Me'").fetchone()
+        conn.execute(
+            """INSERT INTO users(
+                username,password_hash,is_admin,role,is_superadmin,active,
+                person_id,manager_username
+            ) VALUES(?,?,?,?,?,1,?,?)""",
+            (
+                "normal-importer",
+                app_module.generate_password_hash("normal-user-password-456"),
+                0, "user", 0, int(my_person["id"]), "ci-admin",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO user_people(username,person_id) VALUES(?,?)",
+            ("normal-importer", int(my_person["id"])),
+        )
+        conn.commit()
+        conn.close()
+
+        user_client = app_module.app.test_client()
+        with user_client.session_transaction() as session:
+            session["username"] = "normal-importer"
+            session["csrf_token"] = "normal-user-csrf-token-import"
+
+        csv_response = user_client.post(
+            "/import",
+            data={
+                "csrf_token": "normal-user-csrf-token-import",
+                "owner": "Friend",
+                "file": (io.BytesIO(b"name,owner,quantity\\nForged Import,Friend,1\\n"), "cards.csv"),
+            },
+            content_type="multipart/form-data",
+            base_url="http://localhost",
+        )
+        self.assertEqual(csv_response.status_code, 403)
+        manual_response = user_client.post(
+            "/admin/manual_add",
+            data={
+                "csrf_token": "normal-user-csrf-token-import",
+                "name": "Forged Manual Add",
+                "owner": "Friend",
+                "quantity": "1",
+            },
+            base_url="http://localhost",
+        )
+        self.assertEqual(manual_response.status_code, 302)
+        conn = self.connect()
+        self.assertIsNone(conn.execute(
+            "SELECT id FROM inventory WHERE name='Forged Manual Add'"
+        ).fetchone())
+        conn.close()
+
     def test_person_assignment_form_in_admin_has_csrf_token(self) -> None:
         conn = self.connect()
         conn.execute("INSERT INTO users(username,password_hash,is_admin,role,is_superadmin,active) VALUES(?,?,?,?,?,1)",
