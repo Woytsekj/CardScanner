@@ -1008,7 +1008,8 @@ def admin_required(view):
             return redirect(url_for("login", next=request.full_path if request.query_string else request.path))
         role = str(user["role"] or "").lower()
         collection_endpoints = {
-            "index", "manual_add", "search_suggest", "api_card_info", "api_card_rulings",
+            "index", "manual_add", "search_suggest", "catalog_search", "catalog_suggest",
+            "api_card_info", "api_card_rulings",
             "set_counts", "update_inventory", "bulk_update_inventory",
             "move_quantity", "delete_item", "import_csv", "export_csv",
             "export_manabox_csv", "decks_page", "decks_import",
