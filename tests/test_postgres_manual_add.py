@@ -230,7 +230,7 @@ class PostgreSQLManualAddTests(unittest.TestCase):
 
         self.assertIn("accountWorkspaceTitle", html)
         self.assertNotIn("Price History &amp; Discord Alerts", html)
-        self.assertIn("Web users</h2>", html)
+        self.assertIn("Web accounts</h3>", html)
         self.assertNotIn("Back to inventory", html)
         self.assertIn(">Decks</a>", html)
         self.assertIn(">Vending</a>", html)
