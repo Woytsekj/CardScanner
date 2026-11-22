@@ -228,7 +228,7 @@ class PostgreSQLManualAddTests(unittest.TestCase):
         self.assertIn(self.owner_name, html)
         self.assertIn("Log out", html)
 
-        self.assertIn("People</h2>", html)
+        self.assertIn("accountWorkspaceTitle", html)
         self.assertNotIn("Price History &amp; Discord Alerts", html)
         self.assertIn("Web users</h2>", html)
         self.assertNotIn("Back to inventory", html)
@@ -381,7 +381,7 @@ class PostgreSQLManualAddTests(unittest.TestCase):
             base_url="http://localhost",
         )
         self.assertEqual(blocked.status_code, 302)
-        self.assertIn("Choose a collection assigned to your account.", blocked.location)
+        self.assertIn("Choose a collection assigned to your account.", self.message(blocked))
         self.assertEqual(self.fetch_inventory(f"pg-manual-{self.token}"), [])
 
         allowed = self.user_client.post(
