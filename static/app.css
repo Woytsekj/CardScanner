@@ -1739,16 +1739,13 @@ tr.is-active { outline: 2px solid var(--cyan); outline-offset: 1px; border-radiu
 .admin-workspace-heading p { margin:4px 0 0; }
 .admin-account-grid,.admin-configuration-grid { align-items:start; }
 .admin-account-grid .admin-panel,.admin-configuration-grid .admin-panel { min-width:0; }
-.account-collections-form { display:grid; gap:9px; min-width:min(100%,260px); }
-.account-collections-form fieldset { min-width:0; margin:0; padding:10px; border:1px solid var(--border); border-radius:8px; }
-.account-collections-form legend { padding:0 5px; color:var(--muted); font-size:12px; }
-.account-collection-options { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:7px 12px; }
+.account-collection-form { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:end; gap:9px; min-width:min(100%,260px); }
+.account-collection-form label { display:grid; gap:5px; min-width:0; }
 .admin-danger-action { margin-top:6px; padding:6px 9px; border:1px solid color-mix(in srgb,var(--danger,#b65b65) 55%,var(--border)); border-radius:7px; }
 .admin-danger-action > summary { color:var(--danger,#d16b74); cursor:pointer; font-size:12px; font-weight:650; }
 .admin-danger-action[open] { background:color-mix(in srgb,var(--danger,#b65b65) 7%,transparent); }
 .admin-danger-action .button.danger { margin-top:8px; }
 @media (max-width:760px) {
   .admin-workspace-heading { align-items:flex-start; flex-direction:column; }
-  .account-collections-form { width:100%; }
-  .account-collection-options { grid-template-columns:1fr; }
+  .account-collection-form { width:100%; grid-template-columns:1fr; }
 }
