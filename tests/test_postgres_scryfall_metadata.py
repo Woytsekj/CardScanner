@@ -79,15 +79,25 @@ class PostgreSQLScryfallMetadataTests(unittest.TestCase):
 
         conn = connect_app_database(expected_database="cardscanner_dev")
         try:
+            owner = conn.execute(
+                "INSERT INTO app.people (name, active) VALUES (?, TRUE) RETURNING id",
+                (f"PG Scryfall Owner {self.token}",),
+            ).fetchone()
+            self.owner_person_id = int(owner["id"])
+            self.owner_name = f"PG Scryfall Owner {self.token}"
             conn.execute(
                 """
                 INSERT INTO app.users (
                     username, password_hash, is_admin, role,
-                    is_superadmin, active
+                    is_superadmin, active, person_id
                 )
-                VALUES (?, ?, TRUE, 'admin', FALSE, TRUE)
+                VALUES (?, ?, TRUE, 'admin', FALSE, TRUE, ?)
                 """,
-                (self.username, "unused-scryfall-test-password-hash"),
+                (
+                    self.username,
+                    "unused-scryfall-test-password-hash",
+                    self.owner_person_id,
+                ),
             )
             conn.execute(
                 """
@@ -95,9 +105,9 @@ class PostgreSQLScryfallMetadataTests(unittest.TestCase):
                     game_id, scryfall_id, name, quantity, owner,
                     finish, location, for_vending
                 )
-                VALUES ('mtg', ?, ?, 1, 'PG Scryfall Test', 'normal', 'Free', FALSE)
+                VALUES ('mtg', ?, ?, 1, ?, 'normal', 'Free', FALSE)
                 """,
-                (self.scryfall_id, self.card_name),
+                (self.scryfall_id, self.card_name, self.owner_name),
             )
             conn.commit()
         except Exception:
@@ -145,6 +155,10 @@ class PostgreSQLScryfallMetadataTests(unittest.TestCase):
             conn.execute(
                 "DELETE FROM app.users WHERE username = ?",
                 (self.username,),
+            )
+            conn.execute(
+                "DELETE FROM app.people WHERE id = ?",
+                (self.owner_person_id,),
             )
             conn.commit()
         except Exception:
