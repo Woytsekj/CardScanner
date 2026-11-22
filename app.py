@@ -2965,7 +2965,7 @@ def admin_page():
                 p.name AS person_name
             FROM users u
             LEFT JOIN people p ON p.id = u.person_id
-            WHERE (? = 1 OR lower(u.manager_username) = lower(?) OR lower(u.username) = lower(?))
+            WHERE (? = 1 OR lower(u.username) = lower(?) OR (lower(u.manager_username) = lower(?) AND lower(u.role) IN ('user', 'member')))
             ORDER BY u.is_superadmin DESC, u.username COLLATE NOCASE
             """,
             (1 if is_superadmin_user(current_user()) else 0, current_user()["username"], current_user()["username"]),
