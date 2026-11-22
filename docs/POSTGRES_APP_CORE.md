@@ -36,8 +36,8 @@ or drop an otherwise valid legacy row.
 - People and usernames have normalized case-insensitive unique indexes to
   reproduce SQLite `NOCASE` uniqueness.
 - `users.person_id` is the account's sole collection link. A unique index
-  ensures one collection belongs to at most one account; an account cannot
-  manage multiple collections.
+  ensures one collection belongs to at most one account; each login has
+  at most one collection link.
 - `users.manager_username` establishes the account reporting hierarchy.
   Existing non-superadmin accounts are assigned to the active superadmin by
   migration. Admins manage their own account plus directly assigned User
@@ -113,7 +113,7 @@ Superadmin → Admin → User reporting chain. Existing non-superadmin accounts
 are assigned to the active superadmin by migration.
 
 Migration `0010_single_collection_per_account.sql` removes the experimental
-`app.user_people` join table introduced in the first draft of migration 0009.
+`app.user_people` table if it remains from an earlier preview deployment.
 The active ownership relationship is solely `app.users.person_id`, which is
 unique for non-null values. No collection or inventory ownership is transferred
 by this cleanup.
