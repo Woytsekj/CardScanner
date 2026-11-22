@@ -23,7 +23,7 @@
   <div class="summary-card summary-buy"><span>Still need</span><strong>{{ stats.missing }}</strong></div>
 </section>
 
-{% if session.get('is_admin') and not postgres_mode %}
+{% if deck_editable %}
 <details class="deck-admin-accordion deck-settings-accordion">
   <summary><span class="deck-accordion-title">Deck settings</span><span class="deck-accordion-hint">Rename, set the single deck owner, add tags, or change the cover image</span></summary>
   <div class="deck-settings-content">
@@ -33,7 +33,7 @@
     <form method="post" action="{{ url_for('update_deck_settings', deck_id=deck.id) }}" class="manual-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label>Deck name<input name="name" value="{{ deck.name }}" maxlength="200" required></label>
-      <label>Deck owner<select name="person_name" required>{% for person in owners %}<option value="{{ person }}" {% if (deck.person_name or selected_owner) == person %}selected{% endif %}>{{ person }}</option>{% endfor %}</select></label>
+      <label>Deck owner<select name="person_name" required>{% for person in editable_owners %}<option value="{{ person }}" {% if (deck.person_name or selected_owner) == person %}selected{% endif %}>{{ person }}</option>{% endfor %}</select></label>
       <label>Deck tags<input name="deck_tags" value="{{ deck.tags|join(', ') }}" placeholder="Commander, Upgrading, Budget"></label>
       <p class="subtle">Every deck must have exactly one active owner. Changing this owner does not change physical card ownership or storage locations. Use commas between tags.</p>
       <button class="button" type="submit">Save deck settings</button>
@@ -97,7 +97,7 @@
 {% endif %}
 </section>
 
-{% if session.get('is_admin') %}
+{% if deck_editable %}
 <details class="deck-admin-accordion deck-add-accordion">
   <summary><span class="deck-accordion-title">Add a card</span><span class="deck-accordion-hint">Add a new entry without opening a second decklist</span></summary>
   <form id="addDeckCardForm" method="post" action="{{ url_for('add_deck_card', deck_id=deck.id) }}" class="deck-add-form">
@@ -139,7 +139,7 @@
             <div class="card-title">{{ item.name }}</div>
             <div class="subtle">{{ item.category }} · {% if item.any_printing %}<strong>Any artwork / printing</strong>{% else %}{{ item.set_code or 'Any set' }} #{{ item.collector_number or 'Any collector number' }}{% endif %}</div>
             {% if item.tcgplayer_id %}<div class="subtle"><a class="external-card-link" href="https://www.tcgplayer.com/product/{{ item.tcgplayer_id|urlencode }}" target="_blank" rel="noopener noreferrer">TCGplayer #{{ item.tcgplayer_id }} ↗</a></div>{% endif %}
-            {% if session.get('is_admin') %}<button type="button" class="deck-row-edit-trigger" data-deck-edit
+            {% if deck_editable %}<button type="button" class="deck-row-edit-trigger" data-deck-edit
               data-card-id="{{ item.id }}" data-name="{{ item.name }}" data-quantity="{{ item.required }}"
               data-set-code="{{ item.set_code or '' }}" data-collector-number="{{ item.collector_number or '' }}"
               data-category="{{ item.category }}" data-role-tags="{{ item.role_tags|join(', ') }}"
@@ -204,7 +204,7 @@
 })();
 </script>
 
-{% if session.get('is_admin') %}
+{% if deck_editable %}
 <dialog id="deckCardEditDialog" class="deck-card-edit-dialog" aria-labelledby="deckCardEditTitle">
   <h2 id="deckCardEditTitle">Edit deck card</h2>
   <form id="deckEditForm" method="post" data-url-template="{{ url_for('edit_deck_card', deck_id=deck.id, card_id=0) }}" class="deck-card-edit-form">

@@ -36,8 +36,8 @@
       <label>Paste decklist<textarea name="deck_text" rows="9" placeholder="1 Sol Ring\n1 Arcane Signet\n\n#Ramp\n1 Cultivate"></textarea></label>
       <label>Additional deck tags<input name="deck_tags" placeholder="Commander, Upgrading, Budget (comma-separated)"></label>
       <div class="form-grid-2">
-        <label>Deck for<select name="deck_person"><option value="">Use my default person (or inventory owner)</option>{% for owner in owners %}<option value="{{ owner }}" {% if owner == default_person %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select></label>
-        <label>Inventory owner (only if adding copies)<select name="owner">{% for owner in owners %}<option value="{{ owner }}" {% if owner == default_person %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select></label>
+        <label>Deck for<select name="deck_person"><option value="">Use my default person (or inventory owner)</option>{% for owner in editable_owners %}<option value="{{ owner }}" {% if owner == default_person %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select></label>
+        <label>Inventory owner (only if adding copies)<select name="owner">{% for owner in editable_owners %}<option value="{{ owner }}" {% if owner == default_person %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select></label>
       </div>
       <label class="check-row"><input type="checkbox" name="include_extra"> Include sideboard / maybeboard / considering cards</label>
       <label class="check-row"><input type="checkbox" name="add_inventory" id="addInventoryCheck"> Also add these cards to inventory</label>
@@ -68,7 +68,7 @@
               <div class="deck-dashboard-updated subtle">Updated {{ deck.updated_at|localdt }}</div>
               <div class="deck-dashboard-actions">
                 <a class="button" href="{{ url_for('deck_view', deck_id=deck.id) }}">Open deck</a>
-                {% if session.get('is_admin') and not postgres_mode %}<form method="post" action="{{ url_for('delete_deck', deck_id=deck.id) }}" onsubmit="return confirm('Delete this saved deck? Its assigned inventory copies will become unassigned and keep their physical storage locations. Inventory itself will not be deleted.');"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Delete</button></form>{% endif %}
+                {% if deck.id in editable_deck_ids %}<form method="post" action="{{ url_for('delete_deck', deck_id=deck.id) }}" onsubmit="return confirm('Delete this saved deck? Its assigned inventory copies will become unassigned and keep their physical storage locations. Inventory itself will not be deleted.');"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary" type="submit">Delete</button></form>{% endif %}
               </div>
             </div>
           </article>

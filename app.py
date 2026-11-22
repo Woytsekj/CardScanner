@@ -1046,7 +1046,12 @@ def vendor_or_admin_required(view):
             if request.method != "GET":
                 return jsonify({"success": False, "error": "Login required"}), 401
             return redirect(url_for("login", next=request.full_path if request.query_string else request.path))
-        if int(user["is_admin"]) or str(user["role"]).lower() == "vendor":
+        role = str(user["role"] or "").lower()
+        if (
+            int(user["is_admin"])
+            or role == "vendor"
+            or (request.endpoint == "api_price_history" and role in {"user", "member"})
+        ):
             return view(*args, **kwargs)
         return render_template("login.html", next_url="", error="Vendor access required."), 403
     return wrapped

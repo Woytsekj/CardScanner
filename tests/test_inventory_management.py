@@ -411,10 +411,11 @@ class InventoryManagementTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         html = page.get_data(as_text=True)
         self.assertIn("Only My Card", html)
-        self.assertNotIn("Other Person Card", html)
+        self.assertIn("Other Person Card", html)
 
-        denied_filter = user_client.get("/?owner=Friend", base_url="http://localhost")
-        self.assertEqual(denied_filter.status_code, 403)
+        other_collection = user_client.get("/?owner=Friend", base_url="http://localhost")
+        self.assertEqual(other_collection.status_code, 200)
+        self.assertIn("Other Person Card", other_collection.get_data(as_text=True))
 
         own_update = user_client.post(
             "/update",
@@ -443,7 +444,7 @@ class InventoryManagementTests(unittest.TestCase):
         self.assertEqual(export.status_code, 200)
         exported = export.get_data(as_text=True)
         self.assertIn("Only My Card", exported)
-        self.assertNotIn("Other Person Card", exported)
+        self.assertIn("Other Person Card", exported)
 
     def test_regular_user_cannot_import_or_manually_add_to_another_collection(self) -> None:
         conn = self.connect()
