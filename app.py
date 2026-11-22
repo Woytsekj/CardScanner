@@ -4035,12 +4035,18 @@ def assign_user_people(username: str):
             if not is_superadmin_user(current_user()) and not _can_manage_person_name(str(person["name"])):
                 return redirect(url_for("admin_page", message="You can only assign collections you manage."))
             assigned = conn.execute(
-                "SELECT username FROM user_people WHERE person_id=? AND username<>? COLLATE NOCASE",
-                (person_id, username),
+                """SELECT username FROM user_people WHERE person_id=? AND username<>? COLLATE NOCASE
+                   UNION SELECT username FROM users WHERE person_id=? AND username<>? COLLATE NOCASE LIMIT 1""",
+                (person_id, username, person_id, username),
             ).fetchone()
             if assigned:
-                return redirect(url_for("admin_page", message=f"{person['name']} is already assigned to {assigned['username']}."))
+                managed = {name.casefold() for name in _managed_usernames(current_user())}
+                if not is_superadmin_user(current_user()) and str(assigned["username"]).casefold() not in managed:
+                    return redirect(url_for("admin_page", message=f"{person['name']} is assigned outside your management scope."))
         conn.execute("BEGIN IMMEDIATE")
+        for person_id in person_ids:
+            conn.execute("DELETE FROM user_people WHERE person_id=?", (person_id,))
+            conn.execute("UPDATE users SET person_id=NULL WHERE person_id=?", (person_id,))
         conn.execute("DELETE FROM user_people WHERE username=?", (username,))
         for person_id in person_ids:
             conn.execute("INSERT INTO user_people(username, person_id) VALUES (?, ?)", (username, person_id))
