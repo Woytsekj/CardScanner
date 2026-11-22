@@ -57,11 +57,25 @@ def fetch_owned_scryfall_ids(conn) -> list[str]:
     return [str(row["scryfall_id"]) for row in rows]
 
 
-def fetch_missing_scryfall_ids(conn, limit: int = 500) -> list[str]:
-    """Return owned MTG printings without cached Scryfall provider metadata."""
+def fetch_missing_scryfall_ids(
+    conn,
+    limit: int = 500,
+    *,
+    owners: list[str] | None = None,
+) -> list[str]:
+    """Return missing metadata IDs, optionally limited to permitted collection owners."""
     safe_limit = max(1, min(1000, int(limit)))
+    owner_sql = ""
+    params: list[Any] = [PROVIDER_ID, GAME_ID]
+    if owners is not None:
+        normalized = sorted({str(owner).strip().casefold() for owner in owners if str(owner).strip()})
+        if not normalized:
+            return []
+        owner_sql = " AND lower(COALESCE(i.owner, 'Me')) IN (" + ", ".join("%s" for _ in normalized) + ")"
+        params.extend(normalized)
+    params.append(safe_limit)
     rows = conn.execute(
-        """
+        f"""
         SELECT DISTINCT btrim(i.scryfall_id) AS scryfall_id
         FROM app.inventory AS i
         LEFT JOIN catalog.provider_printing_metadata AS metadata
@@ -72,10 +86,11 @@ def fetch_missing_scryfall_ids(conn, limit: int = 500) -> list[str]:
           AND i.scryfall_id IS NOT NULL
           AND btrim(i.scryfall_id) <> ''
           AND metadata.external_printing_id IS NULL
+          {owner_sql}
         ORDER BY scryfall_id
         LIMIT %s
         """,
-        (PROVIDER_ID, GAME_ID, safe_limit),
+        tuple(params),
     ).fetchall()
     return [str(row["scryfall_id"]) for row in rows]
 
