@@ -3936,19 +3936,35 @@ def assign_user_person(username: str):
     conn = connect_inventory()
     ensure_people_and_auth(conn)
     try:
-        user = conn.execute("SELECT username FROM users WHERE username=?", (username,)).fetchone()
+        user = conn.execute("SELECT username, person_id FROM users WHERE username=?", (username,)).fetchone()
         if not user:
             return redirect(url_for("admin_page", message="Web user not found."))
         if person_id is not None:
             person = conn.execute("SELECT id,name,active FROM people WHERE id=?", (person_id,)).fetchone()
             if not person or not int(person["active"]):
                 return redirect(url_for("admin_page", message="Choose an active person."))
-            other = conn.execute(
-                "SELECT username FROM users WHERE person_id=? AND username<>? COLLATE NOCASE",
-                (person_id, username),
+            if not is_superadmin_user(current_user()) and not _can_manage_person_name(str(person["name"])):
+                return redirect(url_for("admin_page", message="You can only assign collections you manage."))
+            assigned = conn.execute(
+                """SELECT username FROM user_people WHERE person_id=? AND username<>? COLLATE NOCASE
+                   UNION SELECT username FROM users WHERE person_id=? AND username<>? COLLATE NOCASE LIMIT 1""",
+                (person_id, username, person_id, username),
             ).fetchone()
-            if other:
-                return redirect(url_for("admin_page", message=f"{person['name']} is already linked to {other['username']}. Unlink that account first."))
+            if assigned:
+                allowed = {name.casefold() for name in _managed_usernames(current_user())}
+                if not is_superadmin_user(current_user()) and str(assigned["username"]).casefold() not in allowed:
+                    return redirect(url_for("admin_page", message=f"{person['name']} belongs to an account outside your management scope."))
+                conn.execute("DELETE FROM user_people WHERE person_id=?", (person_id,))
+                conn.execute("UPDATE users SET person_id=NULL WHERE person_id=?", (person_id,))
+            conn.execute(
+                "INSERT OR IGNORE INTO user_people(username, person_id) VALUES (?, ?)",
+                (username, person_id),
+            )
+        elif user["person_id"] is not None:
+            conn.execute(
+                "DELETE FROM user_people WHERE username=? AND person_id=?",
+                (username, user["person_id"]),
+            )
         conn.execute("UPDATE users SET person_id=? WHERE username=?", (person_id, username))
         conn.commit()
         person_name = conn.execute("SELECT name FROM people WHERE id=?", (person_id,)).fetchone()[0] if person_id is not None else None
