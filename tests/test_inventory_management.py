@@ -448,6 +448,70 @@ class InventoryManagementTests(unittest.TestCase):
         self.assertEqual(int(still_assigned["person_id"]), assigned_person_id)
         self.assertIsNotNone(still_exists)
 
+    def test_admin_can_create_user_with_an_unassigned_collection(self) -> None:
+        unassigned_name = "Unassigned For Managed User"
+        conn = self.connect()
+        conn.execute(
+            "INSERT INTO people(name,active) VALUES(?,1)",
+            (unassigned_name,),
+        )
+        unassigned_id = int(conn.execute(
+            "SELECT id FROM people WHERE name=?", (unassigned_name,)
+        ).fetchone()[0])
+        conn.execute(
+            """
+            INSERT INTO users(
+                username,password_hash,is_admin,role,is_superadmin,active,manager_username
+            ) VALUES(?,?,?,?,?,1,?)
+            """,
+            (
+                "middle-admin",
+                app_module.generate_password_hash("middle-admin-password"),
+                1, "admin", 0, "ci-admin",
+            ),
+        )
+        middle_admin_person_id = int(conn.execute(
+            "SELECT person_id FROM users WHERE username='middle-admin'"
+        ).fetchone()[0])
+        conn.commit()
+        conn.close()
+
+        admin_client = app_module.app.test_client()
+        with admin_client.session_transaction() as session:
+            session["username"] = "middle-admin"
+            session["csrf_token"] = self.csrf
+
+        page = admin_client.get("/admin", base_url="http://localhost")
+        self.assertEqual(page.status_code, 200)
+        html = page.get_data(as_text=True)
+        create_start = html.index('action="/admin/users"')
+        create_end = html.index("</form>", create_start)
+        create_form = html[create_start:create_end]
+        self.assertIn(f'value="{unassigned_id}"', create_form)
+        self.assertNotIn(f'value="{middle_admin_person_id}"', create_form)
+
+        created_username = "managed-from-unassigned"
+        response = admin_client.post(
+            "/admin/users",
+            data={
+                "csrf_token": self.csrf,
+                "username": created_username,
+                "password": "managed-user-password",
+                "person_id": str(unassigned_id),
+            },
+            base_url="http://localhost",
+        )
+        self.assertEqual(response.status_code, 302)
+        conn = self.connect()
+        created = conn.execute(
+            "SELECT role,manager_username,person_id FROM users WHERE username=?",
+            (created_username,),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(created["role"], "user")
+        self.assertEqual(created["manager_username"], "middle-admin")
+        self.assertEqual(int(created["person_id"]), unassigned_id)
+
     def test_regular_user_can_only_view_and_edit_assigned_collections(self) -> None:
         conn = self.connect()
         my_person = conn.execute("SELECT id FROM people WHERE name='Me'").fetchone()
