@@ -4610,10 +4610,6 @@ def bulk_update_inventory():
 
     if not any((owner_supplied, vending_value is not None, location_supplied, deck_supplied)):
         return jsonify({"success": False, "error": "Choose at least one bulk change."}), 400
-    if owner_supplied and not _can_manage_person_name(owner_value):
-        return jsonify({"success": False, "error": "You cannot move cards into a collection you do not manage."}), 403
-    if deck_supplied and deck_value is not None and not _can_manage_deck(deck_value):
-        return jsonify({"success": False, "error": "You cannot assign cards to a deck you do not manage."}), 403
     if owner_supplied:
         conn = connect_inventory()
         try:
@@ -4622,6 +4618,18 @@ def bulk_update_inventory():
             conn.close()
         if not valid_owner:
             return jsonify({"success": False, "error": "Choose an active owner from the people list."}), 400
+        if not _can_manage_person_name(owner_value):
+            return jsonify({"success": False, "error": "You cannot move cards into a collection you do not manage."}), 403
+    if deck_supplied and deck_value is not None:
+        conn = connect_inventory()
+        try:
+            valid_deck = conn.execute("SELECT 1 FROM decklists WHERE id=?", (deck_value,)).fetchone()
+        finally:
+            conn.close()
+        if not valid_deck:
+            return jsonify({"success": False, "error": "Selected deck does not exist."}), 400
+        if not _can_manage_deck(deck_value):
+            return jsonify({"success": False, "error": "You cannot assign cards to a deck you do not manage."}), 403
     if deck_supplied and deck_value is not None and vending_value == 1:
         return jsonify({"success": False, "error": "A card cannot be assigned to a deck and marked for vending in the same operation."}), 400
 
