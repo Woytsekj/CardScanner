@@ -380,7 +380,11 @@ class PostgreSQLInventoryImportHTTPTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("CSRF", response.get_data(as_text=True))
-        self.assertEqual(self.imported_rows(), [])
+        self.assertEqual(len(self.imported_rows()), 1)
+        self.assertEqual(
+            {row["owner"] for row in self.imported_rows()},
+            {self.user_owner},
+        )
 
 
 if __name__ == "__main__":
