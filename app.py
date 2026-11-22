@@ -3970,8 +3970,9 @@ def add_user():
         person = conn.execute("SELECT id, name, active FROM people WHERE id=?", (person_id,)).fetchone()
         if not person or not int(person["active"]):
             conn.close(); return redirect(url_for("admin_page", message="Choose an active person for this account."))
-        if not actor_superadmin and not _can_manage_person_name(str(person["name"]), actor):
-            conn.close(); return redirect(url_for("admin_page", message="You can only assign collections you manage."))
+        # A non-superadmin may use an unassigned collection for a new
+        # account. The ownership check below rejects every collection that
+        # already belongs to an account, including the actor's own collection.
         assigned = conn.execute(
             "SELECT username FROM users WHERE person_id=? LIMIT 1",
             (person_id,),
