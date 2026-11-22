@@ -406,7 +406,7 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
             {"person_id": str(self.active_person_id)},
         )
         self.assertEqual(conflict.status_code, 302)
-        self.assertIn("already linked", self.message(conflict))
+        self.assertIn("already assigned", self.message(conflict))
         vendor_person_id = self.fetch_user(self.vendor_username)["person_id"]
         self.assertIsNotNone(vendor_person_id)
 

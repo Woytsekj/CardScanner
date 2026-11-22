@@ -3995,7 +3995,7 @@ def add_user():
 @app.post("/admin/users/<username>/person")
 @admin_required
 def assign_user_person(username: str):
-    """Associate a web account with its default collection person, or clear the link."""
+    """Assign a collection, or create a fresh collection when the selection is empty."""
     if not _can_manage_user_account(username):
         return redirect(url_for("admin_page", message="You can only manage accounts assigned to you."))
     if DATABASE_BACKEND == "postgres":
@@ -4029,17 +4029,8 @@ def assign_user_person(username: str):
             if assigned:
                 return redirect(url_for(
                     "admin_page",
-                    message=f"{person['name']} is already linked to {assigned['username']}. Unlink that account first.",
+                    message=f"{person['name']} is already assigned to {assigned['username']}. Choose an unassigned collection instead.",
                 ))
-            if not is_superadmin_user(current_user()):
-                owner = conn.execute(
-                    "SELECT person_id FROM users WHERE lower(username)=lower(?)",
-                    (str(current_user()["username"]),),
-                ).fetchone()
-                # Admins may attach an unassigned collection to a User they
-                # directly manage. They cannot attach another account's collection.
-                if owner is None:
-                    return redirect(url_for("admin_page", message="You can only assign unassigned collections or collections you manage."))
         conn.execute("UPDATE users SET person_id=? WHERE username=?", (person_id, username))
         linked = conn.execute(
             "SELECT p.id,p.name FROM users u JOIN people p ON p.id=u.person_id WHERE lower(u.username)=lower(?)",
@@ -4053,7 +4044,7 @@ def assign_user_person(username: str):
         return redirect(url_for("admin_page", message=message))
     except sqlite3.IntegrityError:
         conn.rollback()
-        return redirect(url_for("admin_page", message="That person is already linked to another account."))
+        return redirect(url_for("admin_page", message="That collection is already assigned to another account."))
     finally:
         conn.close()
 

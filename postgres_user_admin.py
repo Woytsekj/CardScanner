@@ -254,8 +254,8 @@ def handle_assign_user_person(username: str):
             ).fetchone()
             if other:
                 return (
-                    f"{person_name} is already linked to "
-                    f"{other['username']}. Unlink that account first."
+                    f"{person_name} is already assigned to "
+                    f"{other['username']}. Choose an unassigned collection instead."
                 )
 
         conn.execute(
