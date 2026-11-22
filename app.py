@@ -868,6 +868,83 @@ def _can_manage_user_account(username: str, actor=None) -> bool:
         conn.close()
 
 
+def _accessible_person_names(user=None) -> list[str]:
+    """Return the collection names visible to this account."""
+    user = user or current_user()
+    if not user:
+        return []
+    if is_admin_user(user):
+        conn = _account_connection()
+        try:
+            rows = conn.execute(
+                f"SELECT name FROM {_account_table('people')} WHERE active=1 ORDER BY lower(name)"
+            ).fetchall()
+            return [str(row["name"]) for row in rows]
+        finally:
+            conn.close()
+    ids = _account_person_ids(str(user["username"]))
+    if not ids:
+        return []
+    conn = _account_connection()
+    try:
+        marks = ", ".join("?" for _ in ids)
+        rows = conn.execute(
+            f"SELECT name FROM {_account_table('people')} WHERE active=1 AND id IN ({marks}) ORDER BY lower(name)",
+            list(ids),
+        ).fetchall()
+        return [str(row["name"]) for row in rows]
+    finally:
+        conn.close()
+
+
+def _can_manage_inventory_rows(item_ids, user=None) -> bool:
+    cleaned = []
+    for raw in item_ids or []:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0 and value not in cleaned:
+            cleaned.append(value)
+    if not cleaned:
+        return False
+    user = user or current_user()
+    if is_superadmin_user(user):
+        return True
+    conn = _account_connection()
+    try:
+        marks = ", ".join("?" for _ in cleaned)
+        rows = conn.execute(
+            f"SELECT DISTINCT owner FROM {_account_table('inventory')} WHERE id IN ({marks})",
+            cleaned,
+        ).fetchall()
+    finally:
+        conn.close()
+    owners = {str(row["owner"] or "") for row in rows}
+    return bool(owners and all(_can_manage_person_name(owner, user) for owner in owners))
+
+
+def _can_access_deck(deck_id: int, user=None) -> bool:
+    user = user or current_user()
+    if not user:
+        return False
+    if is_admin_user(user):
+        return True
+    conn = _account_connection()
+    try:
+        row = conn.execute(
+            f"SELECT person_id, person_name FROM {_account_table('decklists')} WHERE id=?",
+            (deck_id,),
+        ).fetchone()
+        if not row:
+            return False
+        if row["person_id"] is not None:
+            return int(row["person_id"]) in _account_person_ids(str(user["username"]))
+        return _can_manage_person_name(str(row["person_name"] or ""), user)
+    finally:
+        conn.close()
+
+
 def collection_access_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
@@ -909,9 +986,21 @@ def admin_required(view):
             if request.path.startswith("/api/") or request.method != "GET":
                 return jsonify({"success": False, "error": "Login required"}), 401
             return redirect(url_for("login", next=request.full_path if request.query_string else request.path))
-        if not int(user["is_admin"]) and str(user["role"]).lower() != "admin":
+        role = str(user["role"] or "").lower()
+        collection_endpoints = {
+            "index", "set_counts", "update_inventory", "bulk_update_inventory",
+            "move_quantity", "delete_item", "import_csv", "export_csv",
+            "export_manabox_csv", "decks_page", "decks_import",
+            "update_deck_settings", "update_deck_cover", "deck_view",
+            "edit_deck_card", "add_deck_card", "delete_deck_card",
+            "assign_free_to_deck", "move_inventory_to_deck", "delete_deck",
+            "deck_missing_csv",
+        }
+        if not is_admin_user(user) and not (
+            role in {"user", "member"} and request.endpoint in collection_endpoints
+        ):
             if request.path.startswith("/api/") or request.method != "GET":
-                return jsonify({"success": False, "error": "Admin access required"}), 403
+                return jsonify({"success": False, "error": "Administrator access required"}), 403
             return render_template("login.html", next_url="", error="Administrator access required."), 403
         return view(*args, **kwargs)
     return wrapped
@@ -3951,6 +4040,8 @@ def set_counts():
         return jsonify({"success": False, "error": "Counts must be whole numbers."}), 400
     if not scryfall_id or not owner:
         return jsonify({"success": False, "error": "scryfall_id and owner are required"}), 400
+    if not _can_manage_person_name(owner):
+        return jsonify({"success": False, "error": "You can only edit a collection you manage."}), 403
 
     if DATABASE_BACKEND == "postgres":
         from postgres_inventory_counts import set_inventory_finish_counts
@@ -4017,11 +4108,22 @@ def index():
     search = request.args.get("q", "").strip()
     owner_explicit = "owner" in request.args
     owner_filter = request.args.get("owner", "").strip()
-    # A linked account starts in its own collection. Selecting "All owners"
-    # sends owner= explicitly, which preserves that choice across form submits.
+    user = current_user()
+    visible_collection_names = _accessible_person_names(user)
     if not owner_explicit:
-        user = current_user()
-        owner_filter = str(user["person_name"] or "").strip() if user else ""
+        default_name = str(user["person_name"] or "").strip() if user else ""
+        owner_filter = default_name if default_name in visible_collection_names else (
+            visible_collection_names[0] if visible_collection_names and not is_admin_user(user) else ""
+        )
+    if user and not is_admin_user(user):
+        if owner_filter and owner_filter not in visible_collection_names:
+            return render_template("login.html", next_url="", error="You do not have access to that collection."), 403
+        if not owner_filter:
+            owner_filter = str(user["person_name"] or "").strip() or (
+                visible_collection_names[0] if visible_collection_names else ""
+            )
+        if not owner_filter:
+            return render_template("login.html", next_url="", error="Your account is not linked to a collection."), 403
     finish_filter = request.args.get("finish", "").strip().lower()
     type_filter = request.args.get("type", "").strip()
     color_filter = request.args.get("color", "").strip().lower()
@@ -4140,8 +4242,9 @@ def index():
         total_rows=total_rows,
         total_cards=total_cards,
         postgres_mode=(DATABASE_BACKEND == 'postgres'),
-        admin_user=current_admin(),
-        admin_is_superadmin=is_superadmin_user(current_user()),
+        owners=(visible_collection_names if not is_admin_user(user) else owners),
+        admin_user=(current_admin() or (str(user["username"]) if user and str(user["role"]).lower() in {"user", "member"} else None)),
+        admin_is_superadmin=is_superadmin_user(user),
     )
 
 
@@ -4155,12 +4258,16 @@ def update_inventory():
         return jsonify({"success": False, "error": "Invalid id"}), 400
     field = data.get("field")
     value = data.get("value")
+    if not _can_manage_inventory_row(item_id):
+        return jsonify({"success": False, "error": "You can only edit cards in collections you manage."}), 403
     if field not in {"quantity", "owner", "finish", "location", "for_vending", "deck_id"}:
         return jsonify({"success": False, "error": "Invalid field"}), 400
     if field == "quantity":
         value = parse_qty(value)
     elif field == "owner":
         value = str(value or "Me").strip()[:100] or "Me"
+        if not _can_manage_person_name(value):
+            return jsonify({"success": False, "error": "You cannot move cards into a collection you do not manage."}), 403
         if DATABASE_BACKEND != "postgres":
             conn_check = connect_inventory()
             ensure_people_and_auth(conn_check)
@@ -4282,6 +4389,8 @@ def bulk_update_inventory():
         return jsonify({"success": False, "error": "Select one or more inventory rows."}), 400
     if len(ids) > 5000:
         return jsonify({"success": False, "error": "Select at most 5,000 rows per bulk operation."}), 400
+    if not _can_manage_inventory_rows(ids):
+        return jsonify({"success": False, "error": "You can only edit cards in collections you manage."}), 403
 
     assignments: list[str] = []
     values: list[Any] = []
@@ -4311,6 +4420,10 @@ def bulk_update_inventory():
 
     if not any((owner_supplied, vending_value is not None, location_supplied, deck_supplied)):
         return jsonify({"success": False, "error": "Choose at least one bulk change."}), 400
+    if owner_supplied and not _can_manage_person_name(owner_value):
+        return jsonify({"success": False, "error": "You cannot move cards into a collection you do not manage."}), 403
+    if deck_supplied and deck_value is not None and not _can_manage_deck(deck_value):
+        return jsonify({"success": False, "error": "You cannot assign cards to a deck you do not manage."}), 403
     if owner_supplied:
         conn = connect_inventory()
         try:
@@ -4374,6 +4487,8 @@ def move_quantity():
     except (TypeError, ValueError):
         return jsonify({"success": False, "error": "Invalid item or quantity."}), 400
     destination = " ".join(str(data.get("destination") or "").strip().split())[:120] or "Free"
+    if not _can_manage_inventory_row(item_id):
+        return jsonify({"success": False, "error": "You can only move cards in collections you manage."}), 403
     if move_qty < 1:
         return jsonify({"success": False, "error": "Quantity must be at least 1."}), 400
 
@@ -4479,6 +4594,8 @@ def move_quantity():
 @app.delete("/delete/<int:item_id>")
 @admin_required
 def delete_item(item_id: int):
+    if not _can_manage_inventory_row(item_id):
+        return jsonify({"success": False, "error": "You can only delete cards in collections you manage."}), 403
     if DATABASE_BACKEND == "postgres":
         from postgres_inventory_delete import delete_inventory_item
 
@@ -4631,7 +4748,14 @@ def import_csv():
 @app.get("/export_csv")
 @admin_required
 def export_csv():
-    inventory, _, _, _, _, _ = inventory_rows("", "", "", "date", "desc")
+    user = current_user()
+    export_owner = ""
+    if user and not is_admin_user(user):
+        names = _accessible_person_names(user)
+        export_owner = str(user["person_name"] or "").strip() or (names[0] if names else "")
+        if not export_owner:
+            return jsonify({"success": False, "error": "Your account is not linked to a collection."}), 403
+    inventory, _, _, _, _, _ = inventory_rows("", export_owner, "", "date", "desc")
     out = io.StringIO(newline="")
     writer = csv.writer(out)
     writer.writerow([
@@ -4657,6 +4781,14 @@ def export_csv():
 def export_manabox_csv():
     """Export in ManaBox's collection CSV format (Collection > menu > Import)."""
     owner = request.args.get("owner", "").strip()
+    user = current_user()
+    if user and not is_admin_user(user):
+        names = _accessible_person_names(user)
+        if owner and owner not in names:
+            return render_template("login.html", next_url="", error="You do not have access to that collection."), 403
+        owner = owner or (str(user["person_name"] or "").strip() or (names[0] if names else ""))
+        if not owner:
+            return render_template("login.html", next_url="", error="Your account is not linked to a collection."), 403
     inventory, _, _, _, _, _ = inventory_rows("", owner, "", "date", "desc")
     out = io.StringIO(newline="")
     writer = csv.writer(out)
