@@ -3874,7 +3874,7 @@ def add_user():
     )
     conn.commit(); conn.close()
     assignment_note = "" if person_id is None else " and linked to the selected person"
-    return redirect(url_for("admin_page", message=f"Created {role} user {username}{assignment_note}."))
+    return redirect(url_for("admin_page", message=f"Created {'Admin' if role == 'admin' else 'user'} {username}{assignment_note}."))
 
 
 @app.post("/admin/users/<username>/person")
