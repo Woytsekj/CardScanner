@@ -866,11 +866,11 @@ def _can_manage_user_account(username: str, actor=None) -> bool:
             f"SELECT role, manager_username FROM {_account_table('users')} WHERE lower(username)=lower(?)",
             (str(username or ""),),
         ).fetchone()
+        managed = {name.casefold() for name in _managed_usernames(actor)}
         return bool(
             target
             and str(target["role"] or "").lower() == "user"
-            and str(target["manager_username"] or "").casefold()
-                == str(actor["username"]).casefold()
+            and str(target["manager_username"] or "").casefold() in managed
         )
     finally:
         conn.close()
@@ -1159,6 +1159,7 @@ def security_gate():
             "delete_person": "POST",
             "add_user": "POST",
             "assign_user_person": "POST",
+            "assign_user_people": "POST",
             "toggle_user": "POST",
             "admin_reset_user_password": "POST",
             "rename_user": "POST",
@@ -3792,7 +3793,7 @@ def delete_person(person_id: int):
 
 
 @app.post("/admin/users")
-@superadmin_required
+@admin_required
 def add_user():
     if DATABASE_BACKEND == "postgres":
         from postgres_user_admin import handle_add_user
@@ -3800,14 +3801,21 @@ def add_user():
 
     username = " ".join(str(request.form.get("username") or "").strip().split())[:150]
     password = str(request.form.get("password") or "")
-    role = str(request.form.get("role") or "vendor").strip().lower()
+    actor = current_user()
+    actor_superadmin = is_superadmin_user(actor)
+    role = str(request.form.get("role") or "user").strip().lower()
+    manager_username = str(request.form.get("manager_username") or "").strip() if actor_superadmin else str(actor["username"])
+    if not actor_superadmin:
+        role = "user"
+    if role not in {"admin", "user", "vendor"}:
+        role = "user"
     raw_person_id = str(request.form.get("person_id") or "").strip()
     if not username or len(username) < 2:
         return redirect(url_for("admin_page", message="Username must be at least 2 characters."))
     if len(password) < 12:
         return redirect(url_for("admin_page", message="User password must be at least 12 characters."))
-    if role not in {"admin", "vendor"}:
-        role = "vendor"
+    if role not in {"admin", "user", "vendor"}:
+        role = "user"
     conn=connect_inventory(); ensure_people_and_auth(conn)
     if conn.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone():
         conn.close(); return redirect(url_for("admin_page", message="That username already exists."))
@@ -3822,16 +3830,23 @@ def add_user():
             conn.close(); return redirect(url_for("admin_page", message="Choose an active person for this account."))
         if conn.execute("SELECT username FROM users WHERE person_id=?", (person_id,)).fetchone():
             conn.close(); return redirect(url_for("admin_page", message="That person is already assigned to another account."))
-    conn.execute("INSERT INTO users(username,password_hash,is_admin,role,is_superadmin,active,person_id) VALUES (?,?,?,?,?,1,?)", (username,generate_password_hash(password),1 if role=="admin" else 0,role,0,person_id))
+    conn.execute(
+        "INSERT INTO users(username,password_hash,is_admin,role,is_superadmin,active,person_id,manager_username) VALUES (?,?,?,?,?,1,?,?)",
+        (username,generate_password_hash(password),1 if role=="admin" else 0,role,0,person_id,manager_username),
+    )
+    if person_id is not None:
+        conn.execute("INSERT INTO user_people(username, person_id) VALUES (?, ?)", (username, person_id))
     conn.commit(); conn.close()
     assignment_note = "" if person_id is None else " and linked to the selected person"
     return redirect(url_for("admin_page", message=f"Created {role} user {username}{assignment_note}."))
 
 
 @app.post("/admin/users/<username>/person")
-@superadmin_required
+@admin_required
 def assign_user_person(username: str):
     """Associate a web account with its default collection person, or clear the link."""
+    if not _can_manage_user_account(username):
+        return redirect(url_for("admin_page", message="You can only manage accounts assigned to you."))
     if DATABASE_BACKEND == "postgres":
         from postgres_user_admin import handle_assign_user_person
         return handle_assign_user_person(username)
@@ -3873,9 +3888,70 @@ def assign_user_person(username: str):
         conn.close()
 
 
+
+
+@app.post("/admin/users/<username>/people")
+@admin_required
+def assign_user_people(username: str):
+    if not _can_manage_user_account(username):
+        return redirect(url_for("admin_page", message="You can only manage accounts assigned to you."))
+    if DATABASE_BACKEND == "postgres":
+        from postgres_user_admin import handle_assign_user_people
+        return handle_assign_user_people(username)
+
+    username = str(username)[:150]
+    person_ids = []
+    for raw in request.form.getlist("person_ids"):
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0 and value not in person_ids:
+            person_ids.append(value)
+    try:
+        default_id = int(request.form.get("default_person_id") or 0) or None
+    except (TypeError, ValueError):
+        default_id = None
+    if default_id is not None and default_id not in person_ids:
+        person_ids.insert(0, default_id)
+
+    conn = connect_inventory()
+    ensure_people_and_auth(conn)
+    try:
+        target = conn.execute("SELECT username FROM users WHERE username=?", (username,)).fetchone()
+        if not target:
+            return redirect(url_for("admin_page", message="Web user not found."))
+        for person_id in person_ids:
+            person = conn.execute("SELECT id,name,active FROM people WHERE id=?", (person_id,)).fetchone()
+            if not person or not int(person["active"]):
+                return redirect(url_for("admin_page", message="Choose only active people."))
+            if not is_superadmin_user(current_user()) and not _can_manage_person_name(str(person["name"])):
+                return redirect(url_for("admin_page", message="You can only assign collections you manage."))
+            assigned = conn.execute(
+                "SELECT username FROM user_people WHERE person_id=? AND username<>? COLLATE NOCASE",
+                (person_id, username),
+            ).fetchone()
+            if assigned:
+                return redirect(url_for("admin_page", message=f"{person['name']} is already assigned to {assigned['username']}."))
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DELETE FROM user_people WHERE username=?", (username,))
+        for person_id in person_ids:
+            conn.execute("INSERT INTO user_people(username, person_id) VALUES (?, ?)", (username, person_id))
+        new_default = default_id if default_id in person_ids else (person_ids[0] if person_ids else None)
+        conn.execute("UPDATE users SET person_id=? WHERE username=?", (new_default, username))
+        conn.commit()
+        return redirect(url_for("admin_page", message=f"Updated collections for {username}."))
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return redirect(url_for("admin_page", message="A collection is already assigned to another account."))
+    finally:
+        conn.close()
+
 @app.post("/admin/users/<username>/toggle")
-@superadmin_required
+@admin_required
 def toggle_user(username):
+    if not _can_manage_user_account(username):
+        return redirect(url_for("admin_page", message="You can only manage accounts assigned to you."))
     if DATABASE_BACKEND == "postgres":
         from postgres_user_admin import handle_toggle_user
         return handle_toggle_user(username)
@@ -3898,8 +3974,10 @@ def toggle_user(username):
 
 
 @app.post("/admin/users/<username>/password")
-@superadmin_required
+@admin_required
 def admin_reset_user_password(username):
+    if not _can_manage_user_account(username):
+        return redirect(url_for("admin_page", message="You can only manage accounts assigned to you."))
     if DATABASE_BACKEND == "postgres":
         from postgres_user_admin import handle_admin_reset_user_password
         return handle_admin_reset_user_password(username)
@@ -3912,8 +3990,10 @@ def admin_reset_user_password(username):
 
 
 @app.post("/admin/users/<username>/rename")
-@superadmin_required
+@admin_required
 def rename_user(username):
+    if not _can_manage_user_account(username):
+        return redirect(url_for("admin_page", message="You can only manage accounts assigned to you."))
     if DATABASE_BACKEND == "postgres":
         from postgres_user_admin import handle_rename_user
         return handle_rename_user(username)
@@ -3975,8 +4055,10 @@ def change_user_role(username):
 
 
 @app.post("/admin/users/<username>/delete")
-@superadmin_required
+@admin_required
 def delete_user(username):
+    if not _can_manage_user_account(username):
+        return redirect(url_for("admin_page", message="You can only manage accounts assigned to you."))
     if DATABASE_BACKEND == "postgres":
         from postgres_user_admin import handle_delete_user
         return handle_delete_user(username)

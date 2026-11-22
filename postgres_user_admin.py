@@ -70,8 +70,8 @@ def handle_add_user():
         return _redirect("Username must be at least 2 characters.")
     if len(password) < 12:
         return _redirect("User password must be at least 12 characters.")
-    if role not in {"admin", "vendor"}:
-        role = "vendor"
+    if role not in {"admin", "user", "vendor"}:
+        role = "user"
 
     person_id = None
     if raw_person_id:
@@ -83,6 +83,7 @@ def handle_add_user():
     password_hash = generate_password_hash(password)
 
     def operation(conn):
+        manager_name = manager_username
         existing = conn.execute(
             """
             SELECT username
@@ -114,16 +115,16 @@ def handle_add_user():
             if assigned:
                 return "That person is already assigned to another account."
 
-        if manager_username:
+        if manager_name:
             manager = conn.execute(
                 "SELECT username, is_admin, is_superadmin, active FROM app.users WHERE lower(username)=lower(?)",
-                (manager_username,),
+                (manager_name,),
             ).fetchone()
             if not manager or not bool(manager["active"]) or not (
                 bool(manager["is_admin"]) or bool(manager["is_superadmin"])
             ):
                 return "Choose an active administrator as the manager."
-            manager_username = str(manager["username"])
+            manager_name = str(manager["username"])
 
         inserted = conn.execute(
             """
@@ -141,7 +142,7 @@ def handle_add_user():
                 role == "admin",
                 role,
                 person_id,
-                manager_username,
+                manager_name,
             ),
         ).fetchone()
         if inserted and person_id is not None:
