@@ -751,19 +751,11 @@ def _manageable_person_ids(user=None) -> set[int]:
             f"WHERE lower(username) IN ({placeholders}) AND person_id IS NOT NULL",
             lowered,
         ).fetchall()
-        ids = {int(row["person_id"]) for row in rows if row["person_id"] is not None}
-        # Admins can also create and assign currently unowned collections.
-        if is_admin_user(user):
-            rows = conn.execute(
-                f"""SELECT p.id FROM {_account_table('people')} p
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM {_account_table('users')} u
-                        WHERE u.person_id=p.id
-                    )"""
-            ).fetchall()
-            ids.update(int(row["id"]) for row in rows)
-
-        return ids
+        return {
+            int(row["person_id"])
+            for row in rows
+            if row["person_id"] is not None
+        }
     finally:
         conn.close()
 
@@ -3358,6 +3350,17 @@ def manual_add():
         return redirect(url_for("admin_page", message="Card name is required."))
 
     owner = str(request.form.get("owner") or "").strip()[:100]
+    owner_conn = _account_connection()
+    try:
+        active_owner = owner_conn.execute(
+            f"""SELECT 1 FROM {_account_table('people')}
+                WHERE lower(name)=lower(?) AND active IS TRUE LIMIT 1""",
+            (owner,),
+        ).fetchone()
+    finally:
+        owner_conn.close()
+    if not active_owner:
+        return redirect(url_for("index", message="Choose an active owner."))
     if not _can_manage_person_name(owner):
         return redirect(url_for("index", message="Choose a collection assigned to your account."))
     finish = normalize_finish(request.form.get("finish"))
