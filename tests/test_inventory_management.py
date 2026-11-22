@@ -393,10 +393,6 @@ class InventoryManagementTests(unittest.TestCase):
                 0, "user", 0, int(my_person["id"]), "ci-admin",
             ),
         )
-        conn.execute(
-            "INSERT INTO user_people(username,person_id) VALUES(?,?)",
-            ("normal-collector", int(my_person["id"])),
-        )
         conn.commit()
         conn.close()
 
@@ -459,10 +455,6 @@ class InventoryManagementTests(unittest.TestCase):
                 app_module.generate_password_hash("normal-user-password-456"),
                 0, "user", 0, int(my_person["id"]), "ci-admin",
             ),
-        )
-        conn.execute(
-            "INSERT INTO user_people(username,person_id) VALUES(?,?)",
-            ("normal-importer", int(my_person["id"])),
         )
         conn.commit()
         conn.close()
