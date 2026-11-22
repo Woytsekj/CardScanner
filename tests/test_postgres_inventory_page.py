@@ -189,7 +189,7 @@ class PostgreSQLInventoryPageHTTPTests(unittest.TestCase):
         self.assertIn(f"{self.prefix} Card 100", second_html)
         self.assertIn(f"{self.prefix} Card 104", second_html)
 
-    def test_explicit_all_owners_includes_other_owner_rows(self):
+    def test_explicit_all_owners_still_excludes_unassigned_other_owner_rows(self):
         response = self.client.get(
             f"/?q={self.prefix}&owner=&sort=name&dir=asc&page=2",
             base_url="http://localhost",
@@ -197,7 +197,7 @@ class PostgreSQLInventoryPageHTTPTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         html = response.get_data(as_text=True)
         self.assertIn("Search, filter, and manage your collection.", html)
-        self.assertIn(f"{self.prefix} Card 999", html)
+        self.assertNotIn(f"{self.prefix} Card 999", html)
 
     def test_combined_finish_location_and_vending_filters(self):
         response = self.client.get(
