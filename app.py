@@ -876,6 +876,18 @@ def _can_manage_user_account(username: str, actor=None) -> bool:
         conn.close()
 
 
+def _person_name_by_id(person_id: int) -> str:
+    conn = _account_connection()
+    try:
+        row = conn.execute(
+            f"SELECT name FROM {_account_table('people')} WHERE id=?",
+            (person_id,),
+        ).fetchone()
+        return str(row["name"] or "") if row else ""
+    finally:
+        conn.close()
+
+
 def _accessible_person_names(user=None) -> list[str]:
     """Return the collection names visible to this account."""
     user = user or current_user()
@@ -2994,6 +3006,8 @@ def admin_page():
         ).fetchall()
         conn.close()
 
+    manageable_people_ids = _manageable_person_ids(current_user())
+    people = [person for person in people if int(person["id"]) in manageable_people_ids]
     return render_template(
         "admin.html",
         people=people,
@@ -3512,6 +3526,13 @@ def add_person():
         conn = connect_app_database()
         try:
             postgres_add_person(conn, name)
+            if not is_superadmin_user(current_user()):
+                person_row = conn.execute("SELECT id FROM app.people WHERE lower(name)=lower(?)", (name,)).fetchone()
+                if person_row:
+                    conn.execute(
+                        "INSERT INTO app.user_people(username, person_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+                        (str(current_user()["username"]), int(person_row["id"])),
+                    )
             conn.commit()
         finally:
             conn.close()
@@ -3520,6 +3541,12 @@ def add_person():
         ensure_people_and_auth(conn)
         try:
             conn.execute("INSERT INTO people(name, active) VALUES (?, 1)", (name,))
+            person_row = conn.execute("SELECT id FROM people WHERE name=? COLLATE NOCASE", (name,)).fetchone()
+            if person_row and not is_superadmin_user(current_user()):
+                conn.execute(
+                    "INSERT OR IGNORE INTO user_people(username, person_id) VALUES (?, ?)",
+                    (str(current_user()["username"]), int(person_row["id"])),
+                )
             conn.commit()
         except sqlite3.IntegrityError:
             conn.execute("UPDATE people SET active = 1 WHERE name = ?", (name,))
@@ -3533,6 +3560,8 @@ def add_person():
 @app.post("/admin/people/<int:person_id>/rename")
 @admin_required
 def rename_person(person_id: int):
+    if not _can_manage_person_name(_person_name_by_id(person_id)):
+        return redirect(url_for("admin_page", message="You can only rename collections you manage."))
     name = str(request.form.get("name") or "").strip()[:100]
     if name:
         if DATABASE_BACKEND == "postgres":
@@ -3573,6 +3602,8 @@ def rename_person(person_id: int):
 @app.post("/admin/people/<int:person_id>/toggle")
 @admin_required
 def toggle_person(person_id: int):
+    if not _can_manage_person_name(_person_name_by_id(person_id)):
+        return redirect(url_for("admin_page", message="You can only change collections you manage."))
     if DATABASE_BACKEND == "postgres":
         from postgres_app_db import connect_app_database
         from postgres_people import toggle_person as postgres_toggle_person
@@ -3606,9 +3637,14 @@ def toggle_person(person_id: int):
 @admin_required
 def delete_person(person_id: int):
     """Delete a person without discarding inventory or account relationships."""
+    source_person_name = _person_name_by_id(person_id)
+    if not _can_manage_person_name(source_person_name):
+        return redirect(url_for("admin_page", message="You can only delete collections you manage."))
     transfer_to = " ".join(
         str(request.form.get("transfer_to") or "").strip().split()
     )[:100]
+    if transfer_to and not _can_manage_person_name(transfer_to):
+        return redirect(url_for("admin_page", message="Choose a collection you manage as the transfer target."))
 
     if DATABASE_BACKEND == "postgres":
         conn = None
