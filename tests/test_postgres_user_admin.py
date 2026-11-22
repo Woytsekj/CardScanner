@@ -656,6 +656,25 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
         )
         self.assertIsNone(self.fetch_user(target))
 
+    def test_admin_accounts_must_report_directly_to_a_superadmin(self):
+        username = f"pg-useradmin-nested-admin-{self.token}"
+        self.track_username(username)
+        response = self.post(
+            "/admin/users",
+            {
+                "username": username,
+                "password": f"Long-Enough-Password-{self.token}",
+                "role": "admin",
+                "manager_username": self.admin_username,
+            },
+            client=self.superadmin_client,
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            self.message(response),
+            "Admin accounts must report directly to a Superadmin.",
+        )
+        self.assertIsNone(self.fetch_user(username))
     def test_admin_can_create_managed_user_but_cannot_change_roles_or_manage_siblings(self):
         username = f"pg-useradmin-managed-{self.token}"
         self.track_username(username)
