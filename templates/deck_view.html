@@ -162,7 +162,7 @@
                 <strong>{{ source.quantity }} × {{ item.name }}</strong>
                 <span class="deck-source-meta">{{ source.owner }}{% if source.deck_name %} · {{ source.deck_name }}{% else %} · Free pool{% endif %} · {{ source.location }} · {{ source.finish|capitalize }} · {{ source.set_code or 'Unknown set' }} #{{ source.collector_number or '—' }}</span>
               </div>
-              {% if session.get('is_admin') and source.can_move and not postgres_mode %}
+              {% if deck_editable and source.can_move and not postgres_mode %}
                 <form method="post" action="{{ url_for('move_inventory_to_deck', deck_id=deck.id) }}" class="deck-source-move-form"
                       data-confirm="{% if source.status == 'other-deck' %}Move {{ item.name }} from {{ source.deck_name }} into {{ deck.name }}? The copy will leave {{ source.deck_name }}, but its decklist requirement will remain and show the copy as blue.{% else %}Assign {{ item.name }} from the free pool to {{ deck.name }}?{% endif %}"
                       onsubmit="return confirm('Move ' + this.elements.quantity.value + ' copy/copies? ' + this.dataset.confirm);">

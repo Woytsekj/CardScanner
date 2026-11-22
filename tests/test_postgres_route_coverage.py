@@ -70,6 +70,7 @@ class PostgreSQLRouteCoverageTests(unittest.TestCase):
             "delete_person",
             "add_user",
             "assign_user_person",
+            "assign_user_people",
             "toggle_user",
             "admin_reset_user_password",
             "rename_user",

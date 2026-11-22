@@ -110,8 +110,10 @@
         </select>
         <button class="button secondary" type="submit">Set role</button>
       </form>
+      {% elif user.is_superadmin %}
+      <span class="subtle">Superadmin</span>
       {% else %}
-      <span class="subtle">Highest power</span>
+      <span class="subtle">Role controlled by superadmin</span>
       {% endif %}
 
       {% if user.username|lower != admin_user|lower and (admin_is_superadmin or (current_role == 'admin' and user.manager_username == admin_user)) %}

@@ -280,13 +280,13 @@
               <td><span class="finish-pill {{ item.finish }}">{{ item.finish|capitalize }}</span></td>
               <td>
                 <span class="edit-value">{{ item.owner }}</span>
-                {% if admin_user and item_editable %}<select class="inline-input owner-input edit-only-control" data-id="{{ item.id }}" data-field="owner" aria-label="Owner for {{ item.name }}">{% for owner in owners %}<option value="{{ owner }}" {% if owner == item.owner %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select>{% endif %}
+                {% if admin_user and item_editable %}<select class="inline-input owner-input edit-only-control" data-id="{{ item.id }}" data-field="owner" aria-label="Owner for {{ item.name }}">{% for owner in editable_owners %}<option value="{{ owner }}" {% if owner == item.owner %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select>{% endif %}
               </td>
               <td><span class="edit-value">{{ item.quantity }}</span>{% if admin_user and item_editable %}<input class="qty-input edit-only-control" type="number" min="1" step="1" data-id="{{ item.id }}" data-field="quantity" value="{{ item.quantity }}" aria-label="Quantity for {{ item.name }}">{% endif %}</td>
               <td><span class="edit-value">{{ item.location }}</span>{% if admin_user and item_editable %}<input class="location-input edit-only-control" type="text" data-id="{{ item.id }}" data-field="location" value="{{ item.location|e }}" aria-label="Storage location for {{ item.name }}">{% endif %}</td>
               <td>
                 <span class="edit-value">{% if item.deck_id %}{% for deck in decks %}{% if deck.id == item.deck_id %}{{ deck.name }}{% endif %}{% endfor %}{% else %}Unassigned{% endif %}</span>
-                {% if admin_user and item_editable %}<select class="inline-input deck-input edit-only-control" data-id="{{ item.id }}" data-field="deck_id" aria-label="Deck assignment for {{ item.name }}"><option value="none" {% if not item.deck_id %}selected{% endif %}>Unassigned</option>{% for deck in decks %}<option value="{{ deck.id }}" {% if item.deck_id == deck.id %}selected{% endif %}>{{ deck.name }}</option>{% endfor %}</select>{% endif %}
+                {% if admin_user and item_editable %}<select class="inline-input deck-input edit-only-control" data-id="{{ item.id }}" data-field="deck_id" aria-label="Deck assignment for {{ item.name }}"><option value="none" {% if not item.deck_id %}selected{% endif %}>Unassigned</option>{% for deck in decks %}{% if deck.id in editable_deck_ids %}<option value="{{ deck.id }}" {% if item.deck_id == deck.id %}selected{% endif %}>{{ deck.name }}</option>{% endif %}{% endfor %}</select>{% endif %}
               </td>
               <td>
                 <span class="edit-value">{{ 'Yes' if item.for_vending else 'No' }}</span>

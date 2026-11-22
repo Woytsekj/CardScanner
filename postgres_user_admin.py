@@ -300,7 +300,7 @@ def handle_assign_user_person(username: str):
 
 
 def handle_assign_user_people(username: str):
-    """Replace an account's collection membership while preserving its default."""
+    """Replace an account's collection membership and transfer collections within the manager tree."""
     username = str(username)[:150]
     person_ids = []
     for raw in request.form.getlist("person_ids"):
@@ -317,6 +317,9 @@ def handle_assign_user_people(username: str):
     if default_id is not None and default_id not in person_ids:
         person_ids.insert(0, default_id)
 
+    actor_username = str(session.get("username") or "")
+    actor_is_superadmin = bool(session.get("is_superadmin"))
+
     def operation(conn):
         target = conn.execute(
             "SELECT username FROM app.users WHERE lower(username)=lower(?) FOR UPDATE",
@@ -325,6 +328,8 @@ def handle_assign_user_people(username: str):
         if not target:
             return "Web user not found."
         actual = str(target["username"])
+
+        # Validate every assignment before changing any rows.
         for person_id in person_ids:
             person = conn.execute(
                 "SELECT id, name, active FROM app.people WHERE id=?",
@@ -332,33 +337,49 @@ def handle_assign_user_people(username: str):
             ).fetchone()
             if not person or not bool(person["active"]):
                 return "Choose only active people."
-            if not bool(session.get("is_superadmin")):
-                actor_username = str(session.get("username") or "")
-                membership = conn.execute(
-                    """
-                    SELECT 1 FROM app.user_people
-                    WHERE lower(username)=lower(?) AND person_id=?
-                    UNION
-                    SELECT 1 FROM app.users
-                    WHERE lower(username)=lower(?) AND person_id=?
-                    LIMIT 1
-                    """,
-                    (actor_username, person_id, actor_username, person_id),
-                ).fetchone()
-                if not membership:
-                    return "You can only assign collections you manage."
+
             assigned = conn.execute(
-                "SELECT username FROM app.user_people WHERE person_id=? AND lower(username)<>lower(?)",
-                (person_id, actual),
+                """
+                SELECT username FROM app.user_people
+                WHERE person_id=? AND lower(username)<>lower(?)
+                UNION
+                SELECT username FROM app.users
+                WHERE person_id=? AND lower(username)<>lower(?)
+                LIMIT 1
+                """,
+                (person_id, actual, person_id, actual),
             ).fetchone()
-            if assigned:
-                return f"{person['name']} is already assigned to {assigned['username']}."
+            if not actor_is_superadmin:
+                if not assigned:
+                    return "You can only assign collections you manage."
+                within_tree = conn.execute(
+                    """
+                    WITH RECURSIVE managed(username) AS (
+                        SELECT username FROM app.users WHERE lower(username)=lower(?)
+                        UNION
+                        SELECT child.username
+                        FROM app.users AS child
+                        JOIN managed AS parent
+                          ON lower(child.manager_username)=lower(parent.username)
+                    )
+                    SELECT 1 FROM managed WHERE lower(username)=lower(?) LIMIT 1
+                    """,
+                    (actor_username, str(assigned["username"])),
+                ).fetchone()
+                if not within_tree:
+                    return "You can only assign collections you manage."
+
+        # Move these collections off their previous owner in one transaction.
+        for person_id in person_ids:
+            conn.execute("DELETE FROM app.user_people WHERE person_id=?", (person_id,))
+            conn.execute("UPDATE app.users SET person_id=NULL WHERE person_id=?", (person_id,))
         conn.execute("DELETE FROM app.user_people WHERE username=?", (actual,))
         for person_id in person_ids:
             conn.execute(
                 "INSERT INTO app.user_people(username, person_id) VALUES (?, ?)",
                 (actual, person_id),
             )
+
         new_default = default_id if default_id in person_ids else (
             person_ids[0] if person_ids else None
         )
