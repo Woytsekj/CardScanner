@@ -2997,7 +2997,21 @@ def admin_page():
         conn.close()
 
     manageable_people_ids = _manageable_person_ids(current_user())
-    people = [person for person in people if int(person["id"]) in manageable_people_ids]
+    assignable_people_ids = set(manageable_people_ids)
+    if is_admin_user(current_user()) and not is_superadmin_user(current_user()):
+        assign_conn = _account_connection()
+        try:
+            unassigned = assign_conn.execute(
+                f"""SELECT p.id FROM {_account_table('people')} p
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM {_account_table('users')} u
+                        WHERE u.person_id=p.id
+                    )"""
+            ).fetchall()
+            assignable_people_ids.update(int(row["id"]) for row in unassigned)
+        finally:
+            assign_conn.close()
+    people = [person for person in people if int(person["id"]) in assignable_people_ids]
     return render_template(
         "admin.html",
         people=people,
@@ -3916,8 +3930,6 @@ def assign_user_person(username: str):
             person = conn.execute("SELECT id,name,active FROM people WHERE id=?", (person_id,)).fetchone()
             if not person or not int(person["active"]):
                 return redirect(url_for("admin_page", message="Choose an active person."))
-            if not is_superadmin_user(current_user()) and not _can_manage_person_name(str(person["name"])):
-                return redirect(url_for("admin_page", message="You can only assign collections you manage."))
             assigned = conn.execute(
                 """SELECT username FROM users
                    WHERE person_id=? AND lower(username)<>lower(?) LIMIT 1""",
@@ -3928,6 +3940,15 @@ def assign_user_person(username: str):
                     "admin_page",
                     message=f"{person['name']} is already linked to {assigned['username']}. Unlink that account first.",
                 ))
+            if not is_superadmin_user(current_user()):
+                owner = conn.execute(
+                    "SELECT person_id FROM users WHERE lower(username)=lower(?)",
+                    (str(current_user()["username"]),),
+                ).fetchone()
+                # Admins may attach an unassigned collection to a User they
+                # directly manage. They cannot attach another account's collection.
+                if owner is None:
+                    return redirect(url_for("admin_page", message="You can only assign unassigned collections or collections you manage."))
         conn.execute("UPDATE users SET person_id=? WHERE username=?", (person_id, username))
         conn.commit()
         person_name = conn.execute("SELECT name FROM people WHERE id=?", (person_id,)).fetchone()[0] if person_id is not None else None
