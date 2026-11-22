@@ -14,7 +14,7 @@ def load_current_user(username: str):
             """
             SELECT u.username, u.password_hash, u.is_admin, u.role,
                    u.is_superadmin, u.active, u.created_at,
-                   u.last_login_at, u.person_id,
+                   u.last_login_at, u.person_id, u.manager_username,
                    p.name AS person_name
             FROM app.users AS u
             LEFT JOIN app.people AS p ON p.id = u.person_id
@@ -157,5 +157,25 @@ def clear_login_failures(keys: list[str]) -> None:
                 (key,),
             )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def load_account_person_ids(username: str) -> list[int]:
+    """Return all collection owners assigned to a login, including its default."""
+    conn = connect_app_database()
+    try:
+        rows = conn.execute(
+            "SELECT person_id FROM app.user_people WHERE lower(username)=lower(?) ORDER BY person_id",
+            (username,),
+        ).fetchall()
+        ids = {int(row["person_id"]) for row in rows}
+        default = conn.execute(
+            "SELECT person_id FROM app.users WHERE lower(username)=lower(?)",
+            (username,),
+        ).fetchone()
+        if default and default["person_id"] is not None:
+            ids.add(int(default["person_id"]))
+        return sorted(ids)
     finally:
         conn.close()

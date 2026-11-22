@@ -425,12 +425,26 @@ def _ensure_people_and_auth(conn: sqlite3.Connection) -> None:
         "ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE users ADD COLUMN last_login_at TEXT",
         "ALTER TABLE users ADD COLUMN person_id INTEGER REFERENCES people(id) ON DELETE SET NULL",
+        "ALTER TABLE users ADD COLUMN manager_username TEXT REFERENCES users(username) ON DELETE SET NULL",
     ):
         try: c.execute(ddl)
         except sqlite3.OperationalError: pass
     # Each person can be the default collection for at most one web account.
     # A partial index preserves the ability to leave service/vendor accounts unlinked.
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_person_id_unique ON users(person_id) WHERE person_id IS NOT NULL")
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS user_people (
+            username TEXT NOT NULL COLLATE NOCASE REFERENCES users(username) ON DELETE CASCADE,
+            person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (username, person_id),
+            UNIQUE (person_id)
+        )
+    """)
+    c.execute("""
+        INSERT OR IGNORE INTO user_people(username, person_id)
+        SELECT username, person_id FROM users WHERE person_id IS NOT NULL
+    """)
     c.execute("UPDATE users SET role='admin' WHERE is_admin=1 AND (role IS NULL OR role='')")
     c.execute("UPDATE users SET role='vendor' WHERE is_admin=0 AND (role IS NULL OR role='')")
     c.execute("UPDATE users SET is_superadmin=1, is_admin=1, role='superadmin' WHERE is_superadmin=1")
@@ -636,7 +650,7 @@ def _load_current_user(username: str) -> sqlite3.Row | None:
                     """
                     SELECT u.username, u.password_hash, u.is_admin, u.role,
                            u.is_superadmin, u.active, u.created_at,
-                           u.last_login_at, u.person_id,
+                           u.last_login_at, u.person_id, u.manager_username,
                            p.name AS person_name
                     FROM users u
                     LEFT JOIN people p ON p.id = u.person_id
@@ -672,6 +686,203 @@ def current_admin() -> str | None:
 
 def is_superadmin_user(user: sqlite3.Row | None) -> bool:
     return bool(user and (int(user["is_superadmin"]) or str(user["role"]).lower() == "superadmin"))
+
+
+def is_admin_user(user: sqlite3.Row | None) -> bool:
+    return bool(user and (
+        int(user["is_admin"]) or int(user["is_superadmin"])
+        or str(user["role"]).lower() in {"admin", "superadmin"}
+    ))
+
+
+def _account_table(name: str) -> str:
+    return f"app.{name}" if DATABASE_BACKEND == "postgres" else name
+
+
+def _account_connection():
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        return connect_app_database()
+    conn = connect_inventory()
+    ensure_people_and_auth(conn)
+    return conn
+
+
+def _account_person_ids(username: str) -> set[int]:
+    username = str(username or "").strip()
+    if not username:
+        return set()
+    conn = _account_connection()
+    try:
+        rows = conn.execute(
+            f"SELECT person_id FROM {_account_table('user_people')} WHERE lower(username)=lower(?)",
+            (username,),
+        ).fetchall()
+        ids = {int(row["person_id"]) for row in rows if row["person_id"] is not None}
+        default = conn.execute(
+            f"SELECT person_id FROM {_account_table('users')} WHERE lower(username)=lower(?)",
+            (username,),
+        ).fetchone()
+        if default and default["person_id"] is not None:
+            ids.add(int(default["person_id"]))
+        return ids
+    finally:
+        conn.close()
+
+
+def _managed_usernames(user) -> set[str]:
+    if not user:
+        return set()
+    root = str(user["username"])
+    if is_superadmin_user(user):
+        conn = _account_connection()
+        try:
+            rows = conn.execute(f"SELECT username FROM {_account_table('users')}").fetchall()
+            return {str(row["username"]) for row in rows} | {root}
+        finally:
+            conn.close()
+    if not is_admin_user(user):
+        return {root}
+    conn = _account_connection()
+    try:
+        rows = conn.execute(
+            f"SELECT username, manager_username FROM {_account_table('users')}"
+        ).fetchall()
+    finally:
+        conn.close()
+    children: dict[str, list[str]] = {}
+    for row in rows:
+        manager = str(row["manager_username"] or "").casefold()
+        if manager:
+            children.setdefault(manager, []).append(str(row["username"]))
+    result = {root}
+    pending = [root]
+    while pending:
+        current = pending.pop()
+        for child in children.get(current.casefold(), []):
+            if child not in result:
+                result.add(child)
+                pending.append(child)
+    return result
+
+
+def _manageable_person_ids(user=None) -> set[int]:
+    user = user or current_user()
+    if not user:
+        return set()
+    conn = _account_connection()
+    try:
+        if is_superadmin_user(user):
+            rows = conn.execute(f"SELECT id FROM {_account_table('people')}").fetchall()
+            return {int(row["id"]) for row in rows}
+        usernames = _managed_usernames(user)
+        if not usernames:
+            return set()
+        placeholders = ", ".join("?" for _ in usernames)
+        lowered = [name.casefold() for name in usernames]
+        rows = conn.execute(
+            f"SELECT person_id FROM {_account_table('user_people')} "
+            f"WHERE lower(username) IN ({placeholders})",
+            lowered,
+        ).fetchall()
+        ids = {int(row["person_id"]) for row in rows if row["person_id"] is not None}
+        rows = conn.execute(
+            f"SELECT person_id FROM {_account_table('users')} "
+            f"WHERE lower(username) IN ({placeholders}) AND person_id IS NOT NULL",
+            lowered,
+        ).fetchall()
+        ids.update(int(row["person_id"]) for row in rows)
+        return ids
+    finally:
+        conn.close()
+
+
+def _can_manage_person_name(person_name: str, user=None) -> bool:
+    name = " ".join(str(person_name or "").strip().split())
+    user = user or current_user()
+    if not name or not user:
+        return False
+    if is_superadmin_user(user):
+        return True
+    conn = _account_connection()
+    try:
+        row = conn.execute(
+            f"SELECT id FROM {_account_table('people')} WHERE lower(name)=lower(?)",
+            (name,),
+        ).fetchone()
+        return bool(row and int(row["id"]) in _manageable_person_ids(user))
+    finally:
+        conn.close()
+
+
+def _can_manage_inventory_row(item_id: int, user=None) -> bool:
+    conn = _account_connection()
+    try:
+        row = conn.execute(
+            f"SELECT owner FROM {_account_table('inventory')} WHERE id=?",
+            (item_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return bool(row and _can_manage_person_name(str(row["owner"] or ""), user))
+
+
+def _can_manage_deck(deck_id: int, user=None) -> bool:
+    conn = _account_connection()
+    try:
+        row = conn.execute(
+            f"SELECT person_id, person_name FROM {_account_table('decklists')} WHERE id=?",
+            (deck_id,),
+        ).fetchone()
+        if not row:
+            return False
+        user = user or current_user()
+        if row["person_id"] is not None:
+            return bool(is_superadmin_user(user) or int(row["person_id"]) in _manageable_person_ids(user))
+        return _can_manage_person_name(str(row["person_name"] or ""), user)
+    finally:
+        conn.close()
+
+
+def _can_manage_user_account(username: str, actor=None) -> bool:
+    actor = actor or current_user()
+    if not actor:
+        return False
+    if is_superadmin_user(actor):
+        return True
+    if not is_admin_user(actor):
+        return False
+    conn = _account_connection()
+    try:
+        target = conn.execute(
+            f"SELECT role, manager_username FROM {_account_table('users')} WHERE lower(username)=lower(?)",
+            (str(username or ""),),
+        ).fetchone()
+        return bool(
+            target
+            and str(target["role"] or "").lower() == "user"
+            and str(target["manager_username"] or "").casefold()
+                == str(actor["username"]).casefold()
+        )
+    finally:
+        conn.close()
+
+
+def collection_access_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        user = current_user()
+        if not user:
+            if request.path.startswith("/api/") or request.method != "GET":
+                return jsonify({"success": False, "error": "Login required"}), 401
+            return redirect(url_for("login", next=request.full_path if request.query_string else request.path))
+        role = str(user["role"] or "").lower()
+        if role not in {"user", "member", "admin", "superadmin"} and not is_superadmin_user(user):
+            if request.path.startswith("/api/") or request.method != "GET":
+                return jsonify({"success": False, "error": "Collection access required"}), 403
+            return render_template("login.html", next_url="", error="Collection access required."), 403
+        return view(*args, **kwargs)
+    return wrapped
 
 
 def superadmin_required(view):
@@ -2635,7 +2846,14 @@ def admin_page():
 
         conn = connect_app_database()
         try:
-            people, users = fetch_admin_page_data(conn)
+            people, users = fetch_admin_page_data(
+                conn,
+                username=str(current_user()["username"]),
+                superadmin=is_superadmin_user(current_user()),
+            )
+            managers = conn.execute(
+                'SELECT username FROM app.users WHERE (is_admin IS TRUE OR is_superadmin IS TRUE) AND active IS TRUE ORDER BY lower(username) COLLATE "C"'
+            ).fetchall()
         finally:
             conn.close()
     else:
@@ -2661,12 +2879,20 @@ def admin_page():
             """
             SELECT
                 u.username, u.is_admin, u.role, u.is_superadmin, u.active,
-                u.created_at, u.last_login_at, u.person_id,
+                u.created_at, u.last_login_at, u.person_id, u.manager_username,
                 p.name AS person_name
             FROM users u
             LEFT JOIN people p ON p.id = u.person_id
+            WHERE (? = 1 OR lower(u.manager_username) = lower(?))
             ORDER BY u.is_superadmin DESC, u.username COLLATE NOCASE
-            """
+            """,
+            (1 if is_superadmin_user(current_user()) else 0, current_user()["username"]),
+        ).fetchall()
+        users = [dict(account) for account in users]
+        for account in users:
+            account["person_ids"] = sorted(_account_person_ids(account["username"]))
+        managers = conn.execute(
+            "SELECT username FROM users WHERE (is_admin=1 OR is_superadmin=1) AND active=1 ORDER BY username COLLATE NOCASE"
         ).fetchall()
         conn.close()
 
@@ -2675,7 +2901,9 @@ def admin_page():
         people=people,
         users=users,
         account_people=[person for person in people if person["active"]],
+        managers=managers,
         admin_user=current_admin(),
+        current_role=str(current_user()["role"] or "user").lower(),
         admin_is_superadmin=is_superadmin_user(current_user()),
         message=request.args.get("message", ""),
         display_timezone=DISPLAY_TIMEZONE,
