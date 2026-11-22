@@ -454,5 +454,24 @@ class PostgreSQLPeopleTests(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
 
 
+    def test_admin_mobile_scanner_options_are_limited_to_own_and_managed_users(self):
+        response = self.admin_client.get(
+            "/api/scanner/mobile/options",
+            base_url="http://localhost",
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        names = {person["name"] for person in response.get_json()["people"]}
+        self.assertEqual(names, {self.source_name, self.target_name})
+
+    def test_user_mobile_scanner_options_only_include_own_collection(self):
+        response = self.user_client.get(
+            "/api/scanner/mobile/options",
+            base_url="http://localhost",
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        names = {person["name"] for person in response.get_json()["people"]}
+        self.assertEqual(names, {self.target_name})
+
+
 if __name__ == "__main__":
     unittest.main()
