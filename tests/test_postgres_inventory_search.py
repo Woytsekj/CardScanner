@@ -316,7 +316,7 @@ class PostgreSQLInventorySearchHTTPTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertIn("/login", response.location)
 
-    def test_non_admin_is_denied(self):
+    def test_user_inventory_search_is_scoped_to_their_collection(self):
         response = self.user_client.get(
             "/search_suggest?q=Mountain",
             base_url="http://localhost",
