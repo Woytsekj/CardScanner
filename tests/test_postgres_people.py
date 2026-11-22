@@ -188,6 +188,30 @@ class PostgreSQLPeopleTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def make_source_collection_unassigned(self):
+        """Move the test admin to a fresh collection so source_id is unassigned."""
+        reserve_name = f"PG People Admin Reserve {self.token}"
+        conn = connect_app_database(expected_database="cardscanner_dev")
+        try:
+            reserve = conn.execute(
+                """
+                INSERT INTO app.people (name, active)
+                VALUES (?, TRUE)
+                RETURNING id
+                """,
+                (reserve_name,),
+            ).fetchone()
+            reserve_id = int(reserve["id"])
+            self.person_ids.append(reserve_id)
+            conn.execute(
+                "UPDATE app.users SET person_id = ? WHERE username = ?",
+                (reserve_id, self.admin_username),
+            )
+            conn.commit()
+            return reserve_id
+        finally:
+            conn.close()
+
     def create_deck(self):
         conn = connect_app_database(expected_database="cardscanner_dev")
         try:
@@ -323,12 +347,12 @@ class PostgreSQLPeopleTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_delete_without_inventory_unlinks_account_default_person(self):
+    def test_delete_assigned_collection_is_rejected(self):
         response = self.post(f"/admin/people/{self.source_id}/delete")
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(
+        self.assertIn(
+            f"is the collection owned by {self.admin_username}",
             self.message(response),
-            f"Deleted {self.source_name} permanently.",
         )
 
         conn = connect_app_database(expected_database="cardscanner_dev")
@@ -341,12 +365,13 @@ class PostgreSQLPeopleTests(unittest.TestCase):
                 "SELECT person_id FROM app.users WHERE username = ?",
                 (self.admin_username,),
             ).fetchone()
-            self.assertIsNone(person)
-            self.assertIsNone(user["person_id"])
+            self.assertIsNotNone(person)
+            self.assertEqual(user["person_id"], self.source_id)
         finally:
             conn.close()
 
     def test_delete_with_inventory_requires_another_active_owner(self):
+        self.make_source_collection_unassigned()
         sid = f"pg-people-require-transfer-{self.token}"
         self.insert_inventory(sid, quantity=3)
 
@@ -369,6 +394,7 @@ class PostgreSQLPeopleTests(unittest.TestCase):
         self.assertEqual(rows[0]["owner"], self.source_name)
 
     def test_delete_transfer_merges_only_exact_inventory_matches(self):
+        reserve_id = self.make_source_collection_unassigned()
         sid = f"pg-people-transfer-{self.token}"
         target_id = self.insert_inventory(
             sid, owner="target", quantity=3, location="Binder",
@@ -426,7 +452,7 @@ class PostgreSQLPeopleTests(unittest.TestCase):
                 (deck_id,),
             ).fetchone()
             self.assertIsNone(source)
-            self.assertIsNone(account["person_id"])
+            self.assertEqual(account["person_id"], reserve_id)
             self.assertIsNone(deck["person_id"])
             self.assertEqual(deck["person_name"], self.source_name)
         finally:
