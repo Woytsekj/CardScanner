@@ -481,6 +481,151 @@ class PostgreSQLScryfallMetadataTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_individual_enrichment_is_scoped_to_admin_and_managed_users(self):
+        token = uuid4().hex
+        managed_username = f"pg-scryfall-managed-{token}"
+        outside_username = f"pg-scryfall-outside-{token}"
+        managed_name = f"PG Scryfall Managed Owner {token}"
+        outside_name = f"PG Scryfall Outside Owner {token}"
+        managed_sid = f"10000000-0000-4000-8000-{token[-12:]}"
+        outside_sid = f"f0000000-0000-4000-8000-{token[-12:]}"
+        conn = connect_app_database(expected_database="cardscanner_dev")
+        person_ids = []
+        try:
+            managed_person = conn.execute(
+                "INSERT INTO app.people (name, active) VALUES (?, TRUE) RETURNING id",
+                (managed_name,),
+            ).fetchone()
+            outside_person = conn.execute(
+                "INSERT INTO app.people (name, active) VALUES (?, TRUE) RETURNING id",
+                (outside_name,),
+            ).fetchone()
+            managed_person_id = int(managed_person["id"])
+            outside_person_id = int(outside_person["id"])
+            person_ids.extend([managed_person_id, outside_person_id])
+            conn.execute(
+                """
+                INSERT INTO app.users (
+                    username, password_hash, is_admin, role,
+                    is_superadmin, active, person_id, manager_username
+                )
+                VALUES (?, ?, FALSE, 'user', FALSE, TRUE, ?, ?)
+                """,
+                (
+                    managed_username,
+                    "unused-scryfall-test-password-hash",
+                    managed_person_id,
+                    self.username,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO app.users (
+                    username, password_hash, is_admin, role,
+                    is_superadmin, active, person_id
+                )
+                VALUES (?, ?, FALSE, 'user', FALSE, TRUE, ?)
+                """,
+                (
+                    outside_username,
+                    "unused-scryfall-test-password-hash",
+                    outside_person_id,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO app.inventory (
+                    game_id, scryfall_id, name, quantity, owner,
+                    finish, location, for_vending
+                )
+                VALUES ('mtg', ?, ?, 1, ?, 'normal', 'Free', FALSE)
+                """,
+                (managed_sid, f"Managed card {token}", managed_name),
+            )
+            conn.execute(
+                """
+                INSERT INTO app.inventory (
+                    game_id, scryfall_id, name, quantity, owner,
+                    finish, location, for_vending
+                )
+                VALUES ('mtg', ?, ?, 1, ?, 'normal', 'Free', FALSE)
+                """,
+                (outside_sid, f"Outside card {token}", outside_name),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        managed_payload = {**self.card_payload(), "id": managed_sid, "name": f"Managed card {token}"}
+        own_payload = {**self.card_payload(), "id": self.scryfall_id, "name": self.card_name}
+        requested_ids = set()
+        try:
+            with (
+                patch.object(
+                    self.app_module.requests,
+                    "get",
+                    side_effect=[
+                        FakeResponse(payload=own_payload),
+                        FakeResponse(payload=managed_payload),
+                    ],
+                ) as get,
+                patch.object(self.app_module.time, "sleep", return_value=None),
+            ):
+                response = self.client.post(
+                    "/admin/enrich_metadata",
+                    data={"csrf_token": self.csrf, "limit": "1000"},
+                    base_url="http://localhost",
+                )
+
+            self.assertEqual(response.status_code, 302)
+            self.assertIn("2 of 2 cards updated", self.message(response))
+            requested_ids = {
+                str(call.args[0]).rsplit("/", 1)[-1]
+                for call in get.call_args_list
+            }
+            self.assertEqual(requested_ids, {self.scryfall_id, managed_sid})
+            self.assertNotIn(outside_sid, requested_ids)
+        finally:
+            conn = connect_app_database(expected_database="cardscanner_dev")
+            try:
+                test_ids = (self.scryfall_id, managed_sid, outside_sid)
+                marks = ", ".join("?" for _ in test_ids)
+                conn.execute(
+                    f"DELETE FROM app.card_aliases WHERE external_printing_id IN ({marks})",
+                    test_ids,
+                )
+                conn.execute(
+                    f"DELETE FROM catalog.printing_product_mappings "
+                    f"WHERE source_external_printing_id IN ({marks})",
+                    test_ids,
+                )
+                conn.execute(
+                    f"DELETE FROM catalog.provider_printing_metadata "
+                    f"WHERE external_printing_id IN ({marks})",
+                    test_ids,
+                )
+                conn.execute(
+                    f"DELETE FROM app.inventory WHERE scryfall_id IN ({marks})",
+                    test_ids,
+                )
+                conn.execute(
+                    "DELETE FROM app.users WHERE username IN (?, ?)",
+                    (managed_username, outside_username),
+                )
+                conn.execute(
+                    "DELETE FROM app.people WHERE id IN (?, ?)",
+                    tuple(person_ids),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
     def test_individual_enrichment_fetches_only_missing_owned_metadata(self):
         payload = self.card_payload()
         with (
