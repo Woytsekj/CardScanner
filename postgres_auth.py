@@ -162,20 +162,13 @@ def clear_login_failures(keys: list[str]) -> None:
 
 
 def load_account_person_ids(username: str) -> list[int]:
-    """Return all collection owners assigned to a login, including its default."""
+    """Return the single collection linked to a login, if one is assigned."""
     conn = connect_app_database()
     try:
-        rows = conn.execute(
-            "SELECT person_id FROM app.user_people WHERE lower(username)=lower(?) ORDER BY person_id",
-            (username,),
-        ).fetchall()
-        ids = {int(row["person_id"]) for row in rows}
-        default = conn.execute(
+        row = conn.execute(
             "SELECT person_id FROM app.users WHERE lower(username)=lower(?)",
             (username,),
         ).fetchone()
-        if default and default["person_id"] is not None:
-            ids.add(int(default["person_id"]))
-        return sorted(ids)
+        return [int(row["person_id"])] if row and row["person_id"] is not None else []
     finally:
         conn.close()
