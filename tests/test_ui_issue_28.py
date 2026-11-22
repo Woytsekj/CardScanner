@@ -219,6 +219,12 @@ class Issue28UIFoundationTests(unittest.TestCase):
         self.assertIn("refreshExpandedCardHistory", history)
         self.assertIn("card-detail-expanded-range", history)
         self.assertIn("pointTitle", history)
+        self.assertIn("function attachHistoryChartInteraction", history)
+        self.assertIn("addEventListener('pointermove'", history)
+        self.assertIn("aria-valuetext", history)
+        self.assertIn("event.key === 'ArrowLeft'", history)
+        self.assertIn("event.key === 'Home'", history)
+        self.assertIn("event.key === 'End'", history)
 
 
 if __name__ == "__main__":
