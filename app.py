@@ -3804,6 +3804,8 @@ def add_user():
         role = "user"
     if role not in {"admin", "user", "vendor"}:
         role = "user"
+    if actor_superadmin and role in {"admin", "user"} and not manager_username:
+        manager_username = str(actor["username"])
     raw_person_id = str(request.form.get("person_id") or "").strip()
     if not username or len(username) < 2:
         return redirect(url_for("admin_page", message="Username must be at least 2 characters."))
@@ -3824,6 +3826,8 @@ def add_user():
             int(manager["is_admin"]) or int(manager["is_superadmin"])
         ):
             conn.close(); return redirect(url_for("admin_page", message="Choose an active administrator as the manager."))
+        if role == "admin" and not int(manager["is_superadmin"]):
+            conn.close(); return redirect(url_for("admin_page", message="Admin accounts must report directly to a Superadmin."))
         manager_username = str(manager["username"])
     if raw_person_id:
         try:
