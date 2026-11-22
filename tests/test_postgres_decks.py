@@ -217,7 +217,7 @@ class PostgreSQLDeckComparisonTests(unittest.TestCase):
         self.assertIn(f"PG comparison Primary {self.token}", listing_html)
         self.assertIn('action="/decks/import"', listing_html)
         self.assertIn("Import a deck", listing_html)
-        self.assertNotIn(f"/decks/{self.deck_id}/delete", listing_html)
+        self.assertIn(f"/decks/{self.deck_id}/delete", listing_html)
 
         detail = self.client.get(
             f"/decks/{self.deck_id}", base_url="http://localhost"
