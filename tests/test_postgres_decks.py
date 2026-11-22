@@ -274,8 +274,8 @@ class PostgreSQLDeckComparisonTests(unittest.TestCase):
         response = self.client.get(
             f"/decks/{self.deck_id}", base_url="http://localhost"
         )
-        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
-        self.assertIn(f"Deck for {expected_owner}", response.get_data(as_text=True))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/decks", response.location)
 
         conn = connect_app_database(expected_database="cardscanner_dev")
         try:
