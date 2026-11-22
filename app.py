@@ -934,18 +934,8 @@ def _can_manage_inventory_rows(item_ids, user=None) -> bool:
 
 
 def _can_access_deck(deck_id: int, user=None) -> bool:
-    """Authenticated collection users may read every deck; writes are separately scoped."""
-    user = user or current_user()
-    if not user:
-        return False
-    conn = _account_connection()
-    try:
-        return conn.execute(
-            f"SELECT 1 FROM {_account_table('decklists')} WHERE id=?",
-            (deck_id,),
-        ).fetchone() is not None
-    finally:
-        conn.close()
+    """Allow access only to decks owned by this account or its managed Users."""
+    return _can_manage_deck(deck_id, user)
 
 
 def collection_access_required(view):
@@ -4471,6 +4461,48 @@ def bulk_update_inventory():
     data = request.get_json(silent=True) or {}
 
     if DATABASE_BACKEND == "postgres":
+        raw_ids = data.get("ids")
+        if not isinstance(raw_ids, list):
+            return jsonify({"success": False, "error": "Select one or more inventory rows."}), 400
+        scoped_ids: list[int] = []
+        seen_ids: set[int] = set()
+        for raw_id in raw_ids:
+            try:
+                item_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if item_id > 0 and item_id not in seen_ids:
+                seen_ids.add(item_id)
+                scoped_ids.append(item_id)
+        if not scoped_ids or len(scoped_ids) > 5000:
+            return jsonify({"success": False, "error": "Select one or more valid inventory rows (maximum 5,000)."}), 400
+        if not _can_manage_inventory_rows(scoped_ids):
+            return jsonify({"success": False, "error": "You can only edit cards in collections you manage."}), 403
+        owner_supplied = "owner" in data and data.get("owner") not in (None, "", "unchanged")
+        owner_value = " ".join(str(data.get("owner") or "").split())[:100] if owner_supplied else None
+        if owner_supplied and not _can_manage_person_name(owner_value):
+            return jsonify({"success": False, "error": "You cannot move cards into a collection you do not manage."}), 403
+        if owner_supplied:
+            owner_conn = _account_connection()
+            try:
+                valid_owner = owner_conn.execute(
+                    f"""SELECT 1 FROM {_account_table('people')}
+                        WHERE lower(name)=lower(?) AND active IS TRUE LIMIT 1""",
+                    (owner_value,),
+                ).fetchone()
+            finally:
+                owner_conn.close()
+            if not valid_owner:
+                return jsonify({"success": False, "error": "Choose an active owner from the people list."}), 400
+        raw_deck = data.get("deck_id", "unchanged")
+        if "deck_id" in data and raw_deck not in (None, "", "unchanged", "none", "unassigned", "null"):
+            try:
+                requested_deck_id = int(raw_deck)
+            except (TypeError, ValueError):
+                return jsonify({"success": False, "error": "Invalid deck selection."}), 400
+            if not _can_manage_deck(requested_deck_id):
+                return jsonify({"success": False, "error": "You cannot assign cards to a deck you do not manage."}), 403
+
         from postgres_inventory_bulk import apply_bulk_inventory_update
 
         result = apply_bulk_inventory_update(data)
@@ -4759,15 +4791,18 @@ def import_csv():
     owner_override = str(request.form.get("owner") or "").strip()[:100]
     location_override = str(request.form.get("location") or "").strip()[:120]
     actor = current_user()
-    if actor and not is_admin_user(actor):
+    if actor and not is_superadmin_user(actor):
         allowed_owners = _accessible_person_names(actor)
-        if owner_override and owner_override not in allowed_owners:
+        owner_lookup = {str(name).casefold(): str(name) for name in allowed_owners}
+        if owner_override and owner_override.casefold() not in owner_lookup:
             return jsonify({"success": False, "error": "You can only import cards into collections assigned to your account."}), 403
-        if not owner_override:
+        if owner_override:
+            owner_override = owner_lookup[owner_override.casefold()]
+        else:
             default_owner = str(actor["person_name"] or "").strip()
-            owner_override = default_owner if default_owner in allowed_owners else (
-                allowed_owners[0] if allowed_owners else ""
-            )
+            owner_override = owner_lookup.get(default_owner.casefold(), "")
+            if not owner_override and allowed_owners:
+                owner_override = allowed_owners[0]
         if not owner_override:
             return jsonify({"success": False, "error": "Your account is not linked to an active collection."}), 403
 
@@ -7117,6 +7152,30 @@ def decks_page():
             ).fetchall()
         ]
         conn.close()
+    if not is_superadmin_user(user):
+        allowed_names = {name.casefold() for name in editable_owners}
+        rows = [
+            row for row in rows
+            if str(dict(row).get("person_name") or "").strip().casefold() in allowed_names
+        ]
+        owners = [name for name in owners if str(name).casefold() in allowed_names]
+        if allowed_names:
+            owner_marks = ", ".join("?" for _ in allowed_names)
+            location_conn = _account_connection()
+            try:
+                locations = [
+                    row["location"] for row in location_conn.execute(
+                        f"""SELECT DISTINCT COALESCE(location, 'Free') AS location
+                            FROM {_account_table('inventory')}
+                            WHERE lower(COALESCE(owner, 'Me')) IN ({owner_marks})
+                            ORDER BY lower(COALESCE(location, 'Free'))""",
+                        [name.casefold() for name in allowed_names],
+                    ).fetchall()
+                ]
+            finally:
+                location_conn.close()
+        else:
+            locations = []
     decks: list[dict[str, Any]] = []
     all_tags: dict[str, str] = {}
     for row in rows:
@@ -7240,6 +7299,12 @@ def decks_import():
             deck_person = str(current["person_name"] or "").strip() if current else ""
         if not deck_person or not _can_manage_person_name(deck_person):
             raise ValueError("Choose a deck owner assigned to your account.")
+        # Non-Superadmins import deck cards and optional inventory only into the
+        # same collection they selected for the deck.
+        if not is_superadmin_user(current_user()):
+            owner = deck_person
+        elif owner and not _can_manage_person_name(owner):
+            raise ValueError("Choose an active collection for imported inventory.")
 
         if DATABASE_BACKEND == "postgres":
             from postgres_app_db import connect_app_database
@@ -8205,6 +8270,8 @@ def deck_missing_csv(deck_id:int):
         conn.close()
     if not deck:
         return redirect(url_for("decks_page",message="Deck not found."))
+    if not _can_access_deck(deck_id):
+        return redirect(url_for("decks_page", message="You do not have access to this deck."))
     owner=str(deck["person_name"] or "Jonathan").strip()
     fuzzy=request.args.get("fuzzy","0").strip().lower() in {"1","true","yes","on"}
     comparison,_=deck_comparison(deck_id,owner,fuzzy=fuzzy)
