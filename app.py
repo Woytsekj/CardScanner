@@ -741,16 +741,26 @@ def _manageable_person_ids(user=None) -> set[int]:
         if is_superadmin_user(user):
             rows = conn.execute(f"SELECT id FROM {_account_table('people')}").fetchall()
             return {int(row["id"]) for row in rows}
-        usernames = _managed_usernames(user)
-        if not usernames:
-            return set()
-        placeholders = ", ".join("?" for _ in usernames)
-        lowered = [name.casefold() for name in usernames]
-        rows = conn.execute(
-            f"SELECT person_id FROM {_account_table('users')} "
-            f"WHERE lower(username) IN ({placeholders}) AND person_id IS NOT NULL",
-            lowered,
-        ).fetchall()
+        username = str(user["username"] or "")
+        if is_admin_user(user):
+            rows = conn.execute(
+                f"""SELECT person_id FROM {_account_table('users')}
+                    WHERE person_id IS NOT NULL
+                      AND (
+                        lower(username)=lower(?)
+                        OR (
+                          lower(manager_username)=lower(?)
+                          AND lower(role) IN ('user', 'member')
+                        )
+                      )""",
+                (username, username),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"""SELECT person_id FROM {_account_table('users')}
+                    WHERE lower(username)=lower(?) AND person_id IS NOT NULL""",
+                (username,),
+            ).fetchall()
         return {
             int(row["person_id"])
             for row in rows
@@ -4913,7 +4923,7 @@ def import_csv():
 @app.get("/export_csv")
 @admin_required
 def export_csv():
-    owner = _effective_inventory_owner(current_user())
+    owner = _effective_inventory_owner(current_user(), request.args.get("owner", ""))
     inventory, _, _, _, _, _ = inventory_rows("", owner, "", "date", "desc")
     out = io.StringIO(newline="")
     writer = csv.writer(out)
