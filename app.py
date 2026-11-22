@@ -936,14 +936,18 @@ def _can_manage_inventory_rows(item_ids, user=None) -> bool:
     conn = _account_connection()
     try:
         marks = ", ".join("?" for _ in cleaned)
+        game_filter = " AND game_id='mtg'" if DATABASE_BACKEND == "postgres" else ""
         rows = conn.execute(
-            f"SELECT DISTINCT owner FROM {_account_table('inventory')} WHERE id IN ({marks})",
+            f"SELECT DISTINCT owner FROM {_account_table('inventory')} "
+            f"WHERE id IN ({marks}){game_filter}",
             cleaned,
         ).fetchall()
     finally:
         conn.close()
+    # Missing and other-game IDs are ignored by the bulk updater. Authorize
+    # every existing MTG row, but preserve its no-op behavior for empty matches.
     owners = {str(row["owner"] or "") for row in rows}
-    return bool(owners and all(_can_manage_person_name(owner, user) for owner in owners))
+    return not owners or all(_can_manage_person_name(owner, user) for owner in owners)
 
 
 def _can_access_deck(deck_id: int, user=None) -> bool:
