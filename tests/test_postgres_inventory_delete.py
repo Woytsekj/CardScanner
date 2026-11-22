@@ -57,11 +57,11 @@ class PostgreSQLInventoryDeleteTests(unittest.TestCase):
                 """
                 INSERT INTO app.users (
                     username, password_hash, is_admin, role,
-                    is_superadmin, active
+                    is_superadmin, active, person_id
                 )
-                VALUES (?, ?, TRUE, 'admin', FALSE, TRUE)
+                VALUES (?, ?, TRUE, 'admin', FALSE, TRUE, ?)
                 """,
-                (self.admin_username, "unused-inventory-delete-admin-hash"),
+                (self.admin_username, "unused-inventory-delete-admin-hash", self.person_id),
             )
             conn.execute(
                 """
