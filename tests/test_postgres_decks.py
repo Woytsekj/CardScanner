@@ -230,10 +230,10 @@ class PostgreSQLDeckComparisonTests(unittest.TestCase):
         self.assertIn(f"/decks/{self.deck_id}/cards/0/edit", detail_html)
         self.assertIn(f"/decks/{self.deck_id}/cards/0/delete", detail_html)
 
-        self.assertNotIn(f"/decks/{self.deck_id}/settings", detail_html)
-        self.assertNotIn(f"/decks/{self.deck_id}/cover", detail_html)
-        self.assertNotIn(f"/decks/{self.deck_id}/missing.csv", detail_html)
-        self.assertNotIn(f"/decks/{self.deck_id}/move-inventory", detail_html)
+        self.assertIn(f"/decks/{self.deck_id}/settings", detail_html)
+        self.assertIn(f"/decks/{self.deck_id}/cover", detail_html)
+        self.assertIn(f"/decks/{self.deck_id}/missing.csv", detail_html)
+        self.assertIn(f"/decks/{self.deck_id}/move-inventory", detail_html)
 
     def test_deck_detail_get_does_not_assign_missing_owner_or_update_timestamp(self):
         conn = connect_app_database(expected_database="cardscanner_dev")
