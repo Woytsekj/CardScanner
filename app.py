@@ -835,6 +835,24 @@ def _can_manage_inventory_row(item_id: int, user=None) -> bool:
     return bool(row and _can_manage_person_name(str(row["owner"] or ""), user))
 
 
+def _editable_deck_ids(user=None) -> set[int]:
+    """Return deck IDs whose owner belongs to this account's editable collections."""
+    editable_names = {name.casefold() for name in _accessible_person_names(user)}
+    if not editable_names:
+        return set()
+    conn = _account_connection()
+    try:
+        rows = conn.execute(
+            f"SELECT id, person_name FROM {_account_table('decklists')}"
+        ).fetchall()
+        return {
+            int(row["id"]) for row in rows
+            if str(row["person_name"] or "").casefold() in editable_names
+        }
+    finally:
+        conn.close()
+
+
 def _can_manage_deck(deck_id: int, user=None) -> bool:
     conn = _account_connection()
     try:
@@ -4247,6 +4265,7 @@ def index():
     owner_filter = request.args.get("owner", "").strip()
     user = current_user()
     editable_owners = _accessible_person_names(user)
+    editable_deck_ids = _editable_deck_ids(user)
     finish_filter = request.args.get("finish", "").strip().lower()
     type_filter = request.args.get("type", "").strip()
     color_filter = request.args.get("color", "").strip().lower()
@@ -4354,6 +4373,7 @@ def index():
         selected_vending=vending_filter,
         locations=locations,
         decks=decks,
+        editable_deck_ids=editable_deck_ids,
         search=search,
         sort_key=sort_key,
         direction=direction,
