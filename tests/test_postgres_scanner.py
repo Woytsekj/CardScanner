@@ -255,8 +255,10 @@ class PostgreSQLScannerPersistenceTests(unittest.TestCase):
             self.assertEqual(visible[0]["name"], self.owner)
             self.assertEqual(visible[0]["account_id"], self.username)
 
+            admin_user = dict(user)
+            admin_user["is_superadmin"] = True
             admin_visible = fetch_mobile_authorized_people(
-                conn, user, is_admin=True
+                conn, admin_user, is_superadmin=True
             )
             self.assertIn(self.owner, [row["name"] for row in admin_visible])
         finally:
