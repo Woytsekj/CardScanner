@@ -4403,18 +4403,19 @@ def update_inventory():
         value = parse_qty(value)
     elif field == "owner":
         value = str(value or "Me").strip()[:100] or "Me"
-        if not _can_manage_person_name(value):
-            return jsonify({"success": False, "error": "You cannot move cards into a collection you do not manage."}), 403
-        if DATABASE_BACKEND != "postgres":
-            conn_check = connect_inventory()
-            ensure_people_and_auth(conn_check)
+        conn_check = _account_connection()
+        try:
+            active_clause = "active IS TRUE" if DATABASE_BACKEND == "postgres" else "active=1"
             valid = conn_check.execute(
-                "SELECT 1 FROM people WHERE name = ? AND active=1",
+                f"SELECT 1 FROM {_account_table('people')} WHERE lower(name)=lower(?) AND {active_clause} LIMIT 1",
                 (value,),
             ).fetchone()
+        finally:
             conn_check.close()
-            if not valid:
-                return jsonify({"success": False, "error": "Owner is not active"}), 400
+        if not valid:
+            return jsonify({"success": False, "error": "Owner is not active"}), 400
+        if not _can_manage_person_name(value):
+            return jsonify({"success": False, "error": "You cannot move cards into a collection you do not manage."}), 403
     elif field == "finish":
         value = normalize_finish(value)
     elif field == "location":
