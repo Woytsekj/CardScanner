@@ -781,9 +781,10 @@ def _can_manage_person_name(person_name: str, user=None) -> bool:
 def _inventory_row_for_write(item_id: int):
     conn = _account_connection()
     try:
+        game_filter = " AND game_id='mtg'" if DATABASE_BACKEND == "postgres" else ""
         return conn.execute(
             f"""SELECT owner FROM {_account_table('inventory')}
-                WHERE id=? AND game_id='mtg'""",
+                WHERE id=?{game_filter}""",
             (item_id,),
         ).fetchone()
     finally:
