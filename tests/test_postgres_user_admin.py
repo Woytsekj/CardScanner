@@ -719,10 +719,20 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
             (f"/admin/users/{self.vendor_username}/role", {"role": "admin"}),
             (f"/admin/users/{self.vendor_username}/delete", {}),
         )
+        original_vendor = self.fetch_user(self.vendor_username)
+        original_password_hash = original_vendor["password_hash"]
         for path, payload in requests:
             with self.subTest(path=path):
                 response = self.post(path, payload, client=self.admin_client)
-                self.assertEqual(response.status_code, 403)
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(
+                    self.message(response),
+                    "You can only manage accounts assigned to you.",
+                )
+                unchanged = self.fetch_user(self.vendor_username)
+                self.assertIsNotNone(unchanged)
+                self.assertEqual(unchanged["password_hash"], original_password_hash)
+                self.assertEqual(unchanged["active"], original_vendor["active"])
 
     def test_all_user_write_routes_require_csrf(self):
         requests = (
