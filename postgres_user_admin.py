@@ -62,7 +62,9 @@ def handle_add_user():
         role = "user"
         manager_username = actor_username
     else:
-        manager_username = requested_manager or None
+        manager_username = requested_manager or (
+            actor_username if role in {"admin", "user"} else None
+        )
     if role not in {"admin", "user", "vendor"}:
         role = "user"
 
@@ -123,6 +125,8 @@ def handle_add_user():
                 bool(manager["is_admin"]) or bool(manager["is_superadmin"])
             ):
                 return "Choose an active administrator as the manager."
+            if role == "admin" and not bool(manager["is_superadmin"]):
+                return "Admin accounts must report directly to a Superadmin."
             manager_name = str(manager["username"])
 
         inserted = conn.execute(
