@@ -40,3 +40,14 @@ COMMENT ON TABLE app.user_people IS
     'People/collections associated with a web account. users.person_id remains the default collection.';
 COMMENT ON COLUMN app.users.manager_username IS
     'Admin account responsible for a normal user. Superadmins retain global oversight.';
+
+-- Existing non-superadmin accounts inherit the elected superadmin as manager
+-- until a more specific manager assignment is chosen in Administration.
+UPDATE app.users
+SET manager_username = (
+    SELECT username FROM app.users
+    WHERE is_superadmin IS TRUE AND active IS TRUE
+    ORDER BY created_at, lower(username) COLLATE "C"
+    LIMIT 1
+)
+WHERE is_superadmin IS FALSE AND manager_username IS NULL;

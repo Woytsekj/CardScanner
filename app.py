@@ -448,6 +448,14 @@ def _ensure_people_and_auth(conn: sqlite3.Connection) -> None:
     c.execute("UPDATE users SET role='admin' WHERE is_admin=1 AND (role IS NULL OR role='')")
     c.execute("UPDATE users SET role='vendor' WHERE is_admin=0 AND (role IS NULL OR role='')")
     c.execute("UPDATE users SET is_superadmin=1, is_admin=1, role='superadmin' WHERE is_superadmin=1")
+    c.execute("""
+        UPDATE users
+        SET manager_username = (
+            SELECT username FROM users WHERE is_superadmin=1 AND active=1
+            ORDER BY created_at, username COLLATE NOCASE LIMIT 1
+        )
+        WHERE is_superadmin=0 AND manager_username IS NULL
+    """)
     c.execute("""CREATE TABLE IF NOT EXISTS login_attempts (key TEXT PRIMARY KEY, first_attempt REAL NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, blocked_until REAL NOT NULL DEFAULT 0)""")
     c.execute("""CREATE TABLE IF NOT EXISTS app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)""")
 
@@ -6967,6 +6975,10 @@ def decks_page():
     query = str(request.args.get("q") or "").strip().casefold()
     selected_tag = str(request.args.get("tag") or "").strip()
     selected_person = str(request.args.get("person") or "").strip()
+    user = current_user()
+    visible_collection_names = _accessible_person_names(user)
+    if selected_person and not is_admin_user(user) and selected_person not in visible_collection_names:
+        return render_template("login.html", next_url="", error="You do not have access to that deck owner."), 403
     if DATABASE_BACKEND == "postgres":
         from postgres_app_db import connect_app_database
         from postgres_decks import fetch_deck_list_data
@@ -6991,6 +7003,9 @@ def decks_page():
             ).fetchall()
         ]
         conn.close()
+    if user and not is_admin_user(user):
+        rows = [row for row in rows if str(row["person_name"] or "") in visible_collection_names]
+        owners = visible_collection_names
     decks: list[dict[str, Any]] = []
     all_tags: dict[str, str] = {}
     for row in rows:
@@ -7106,6 +7121,11 @@ def decks_import():
             raise ValueError("No cards were found in the decklist.")
         deck_tags = _clean_tag_list(imported_tags + _clean_tag_list(request.form.get("deck_tags") or ""))
         deck_person = str(request.form.get("deck_person") or "").strip()[:100]
+        if not deck_person:
+            current = current_user()
+            deck_person = str(current["person_name"] or "").strip() if current else ""
+        if not deck_person or not _can_manage_person_name(deck_person):
+            raise ValueError("Choose a deck owner assigned to your account.")
 
         if DATABASE_BACKEND == "postgres":
             from postgres_app_db import connect_app_database
@@ -7232,11 +7252,15 @@ def decks_import():
 @app.post("/decks/<int:deck_id>/settings")
 @admin_required
 def update_deck_settings(deck_id: int):
+    if not _can_manage_deck(deck_id):
+        return redirect(url_for("decks_page", message="You can only change decks assigned to collections you manage."))
     name = " ".join(str(request.form.get("name") or "").split())[:200]
     if not name:
         return redirect(url_for("deck_view", deck_id=deck_id, message="Deck name cannot be empty."))
     tags = _clean_tag_list(request.form.get("deck_tags") or "")
     person_name = str(request.form.get("person_name") or "").strip()[:100]
+    if not _can_manage_person_name(person_name):
+        return redirect(url_for("deck_view", deck_id=deck_id, message="You cannot move this deck to a collection you do not manage."))
     if DATABASE_BACKEND == "postgres":
         from postgres_app_db import connect_app_database
         from postgres_deck_lifecycle import update_deck_settings as pg_update_deck_settings
@@ -7315,6 +7339,8 @@ def _valid_cover_upload(upload) -> tuple[bytes, str]:
 @app.post("/decks/<int:deck_id>/cover")
 @admin_required
 def update_deck_cover(deck_id: int):
+    if not _can_manage_deck(deck_id):
+        return redirect(url_for("decks_page", message="You can only change decks assigned to collections you manage."))
     mode = str(request.form.get("cover_mode") or "none").strip().lower()
     if DATABASE_BACKEND == "postgres":
         from postgres_app_db import connect_app_database
@@ -7449,6 +7475,8 @@ def update_deck_cover(deck_id: int):
 @app.get("/decks/<int:deck_id>")
 @admin_required
 def deck_view(deck_id:int):
+    if not _can_access_deck(deck_id):
+        return render_template("login.html", next_url="", error="You do not have access to this deck."), 403
     fuzzy = request.args.get("fuzzy", "0").strip().lower() in {"1", "true", "yes", "on"}
 
     user = current_user()
@@ -7538,6 +7566,8 @@ def deck_view(deck_id:int):
 @app.post("/decks/<int:deck_id>/cards/<int:card_id>/edit")
 @admin_required
 def edit_deck_card(deck_id:int, card_id:int):
+    if not _can_manage_deck(deck_id):
+        return redirect(url_for("decks_page", message="You can only change decks assigned to collections you manage."))
     if DATABASE_BACKEND == "postgres":
         name = " ".join(str(request.form.get("name") or "").strip().split())
         if not name:
@@ -7641,6 +7671,8 @@ def edit_deck_card(deck_id:int, card_id:int):
 @app.post("/decks/<int:deck_id>/cards/add")
 @admin_required
 def add_deck_card(deck_id:int):
+    if not _can_manage_deck(deck_id):
+        return redirect(url_for("decks_page", message="You can only change decks assigned to collections you manage."))
     if DATABASE_BACKEND == "postgres":
         name = " ".join(str(request.form.get("name") or "").strip().split())
         if not name:
@@ -7723,6 +7755,8 @@ def add_deck_card(deck_id:int):
 @app.post("/decks/<int:deck_id>/cards/<int:card_id>/delete")
 @admin_required
 def delete_deck_card(deck_id:int, card_id:int):
+    if not _can_manage_deck(deck_id):
+        return redirect(url_for("decks_page", message="You can only change decks assigned to collections you manage."))
     if DATABASE_BACKEND == "postgres":
         from postgres_app_db import connect_app_database
         from postgres_deck_cards import delete_deck_card as delete_postgres_deck_card
@@ -7771,6 +7805,8 @@ def _deck_available_free_rows(conn: sqlite3.Connection, deck_card: sqlite3.Row, 
 @app.post("/decks/<int:deck_id>/assign-free")
 @admin_required
 def assign_free_to_deck(deck_id:int):
+    if not _can_manage_deck(deck_id):
+        return redirect(url_for("decks_page", message="You can only change decks assigned to collections you manage."))
     fuzzy=str(request.form.get("fuzzy") or "0").strip().lower() in {"1","true","yes","on"}
     if DATABASE_BACKEND == "postgres":
         from postgres_app_db import connect_app_database
@@ -7889,12 +7925,16 @@ def assign_free_to_deck(deck_id:int):
 @admin_required
 def move_inventory_to_deck(deck_id: int):
     """Move a physical copy between deck allocations without changing its owner or printing."""
+    if not _can_manage_deck(deck_id):
+        return redirect(url_for("decks_page", message="You can only change decks assigned to collections you manage."))
     try:
         inventory_id = int(request.form.get("inventory_id") or 0)
         quantity = max(1, int(request.form.get("quantity") or 1))
     except (TypeError, ValueError):
         return redirect(url_for("deck_view", deck_id=deck_id, message="Choose a valid inventory copy and quantity."))
     fuzzy = str(request.form.get("fuzzy") or "0").strip().lower() in {"1", "true", "yes", "on"}
+    if not _can_manage_inventory_row(inventory_id):
+        return redirect(url_for("deck_view", deck_id=deck_id, message="You can only move cards in collections you manage."))
 
     if DATABASE_BACKEND == "postgres":
         from postgres_app_db import connect_app_database
@@ -8553,6 +8593,8 @@ def enrich_metadata():
 @app.post("/decks/<int:deck_id>/delete")
 @admin_required
 def delete_deck(deck_id: int):
+    if not _can_manage_deck(deck_id):
+        return redirect(url_for("decks_page", message="You can only change decks assigned to collections you manage."))
     if DATABASE_BACKEND == "postgres":
         from postgres_app_db import connect_app_database
         from postgres_deck_lifecycle import delete_deck as pg_delete_deck
