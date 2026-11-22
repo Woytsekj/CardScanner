@@ -973,6 +973,27 @@ def migrate(pg, inv, art):
             for r in people_rows
         ), expected)
 
+    # The account-collection trigger creates a fresh people row for any
+    # imported account whose legacy person_id is NULL. Advance the people
+    # identity sequence first because imported people rows carry explicit IDs.
+    people_sequence = pg.execute(
+        "SELECT pg_get_serial_sequence('app.people', 'id')"
+    ).fetchone()[0]
+    if people_sequence:
+        maximum_person_id = pg.execute(
+            "SELECT MAX(id) AS maximum_id FROM app.people"
+        ).fetchone()["maximum_id"]
+        if maximum_person_id is None:
+            pg.execute(
+                "SELECT setval(%s::regclass, 1, FALSE)",
+                (people_sequence,),
+            )
+        else:
+            pg.execute(
+                "SELECT setval(%s::regclass, %s, TRUE)",
+                (people_sequence, maximum_person_id),
+            )
+
     # USERS: password hashes are copied byte-for-byte; never printed.
     put(pg, "app.users",
         [
