@@ -407,11 +407,11 @@ class InventoryManagementTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         html = page.get_data(as_text=True)
         self.assertIn("Only My Card", html)
-        self.assertIn("Other Person Card", html)
+        self.assertNotIn("Other Person Card", html)
 
         other_collection = user_client.get("/?owner=Friend", base_url="http://localhost")
         self.assertEqual(other_collection.status_code, 200)
-        self.assertIn("Other Person Card", other_collection.get_data(as_text=True))
+        self.assertNotIn("Other Person Card", other_collection.get_data(as_text=True))
 
         own_update = user_client.post(
             "/update",
@@ -440,7 +440,7 @@ class InventoryManagementTests(unittest.TestCase):
         self.assertEqual(export.status_code, 200)
         exported = export.get_data(as_text=True)
         self.assertIn("Only My Card", exported)
-        self.assertIn("Other Person Card", exported)
+        self.assertNotIn("Other Person Card", exported)
 
     def test_regular_user_cannot_import_or_manually_add_to_another_collection(self) -> None:
         conn = self.connect()
@@ -465,7 +465,7 @@ class InventoryManagementTests(unittest.TestCase):
             session["csrf_token"] = "normal-user-csrf-token-import"
 
         csv_response = user_client.post(
-            "/import",
+            "/import_csv",
             data={
                 "csrf_token": "normal-user-csrf-token-import",
                 "owner": "Friend",
