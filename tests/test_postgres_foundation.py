@@ -741,6 +741,14 @@ class PostgreSQLFoundationTests(unittest.TestCase):
                         """,
                         (f"user-{token}", "test-password-hash", person_id),
                     )
+                    inventory_person_id = conn.execute(
+                        """
+                        INSERT INTO app.people (name)
+                        VALUES (%s)
+                        RETURNING id
+                        """,
+                        (f"Inventory Person {token}",),
+                    ).fetchone()["id"]
 
                     with self.assertRaises(UniqueViolation):
                         with conn.transaction():
@@ -778,7 +786,7 @@ class PostgreSQLFoundationTests(unittest.TestCase):
                         VALUES ('mtg', %s, now(), now(), %s, %s, '[]'::JSONB)
                         RETURNING id
                         """,
-                        (f"Application Fixture Deck {token}", person_id, f"Person {token}"),
+                        (f"Application Fixture Deck {token}", inventory_person_id, f"Person {token}"),
                     ).fetchone()["id"]
 
                     deck_card_id = conn.execute(
@@ -800,7 +808,7 @@ class PostgreSQLFoundationTests(unittest.TestCase):
                                 %s, %s, %s, 'Binder', FALSE)
                         RETURNING id
                         """,
-                        (card_id, printing_id, f"Person {token}", person_id, deck_id),
+                        (card_id, printing_id, f"Person {token}", inventory_person_id, deck_id),
                     ).fetchone()["id"]
 
                     # A retry marker is intentionally valid even when its old
@@ -860,7 +868,7 @@ class PostgreSQLFoundationTests(unittest.TestCase):
 
                     # Person deletion unlinks identity but preserves the legacy
                     # owner/person-name snapshots and the login itself.
-                    conn.execute("DELETE FROM app.people WHERE id = %s", (person_id,))
+                    conn.execute("DELETE FROM app.people WHERE id = %s", (inventory_person_id,))
                     snapshots = conn.execute(
                         """
                         SELECT i.owner, i.person_id AS inventory_person_id,
@@ -873,7 +881,7 @@ class PostgreSQLFoundationTests(unittest.TestCase):
                     ).fetchone()
                     self.assertEqual(snapshots["owner"], f"Person {token}")
                     self.assertIsNone(snapshots["inventory_person_id"])
-                    self.assertIsNone(snapshots["user_person_id"])
+                    self.assertEqual(snapshots["user_person_id"], person_id)
 
                     raise _RollbackFixture()
             except _RollbackFixture:
