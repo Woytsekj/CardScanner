@@ -3661,8 +3661,20 @@ def delete_person(person_id: int):
     transfer_to = " ".join(
         str(request.form.get("transfer_to") or "").strip().split()
     )[:100]
-    if transfer_to and not _can_manage_person_name(transfer_to):
-        return redirect(url_for("admin_page", message="Choose a collection you manage as the transfer target."))
+    if transfer_to:
+        owner_conn = _account_connection()
+        try:
+            active_target = owner_conn.execute(
+                f"""SELECT 1 FROM {_account_table('people')}
+                    WHERE lower(name)=lower(?) AND active IS TRUE LIMIT 1""",
+                (transfer_to,),
+            ).fetchone()
+        finally:
+            owner_conn.close()
+        if not active_target:
+            return redirect(url_for("admin_page", message="Choose an active owner for the inventory transfer."))
+        if not _can_manage_person_name(transfer_to):
+            return redirect(url_for("admin_page", message="Choose a collection you manage as the transfer target."))
 
     if DATABASE_BACKEND == "postgres":
         conn = None
