@@ -73,6 +73,127 @@ function seriesPath(points, metric, xFn, yFn) {
   return path.trim();
 }
 
+
+function attachHistoryChartInteraction(targetChart, series, metric, labels, layout) {
+  const {W, right, left, top, plotW, plotH, xFn} = layout;
+  const count = labels.length;
+  if (!count || !series.length) return;
+
+  const tooltipWidth = Math.min(248, plotW - 16);
+  const tooltipHeight = 42 + series.length * 20;
+  const hitArea = appendSvg(targetChart, 'rect', {
+    x: left, y: top, width: plotW, height: plotH,
+    fill: 'transparent', stroke: 'transparent',
+    'pointer-events': 'all', tabindex: '0', focusable: 'true',
+    role: 'slider', 'aria-orientation': 'horizontal',
+    'aria-label': 'Price history chart. Use the left and right arrow keys to inspect dates and prices.',
+    'aria-valuemin': '1', 'aria-valuemax': String(count),
+    'aria-valuenow': String(Math.max(1, Math.ceil(count / 2))),
+    class: 'price-history-hit-area'
+  });
+  const hoverLayer = appendSvg(targetChart, 'g', {
+    visibility: 'hidden', 'pointer-events': 'none', 'aria-hidden': 'true'
+  });
+  const crosshair = appendSvg(hoverLayer, 'line', {
+    x1: left, x2: left, y1: top, y2: top + plotH,
+    stroke: 'var(--muted)', 'stroke-width': '1',
+    'stroke-dasharray': '4 4', opacity: '0.85'
+  });
+  const tooltip = appendSvg(hoverLayer, 'g', {});
+  appendSvg(tooltip, 'rect', {
+    x: 0, y: 0, width: tooltipWidth, height: tooltipHeight,
+    rx: 6, fill: 'var(--panel)', stroke: 'var(--border)',
+    'stroke-width': '1', opacity: '0.98'
+  });
+  const dateLabel = appendSvg(tooltip, 'text', {
+    x: 10, y: 18, fill: 'var(--text)',
+    'font-size': '12', 'font-weight': '700'
+  }, '');
+  const valueLabels = series.map((item, index) => appendSvg(tooltip, 'text', {
+    x: 10, y: 39 + index * 20,
+    fill: SERIES_COLORS[index % SERIES_COLORS.length],
+    'font-size': '12', 'font-weight': '600'
+  }, item.subtype_name));
+
+  let currentIndex = Math.max(0, Math.floor((count - 1) / 2));
+
+  function tooltipDetails(index) {
+    const timestamp = labels[index]?.captured_at;
+    const date = new Date(timestamp);
+    const dateText = Number.isNaN(date.getTime())
+      ? String(timestamp || 'Date unavailable')
+      : date.toLocaleString(undefined, {
+          year: 'numeric', month: 'short', day: 'numeric',
+          hour: 'numeric', minute: '2-digit'
+        });
+    const values = series.map(item => {
+      const point = item.points?.[index];
+      const value = point?.available ? point[metric] : null;
+      return item.subtype_name + ': ' + formatMoney(value);
+    });
+    return {dateText, values};
+  }
+
+  function showIndex(index) {
+    currentIndex = Math.max(0, Math.min(count - 1, index));
+    const x = xFn(currentIndex);
+    const details = tooltipDetails(currentIndex);
+    dateLabel.textContent = details.dateText;
+    details.values.forEach((value, valueIndex) => {
+      if (valueLabels[valueIndex]) valueLabels[valueIndex].textContent = value;
+    });
+
+    let tooltipX = x + 14;
+    if (tooltipX + tooltipWidth > W - right - 4) tooltipX = x - tooltipWidth - 14;
+    tooltipX = Math.max(left + 4, Math.min(tooltipX, W - right - tooltipWidth - 4));
+    tooltip.setAttribute('transform', 'translate(' + tooltipX + ',' + (top + 10) + ')');
+    crosshair.setAttribute('x1', String(x));
+    crosshair.setAttribute('x2', String(x));
+    hoverLayer.setAttribute('visibility', 'visible');
+
+    hitArea.setAttribute('aria-valuenow', String(currentIndex + 1));
+    hitArea.setAttribute(
+      'aria-valuetext',
+      details.dateText + '. ' + details.values.join('. ')
+    );
+  }
+
+  function indexFromPointer(event) {
+    const matrix = targetChart.getScreenCTM();
+    if (!matrix) return currentIndex;
+    try {
+      const point = targetChart.createSVGPoint();
+      point.x = event.clientX;
+      point.y = event.clientY;
+      const local = point.matrixTransform(matrix.inverse());
+      const fraction = Math.max(0, Math.min(1, (local.x - left) / plotW));
+      return Math.round(fraction * (count - 1));
+    } catch (_) {
+      return currentIndex;
+    }
+  }
+
+  hitArea.addEventListener('pointermove', event => showIndex(indexFromPointer(event)));
+  hitArea.addEventListener('pointerdown', event => showIndex(indexFromPointer(event)));
+  hitArea.addEventListener('pointerleave', () => {
+    hoverLayer.setAttribute('visibility', 'hidden');
+  });
+  hitArea.addEventListener('focus', () => showIndex(currentIndex));
+  hitArea.addEventListener('blur', () => {
+    hoverLayer.setAttribute('visibility', 'hidden');
+  });
+  hitArea.addEventListener('keydown', event => {
+    let nextIndex = currentIndex;
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') nextIndex -= 1;
+    else if (event.key === 'ArrowRight' || event.key === 'ArrowUp') nextIndex += 1;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = count - 1;
+    else return;
+    event.preventDefault();
+    showIndex(nextIndex);
+  });
+}
+
 function renderHistoryChart(series, targetChart = historyChart, metric = 'market', targetLegend = historyLegend) {
   if (!targetChart) return;
   targetChart.innerHTML = '';
@@ -179,6 +300,9 @@ function renderHistoryChart(series, targetChart = historyChart, metric = 'market
       label.appendChild(document.createTextNode(item.subtype_name));
       targetLegend.appendChild(label);
     }
+  });
+  attachHistoryChartInteraction(targetChart, series, metric, labels, {
+    W, left, right, top, plotW, plotH, xFn
   });
 }
 
