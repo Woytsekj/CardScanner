@@ -671,6 +671,17 @@ class InventoryManagementTests(unittest.TestCase):
         self.assertIn('name="public" value="1" checked', selected_owner_html)
         self.assertIn('value="Me" selected', selected_owner_html)
 
+        # Selecting one public collection narrows the view to that collection.
+        one_public_owner = viewer.get(
+            "/?owner=Friend&public=1&view=list",
+            base_url="http://localhost",
+        )
+        self.assertEqual(one_public_owner.status_code, 200)
+        one_public_html = one_public_owner.get_data(as_text=True)
+        self.assertIn("Public Friend Card", one_public_html)
+        self.assertNotIn("My Private Card", one_public_html)
+        self.assertNotIn("Private Stranger Card", one_public_html)
+
         # Private-data qualifiers and query filters cannot infer public storage metadata.
         private_qualifier_view = viewer.get(
             '/?q=loc:"Friend%20Secret%20Shelf"&public=1&view=list',
