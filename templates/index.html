@@ -173,10 +173,18 @@
         {% if selected_finish %}<input type="hidden" name="finish" value="{{ selected_finish }}">{% endif %}
         <label>Card type<select name="type" onchange="this.form.submit()"><option value="">All types</option>{% for t in ['Legendary','Creature','Artifact','Enchantment','Instant','Sorcery','Planeswalker','Land','Battle'] %}<option value="{{ t }}" {% if selected_type == t %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></label>
         <label>Color<select name="color" onchange="this.form.submit()"><option value="">All colors</option><option value="W" {% if selected_color == 'W' %}selected{% endif %}>White</option><option value="U" {% if selected_color == 'U' %}selected{% endif %}>Blue</option><option value="B" {% if selected_color == 'B' %}selected{% endif %}>Black</option><option value="R" {% if selected_color == 'R' %}selected{% endif %}>Red</option><option value="G" {% if selected_color == 'G' %}selected{% endif %}>Green</option><option value="colorless" {% if selected_color == 'colorless' %}selected{% endif %}>Colorless</option><option value="multicolor" {% if selected_color == 'multicolor' %}selected{% endif %}>Multicolor</option></select></label>
+        {% if public_filters_restricted %}
+        <span class="filter-note public-filter-privacy-note">Location, deck, and vending filters are paused while public cards are included, because those details remain private to each collection.</span>
+        {% else %}
         <label>Location<select name="location" onchange="this.form.submit()"><option value="">All locations</option>{% for location in locations %}<option value="{{ location }}" {% if selected_location == location %}selected{% endif %}>{{ location }}</option>{% endfor %}</select></label>
         <label>Vending status<select name="vending" onchange="this.form.submit()"><option value="" {% if not selected_vending %}selected{% endif %}>All cards</option><option value="yes" {% if selected_vending == 'yes' %}selected{% endif %}>For vending</option><option value="no" {% if selected_vending == 'no' %}selected{% endif %}>Not for vending</option></select></label>
+        {% endif %}
         {% if selected_type or selected_color or selected_location or selected_vending %}<a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, sort=sort_key, dir=direction, view=view, public='1' if include_public_cards else None) }}">Clear filters</a>{% endif %}
+        {% if public_filters_restricted %}
+        <span class="filter-note">Search supports set:, cn:, t:, c:, o:, r:, art:, otag:, is:foil, owner:, order: and direction:. Location, deck, and vending qualifiers are paused while public cards are included.</span>
+        {% else %}
         <span class="filter-note">Search supports set:, cn:, t:, c:, o:, r:, art:, otag:, is:foil, owner:, loc:, deck:, vending:, order: and direction:. Use art: for illustration tags and otag: for Oracle/function tags.</span>
+        {% endif %}
       </form>
     </section>
 
