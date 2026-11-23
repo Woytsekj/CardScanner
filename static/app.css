@@ -1931,3 +1931,53 @@ tr.is-active { outline: 2px solid var(--cyan); outline-offset: 1px; border-radiu
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+
+/* Owner-controlled public collections and read-only public-card viewer. */
+.public-card-filter {
+  align-self: center;
+  min-width: max-content;
+}
+.public-card-filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  cursor: pointer;
+}
+.public-card-filter-toggle input,
+.collection-visibility-toggle input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent, #159b87);
+}
+.public-card-badge {
+  display: inline-flex;
+  vertical-align: middle;
+  margin: 0 0 0 5px;
+  font-size: 10px;
+}
+.collection-visibility-form {
+  gap: 12px;
+}
+.collection-visibility-toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: fit-content;
+  cursor: pointer;
+}
+@media (max-width: 760px) {
+  .public-card-filter {
+    width: 100%;
+    min-width: 0;
+  }
+  .public-card-filter-toggle {
+    width: 100%;
+  }
+}
