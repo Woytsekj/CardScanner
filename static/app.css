@@ -1800,3 +1800,134 @@ tr.is-active { outline: 2px solid var(--cyan); outline-offset: 1px; border-radiu
   .admin-workspace-heading { align-items:flex-start; flex-direction:column; }
   .account-collection-form { width:100%; grid-template-columns:1fr; }
 }
+
+
+/* Responsive Administration layout: reflow controls instead of squeezing them. */
+.account-workspace .admin-panel,
+.account-workspace .person-row-rich,
+.account-workspace .person-main,
+.account-workspace .person-actions,
+.user-row {
+  min-width: 0;
+}
+.account-workspace .person-row-rich {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr);
+}
+.account-workspace .person-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 10px;
+}
+.account-workspace .person-main > .person-name-form {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) auto;
+  width: 100%;
+  min-width: 0;
+  flex: none;
+}
+.account-workspace .person-main > .person-name-form input {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+.account-workspace .person-main > .badge {
+  grid-column: 1;
+  grid-row: 2;
+  justify-self: start;
+}
+.account-workspace .person-main > .subtle {
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.account-workspace .person-actions {
+  justify-content: flex-start;
+  align-content: center;
+}
+.account-workspace .person-actions > form {
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 auto;
+}
+.account-workspace .person-actions .delete-person-form {
+  flex: 1 1 230px;
+}
+.account-workspace .person-actions .delete-person-form select {
+  flex: 1 1 160px;
+  min-width: 0;
+  max-width: 100%;
+}
+.account-workspace .add-person-form {
+  width: 100%;
+  max-width: 900px;
+}
+.account-workspace .add-person-form input {
+  width: 100%;
+  min-width: 0;
+}
+.user-row {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+}
+.user-row > form {
+  min-width: 0;
+  max-width: 100%;
+}
+.user-row form input,
+.user-row form select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.user-row .account-collection-form {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.user-row .account-collection-form button {
+  max-width: 100%;
+  white-space: normal;
+}
+@media (max-width: 1200px) and (min-width: 761px) {
+  .app-topbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px 16px;
+  }
+  .app-nav-menu {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .app-primary-nav {
+    justify-content: flex-start;
+  }
+  main {
+    padding: 18px clamp(14px, 2vw, 22px) 36px;
+  }
+  .account-workspace .admin-panel {
+    padding: clamp(16px, 1.8vw, 22px);
+  }
+}
+@media (max-width: 760px) {
+  .account-workspace .person-row-rich {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .account-workspace .person-actions {
+    align-items: flex-start;
+  }
+  .account-workspace .person-actions > form {
+    flex: 1 1 100%;
+  }
+  .account-workspace .person-actions .delete-person-form select {
+    width: 100%;
+  }
+  .user-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .user-row > form {
+    width: 100%;
+  }
+  .user-row .account-collection-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
