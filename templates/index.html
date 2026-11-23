@@ -256,7 +256,7 @@
             </div>
             <div class="tile-edit-controls">
               <button class="button secondary counts-button" data-scryfall="{{ item.scryfall_id }}" data-owner="{{ item.owner|e }}" data-name="{{ item.name|e }}" data-normal="{{ item.owner_normal_qty }}" data-foil="{{ item.owner_foil_qty }}">Edit counts</button>
-              <button class="button secondary move-button" data-id="{{ item.id }}" data-name="{{ item.name|e }}" data-qty="{{ item.quantity }}" data-location="{{ item.location|e }}">Move</button>
+              <button class="button secondary move-button" data-id="{{ item.id }}" data-name="{{ item.name|e }}" data-qty="{{ item.quantity }}" data-location="{{ '' if item_public_only else item.location|e }}">Move</button>
               <label>Finish<select class="finish-input" data-id="{{ item.id }}" data-field="finish"><option value="normal" {% if item.finish == 'normal' %}selected{% endif %}>Normal</option><option value="foil" {% if item.finish == 'foil' %}selected{% endif %}>Foil</option></select></label>
               <label>Quantity<input class="qty-input" type="number" min="1" step="1" data-id="{{ item.id }}" data-field="quantity" value="{{ item.quantity }}" aria-label="Quantity for {{ item.name }}"></label>
               <label>Location<input class="location-input" type="text" data-id="{{ item.id }}" data-field="location" value="{{ item.location|e }}" aria-label="Location for {{ item.name }}"></label>
@@ -284,6 +284,7 @@
           <tbody>
           {% for item in inventory %}
             {% set item_editable = item.owner in editable_owners %}
+            {% set item_public_only = include_public_cards and not item_editable %}
             <tr id="row-{{ item.id }}">
               <td class="selection-column">{% if admin_user and item_editable %}<input class="inventory-select" type="checkbox" value="{{ item.id }}" aria-label="Select {{ item.name }} for bulk editing">{% endif %}</td>
               <td class="name-cell">
