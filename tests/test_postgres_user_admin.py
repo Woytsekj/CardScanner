@@ -739,6 +739,97 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
         )
         self.assertIsNone(self.fetch_user(target))
 
+    def test_superadmin_can_reassign_existing_account_managers(self):
+        managed_username = f"pg-useradmin-manager-target-{self.token}"
+        secondary_admin = f"pg-useradmin-manager-admin-{self.token}"
+        self.track_username(managed_username)
+        self.track_username(secondary_admin)
+
+        created_admin = self.post(
+            "/admin/users",
+            {
+                "username": secondary_admin,
+                "password": f"Long-Enough-Password-{self.token}",
+                "role": "admin",
+                "manager_username": self.superadmin_username,
+            },
+        )
+        self.assertEqual(created_admin.status_code, 302)
+        self.assertEqual(self.fetch_user(secondary_admin)["manager_username"], self.superadmin_username)
+
+        created_user = self.post(
+            "/admin/users",
+            {
+                "username": managed_username,
+                "password": f"Long-Enough-Password-{self.token}",
+                "role": "user",
+                "manager_username": self.superadmin_username,
+            },
+        )
+        self.assertEqual(created_user.status_code, 302)
+        self.assertEqual(self.fetch_user(managed_username)["role"], "user")
+
+        # Superadmin may assign an existing User to an active Admin.
+        assigned = self.post(
+            f"/admin/users/{managed_username}/manager",
+            {"manager_username": self.admin_username},
+        )
+        self.assertEqual(assigned.status_code, 302)
+        self.assertEqual(
+            self.message(assigned),
+            f"Updated manager for {managed_username} to {self.admin_username}.",
+        )
+        self.assertEqual(self.fetch_user(managed_username)["manager_username"], self.admin_username)
+
+        # A regular Admin cannot transfer the User to another manager.
+        forbidden = self.post(
+            f"/admin/users/{managed_username}/manager",
+            {"manager_username": self.superadmin_username},
+            client=self.admin_client,
+        )
+        self.assertEqual(forbidden.status_code, 403)
+        self.assertEqual(self.fetch_user(managed_username)["manager_username"], self.admin_username)
+
+        # The Superadmin can move the User again or remove its manager.
+        moved = self.post(
+            f"/admin/users/{managed_username}/manager",
+            {"manager_username": self.superadmin_username},
+        )
+        self.assertEqual(moved.status_code, 302)
+        self.assertEqual(self.fetch_user(managed_username)["manager_username"], self.superadmin_username)
+
+        cleared = self.post(
+            f"/admin/users/{managed_username}/manager",
+            {"manager_username": ""},
+        )
+        self.assertEqual(cleared.status_code, 302)
+        self.assertIsNone(self.fetch_user(managed_username)["manager_username"])
+
+        # Admin accounts must report to a Superadmin, never a regular Admin.
+        admin_to_superadmin = self.post(
+            f"/admin/users/{self.admin_username}/manager",
+            {"manager_username": self.superadmin_username},
+        )
+        self.assertEqual(admin_to_superadmin.status_code, 302)
+        self.assertEqual(self.fetch_user(self.admin_username)["manager_username"], self.superadmin_username)
+
+        invalid_admin_manager = self.post(
+            f"/admin/users/{self.admin_username}/manager",
+            {"manager_username": secondary_admin},
+        )
+        self.assertEqual(invalid_admin_manager.status_code, 302)
+        self.assertEqual(
+            self.message(invalid_admin_manager),
+            "Admin accounts must report directly to a Superadmin.",
+        )
+        self.assertEqual(self.fetch_user(self.admin_username)["manager_username"], self.superadmin_username)
+
+        # Existing-account rows expose the manager editor to Superadmins.
+        page = self.superadmin_client.get("/admin", base_url="http://localhost")
+        self.assertEqual(page.status_code, 200, page.get_data(as_text=True))
+        self.assertIn(f'action="/admin/users/{managed_username}/manager"', page.get_data(as_text=True))
+        self.assertIn("Save manager", page.get_data(as_text=True))
+
     def test_admin_accounts_must_report_directly_to_a_superadmin(self):
         username = f"pg-useradmin-nested-admin-{self.token}"
         self.track_username(username)
