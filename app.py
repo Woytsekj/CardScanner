@@ -4486,8 +4486,18 @@ def index():
     finish_filter = request.args.get("finish", "").strip().lower()
     type_filter = request.args.get("type", "").strip()
     color_filter = request.args.get("color", "").strip().lower()
-    location_filter = request.args.get("location", "").strip()
-    vending_filter = request.args.get("vending", "").strip().lower()
+    public_filters_restricted = include_public_cards
+    if include_public_cards:
+        # Public mode shares card information, not collection-specific metadata.
+        # Ignore search qualifiers that would infer storage/deck/vending details.
+        search = re.sub(
+            r'(?<!\\S)-?(?:loc|location|deck|vending)(?::|=)(?:"(?:\\\\.|[^"\\\\])*"|\\S+)',
+            " ",
+            search,
+            flags=re.IGNORECASE,
+        ).strip()
+    location_filter = "" if public_filters_restricted else request.args.get("location", "").strip()
+    vending_filter = "" if public_filters_restricted else request.args.get("vending", "").strip().lower()
     if vending_filter not in {"", "yes", "no"}:
         vending_filter = ""
     if finish_filter not in {"", "normal", "foil"}:
@@ -4646,6 +4656,7 @@ def index():
             else owner_filter if isinstance(owner_filter, str) else ""
         ),
         include_public_cards=include_public_cards,
+        public_filters_restricted=public_filters_restricted,
         owner_explicit=owner_explicit,
         selected_finish=finish_filter,
         selected_type=type_filter,
