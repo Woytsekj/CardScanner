@@ -986,6 +986,8 @@ def _effective_inventory_owner(
     if requested:
         selected = manageable_by_key.get(requested.casefold()) or public_by_key.get(requested.casefold())
         if selected:
+            if include_public:
+                return list(dict.fromkeys([selected, *public_names]))
             return selected
         if is_admin_user(user):
             selected = manageable_by_key.get(own.casefold()) if own else None
@@ -4638,7 +4640,11 @@ def index():
         global_finish_totals=global_finish_totals,
         visible_finish_totals=visible_finish_totals,
         owners=owners,
-        selected_owner=owner_filter if isinstance(owner_filter, str) else "",
+        selected_owner=(
+            requested_owner
+            if owner_explicit and requested_owner
+            else owner_filter if isinstance(owner_filter, str) else ""
+        ),
         include_public_cards=include_public_cards,
         owner_explicit=owner_explicit,
         selected_finish=finish_filter,
