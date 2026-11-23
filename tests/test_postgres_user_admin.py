@@ -739,6 +739,132 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
         )
         self.assertIsNone(self.fetch_user(target))
 
+    def test_admin_all_owners_includes_only_own_and_managed_user_collections(self):
+        managed_one = f"pg-useradmin-scope-managed-one-{self.token}"
+        managed_two = f"pg-useradmin-scope-managed-two-{self.token}"
+        unrelated_user = f"pg-useradmin-scope-unrelated-{self.token}"
+        for username in (managed_one, managed_two, unrelated_user):
+            self.track_username(username)
+
+        # An Admin-created User is automatically assigned to that Admin.
+        created_one = self.post(
+            "/admin/users",
+            {
+                "username": managed_one,
+                "password": f"Long-Enough-Password-{self.token}",
+                "role": "user",
+            },
+            client=self.admin_client,
+        )
+        self.assertEqual(created_one.status_code, 302)
+        self.assertEqual(
+            self.fetch_user(managed_one)["manager_username"],
+            self.admin_username,
+        )
+
+        # A Superadmin can also assign an existing/new User to this Admin.
+        created_two = self.post(
+            "/admin/users",
+            {
+                "username": managed_two,
+                "password": f"Long-Enough-Password-{self.token}",
+                "role": "user",
+                "manager_username": self.admin_username,
+            },
+            client=self.superadmin_client,
+        )
+        self.assertEqual(created_two.status_code, 302)
+        self.assertEqual(
+            self.fetch_user(managed_two)["manager_username"],
+            self.admin_username,
+        )
+
+        # This User belongs to the Superadmin and must stay outside this Admin's scope.
+        created_unrelated = self.post(
+            "/admin/users",
+            {
+                "username": unrelated_user,
+                "password": f"Long-Enough-Password-{self.token}",
+                "role": "user",
+                "manager_username": self.superadmin_username,
+            },
+            client=self.superadmin_client,
+        )
+        self.assertEqual(created_unrelated.status_code, 302)
+
+        conn = connect_app_database(expected_database="cardscanner_dev")
+        try:
+            admin = conn.execute(
+                """
+                SELECT u.username, u.role, u.is_admin, u.is_superadmin,
+                       u.person_id, p.name AS person_name
+                FROM app.users u
+                JOIN app.people p ON p.id = u.person_id
+                WHERE u.username = ?
+                """,
+                (self.admin_username,),
+            ).fetchone()
+            collection_names = conn.execute(
+                """
+                SELECT u.username, p.name
+                FROM app.users u
+                JOIN app.people p ON p.id = u.person_id
+                WHERE u.username IN (?, ?, ?, ?)
+                """,
+                (
+                    self.admin_username,
+                    managed_one,
+                    managed_two,
+                    unrelated_user,
+                ),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        names_by_user = {
+            str(row["username"]): str(row["name"])
+            for row in collection_names
+        }
+        own_name = names_by_user[self.admin_username]
+        managed_names = {
+            own_name,
+            names_by_user[managed_one],
+            names_by_user[managed_two],
+        }
+        unrelated_name = names_by_user[unrelated_user]
+
+        # The default view remains the Admin's own collection.
+        default_owner = self.app_module._effective_inventory_owner(admin)
+        self.assertEqual(default_owner, own_name)
+
+        # An explicit empty owner filter means all collections in this Admin's scope.
+        all_owners = self.app_module._effective_inventory_owner(
+            admin, "", owner_explicit=True
+        )
+        self.assertIsInstance(all_owners, list)
+        self.assertEqual(set(all_owners), managed_names)
+        self.assertNotIn(unrelated_name, all_owners)
+
+        # PostgreSQL must build an IN filter for the complete scoped owner list.
+        from postgres_inventory import _inventory_filters
+
+        where, args, _, _ = _inventory_filters("", all_owners, "")
+        owner_clause = next(clause for clause in where if "i.owner" in clause)
+        self.assertIn(" IN (", owner_clause)
+        self.assertEqual(args, list(all_owners))
+        self.assertNotIn(unrelated_name, args)
+
+        # The rendered owner selector exposes managed collections but not unrelated users.
+        page = self.admin_client.get(
+            "/?owner=",
+            base_url="http://localhost",
+        )
+        self.assertEqual(page.status_code, 200, page.get_data(as_text=True))
+        html = page.get_data(as_text=True)
+        self.assertIn(names_by_user[managed_one], html)
+        self.assertIn(names_by_user[managed_two], html)
+        self.assertNotIn(unrelated_name, html)
+
     def test_superadmin_can_reassign_existing_account_managers(self):
         managed_username = f"pg-useradmin-manager-target-{self.token}"
         secondary_admin = f"pg-useradmin-manager-admin-{self.token}"
