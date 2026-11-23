@@ -930,6 +930,9 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
             (f"/admin/users/{self.vendor_username}/role", {
                 "role": "admin",
             }),
+            (f"/admin/users/{self.vendor_username}/manager", {
+                "manager_username": self.superadmin_username,
+            }),
             (f"/admin/users/{self.vendor_username}/delete", {}),
             ("/admin/password", {
                 "password": f"CSRF-Test-Password-{self.token}",
