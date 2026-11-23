@@ -984,11 +984,16 @@ def _effective_inventory_owner(
     own = str(user["person_name"] or "").strip()
 
     if requested:
-        selected = manageable_by_key.get(requested.casefold()) or public_by_key.get(requested.casefold())
-        if selected:
+        selected_managed = manageable_by_key.get(requested.casefold())
+        selected_public = public_by_key.get(requested.casefold())
+        if selected_managed:
             if include_public:
-                return list(dict.fromkeys([selected, *public_names]))
-            return selected
+                return list(dict.fromkeys([selected_managed, *public_names]))
+            return selected_managed
+        if selected_public:
+            # Choosing one public collection narrows the owner filter to that
+            # collection; the public toggle remains enabled for future changes.
+            return selected_public
         if is_admin_user(user):
             selected = manageable_by_key.get(own.casefold()) if own else None
             if not selected and manageable:
