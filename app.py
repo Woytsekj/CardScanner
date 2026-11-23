@@ -1218,6 +1218,7 @@ def security_gate():
             "rename_user": "POST",
             "change_user_role": "POST",
             "delete_user": "POST",
+            "change_user_manager": "POST",
             "admin_change_password_legacy": "POST",
             "change_password": "POST",
             "set_counts": "POST",
