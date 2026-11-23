@@ -41,6 +41,7 @@ class PostgreSQLManualAddTests(unittest.TestCase):
         self.admin_username = f"pg-manual-admin-{self.token}"
         self.user_username = f"pg-manual-user-{self.token}"
         self.owner_name = f"PG Manual Owner {self.token}"
+        self.user_owner_name = f"PG Manual User Owner {self.token}"
         self.csrf = f"csrf-manual-{self.token}"
         self.inventory_name = f"PG Manual Test Card {self.token}"
         self.inventory_ids = []
@@ -56,26 +57,40 @@ class PostgreSQLManualAddTests(unittest.TestCase):
                 (self.owner_name,),
             ).fetchone()
             self.person_id = int(person["id"])
+            user_person = conn.execute(
+                """
+                INSERT INTO app.people (name, active)
+                VALUES (?, TRUE)
+                RETURNING id
+                """,
+                (self.user_owner_name,),
+            ).fetchone()
+            self.user_person_id = int(user_person["id"])
 
             conn.execute(
                 """
                 INSERT INTO app.users (
                     username, password_hash, is_admin, role,
-                    is_superadmin, active
+                    is_superadmin, active, person_id
                 )
-                VALUES (?, ?, TRUE, 'admin', FALSE, TRUE)
+                VALUES (?, ?, TRUE, 'admin', FALSE, TRUE, ?)
                 """,
-                (self.admin_username, "unused-manual-test-password-hash"),
+                (self.admin_username, "unused-manual-test-password-hash", self.person_id),
             )
             conn.execute(
                 """
                 INSERT INTO app.users (
                     username, password_hash, is_admin, role,
-                    is_superadmin, active
+                    is_superadmin, active, person_id, manager_username
                 )
-                VALUES (?, ?, FALSE, 'user', FALSE, TRUE)
+                VALUES (?, ?, FALSE, 'user', FALSE, TRUE, ?, ?)
                 """,
-                (self.user_username, "unused-manual-test-password-hash"),
+                (
+                    self.user_username,
+                    "unused-manual-test-password-hash",
+                    self.user_person_id,
+                    self.admin_username,
+                ),
             )
             conn.commit()
         finally:
@@ -106,8 +121,8 @@ class PostgreSQLManualAddTests(unittest.TestCase):
                 (self.admin_username, self.user_username),
             )
             conn.execute(
-                "DELETE FROM app.people WHERE id = ?",
-                (self.person_id,),
+                "DELETE FROM app.people WHERE id IN (?, ?)",
+                (self.person_id, self.user_person_id),
             )
             conn.commit()
         finally:
@@ -213,9 +228,9 @@ class PostgreSQLManualAddTests(unittest.TestCase):
         self.assertIn(self.owner_name, html)
         self.assertIn("Log out", html)
 
-        self.assertIn("People</h2>", html)
+        self.assertIn("accountWorkspaceTitle", html)
         self.assertNotIn("Price History &amp; Discord Alerts", html)
-        self.assertIn("Web users</h2>", html)
+        self.assertIn("Web accounts</h3>", html)
         self.assertNotIn("Back to inventory", html)
         self.assertIn(">Decks</a>", html)
         self.assertIn(">Vending</a>", html)
@@ -348,14 +363,14 @@ class PostgreSQLManualAddTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("CSRF", response.get_data(as_text=True))
 
-    def test_non_admin_cannot_open_admin_page_or_add_cards(self):
+    def test_user_cannot_open_admin_or_add_to_another_account_collection(self):
         page = self.user_client.get(
             "/admin",
             base_url="http://localhost",
         )
         self.assertEqual(page.status_code, 403)
 
-        write = self.user_client.post(
+        blocked = self.user_client.post(
             "/admin/manual_add",
             data={
                 "name": self.inventory_name,
@@ -365,7 +380,32 @@ class PostgreSQLManualAddTests(unittest.TestCase):
             },
             base_url="http://localhost",
         )
-        self.assertEqual(write.status_code, 403)
+        self.assertEqual(blocked.status_code, 302)
+        self.assertIn("/?", blocked.location)
+        self.assertEqual(self.fetch_inventory(f"pg-manual-{self.token}"), [])
+
+        allowed = self.user_client.post(
+            "/admin/manual_add",
+            data={
+                "name": self.inventory_name,
+                "owner": self.user_owner_name,
+                "quantity": "1",
+                "scryfall_id": f"pg-manual-user-{self.token}",
+                "csrf_token": self.csrf,
+            },
+            base_url="http://localhost",
+        )
+        self.assertEqual(allowed.status_code, 302)
+        conn = connect_app_database(expected_database="cardscanner_dev")
+        try:
+            row = conn.execute(
+                "SELECT owner, person_id, quantity FROM app.inventory WHERE owner=? AND scryfall_id=?",
+                (self.user_owner_name, f"pg-manual-user-{self.token}"),
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row["person_id"], self.user_person_id)
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

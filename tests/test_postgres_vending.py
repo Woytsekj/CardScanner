@@ -310,9 +310,20 @@ class PostgreSQLVendingHTTPTests(unittest.TestCase):
         vendor_html = self.vendor_client.get(
             "/vending"
         ).get_data(as_text=True)
-        self.assertNotIn(">Inventory</a>", vendor_html)
+        self.assertIn(">Inventory</a>", vendor_html)
         self.assertNotIn(">Decks</a>", vendor_html)
         self.assertNotIn('id="vendorBulkEditBar"', vendor_html)
+
+        # Vendors can browse inventory/public cards, but have no inventory edit mode.
+        inventory = self.vendor_client.get("/")
+        self.assertEqual(inventory.status_code, 200, inventory.get_data(as_text=True))
+        inventory_html = inventory.get_data(as_text=True)
+        self.assertIn("Include public cards", inventory_html)
+        self.assertNotIn("Edit mode", inventory_html)
+
+        preferences = self.vendor_client.get("/preferences")
+        self.assertEqual(preferences.status_code, 200, preferences.get_data(as_text=True))
+        self.assertIn("Make my collection public", preferences.get_data(as_text=True))
 
         for path in (
             "/vending",

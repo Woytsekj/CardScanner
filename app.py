@@ -407,7 +407,7 @@ def ensure_people_and_auth(conn: sqlite3.Connection, force: bool = False) -> Non
 
 def _ensure_people_and_auth(conn: sqlite3.Connection) -> None:
     c = conn.cursor()
-    c.execute("""CREATE TABLE IF NOT EXISTS people (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL COLLATE NOCASE UNIQUE, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS people (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL COLLATE NOCASE UNIQUE, active INTEGER NOT NULL DEFAULT 1, is_public INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         username TEXT PRIMARY KEY COLLATE NOCASE,
         password_hash TEXT NOT NULL,
@@ -425,15 +425,64 @@ def _ensure_people_and_auth(conn: sqlite3.Connection) -> None:
         "ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE users ADD COLUMN last_login_at TEXT",
         "ALTER TABLE users ADD COLUMN person_id INTEGER REFERENCES people(id) ON DELETE SET NULL",
+        "ALTER TABLE users ADD COLUMN manager_username TEXT REFERENCES users(username) ON DELETE SET NULL",
+        "ALTER TABLE people ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0",
     ):
         try: c.execute(ddl)
         except sqlite3.OperationalError: pass
-    # Each person can be the default collection for at most one web account.
-    # A partial index preserves the ability to leave service/vendor accounts unlinked.
+    # Each login owns exactly one collection. SQLite cannot assign NEW values in
+    # a BEFORE trigger, so AFTER triggers create a unique people row and write
+    # its id back to the account. Setting person_id to NULL creates a replacement
+    # collection rather than leaving an account unassigned.
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_person_id_unique ON users(person_id) WHERE person_id IS NOT NULL")
+    c.execute("""
+        CREATE TRIGGER IF NOT EXISTS users_ensure_collection_after_insert
+        AFTER INSERT ON users
+        WHEN NEW.person_id IS NULL
+        BEGIN
+            INSERT INTO people(name, active)
+            VALUES (
+                substr(NEW.username, 1, 60) || ' Collection (' || lower(hex(randomblob(8))) || ')',
+                1
+            );
+            UPDATE users SET person_id=last_insert_rowid() WHERE rowid=NEW.rowid;
+        END
+    """)
+    c.execute("""
+        CREATE TRIGGER IF NOT EXISTS users_ensure_collection_after_unlink
+        AFTER UPDATE OF person_id ON users
+        WHEN NEW.person_id IS NULL
+        BEGIN
+            INSERT INTO people(name, active)
+            VALUES (
+                substr(NEW.username, 1, 60) || ' Collection (' || lower(hex(randomblob(8))) || ')',
+                1
+            );
+            UPDATE users SET person_id=last_insert_rowid() WHERE rowid=NEW.rowid;
+        END
+    """)
+    c.execute("""
+        CREATE TRIGGER IF NOT EXISTS people_prevent_account_collection_delete
+        BEFORE DELETE ON people
+        WHEN EXISTS (SELECT 1 FROM users WHERE person_id=OLD.id)
+        BEGIN
+            SELECT RAISE(ABORT, 'Collection is assigned to an account and cannot be deleted');
+        END
+    """)
+    # Remove the experimental join table from databases bootstrapped by an
+    # earlier draft. users.person_id is the single account-to-collection link.
+    c.execute("DROP TABLE IF EXISTS user_people")
     c.execute("UPDATE users SET role='admin' WHERE is_admin=1 AND (role IS NULL OR role='')")
     c.execute("UPDATE users SET role='vendor' WHERE is_admin=0 AND (role IS NULL OR role='')")
     c.execute("UPDATE users SET is_superadmin=1, is_admin=1, role='superadmin' WHERE is_superadmin=1")
+    c.execute("""
+        UPDATE users
+        SET manager_username = (
+            SELECT username FROM users WHERE is_superadmin=1 AND active=1
+            ORDER BY created_at, username COLLATE NOCASE LIMIT 1
+        )
+        WHERE is_superadmin=0 AND manager_username IS NULL
+    """)
     c.execute("""CREATE TABLE IF NOT EXISTS login_attempts (key TEXT PRIMARY KEY, first_attempt REAL NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, blocked_until REAL NOT NULL DEFAULT 0)""")
     c.execute("""CREATE TABLE IF NOT EXISTS app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)""")
 
@@ -466,6 +515,10 @@ def _ensure_people_and_auth(conn: sqlite3.Connection) -> None:
         exists=c.execute("SELECT username FROM users WHERE username=?",(VENDOR_USERNAME,)).fetchone()
         if not exists:
             c.execute("INSERT INTO users(username,password_hash,is_admin,role,is_superadmin,active) VALUES(?,?,?,?,?,1)",(VENDOR_USERNAME,generate_password_hash(VENDOR_INITIAL_PASSWORD),0,"vendor",0))
+
+    # Backfill every legacy account without changing any existing assignment.
+    # The update trigger supplies a fresh, unique collection for each NULL link.
+    c.execute("UPDATE users SET person_id=NULL WHERE person_id IS NULL")
     conn.commit()
 
 
@@ -636,8 +689,8 @@ def _load_current_user(username: str) -> sqlite3.Row | None:
                     """
                     SELECT u.username, u.password_hash, u.is_admin, u.role,
                            u.is_superadmin, u.active, u.created_at,
-                           u.last_login_at, u.person_id,
-                           p.name AS person_name
+                           u.last_login_at, u.person_id, u.manager_username,
+                           p.name AS person_name, p.is_public AS collection_is_public
                     FROM users u
                     LEFT JOIN people p ON p.id = u.person_id
                     WHERE u.username = ?
@@ -674,6 +727,352 @@ def is_superadmin_user(user: sqlite3.Row | None) -> bool:
     return bool(user and (int(user["is_superadmin"]) or str(user["role"]).lower() == "superadmin"))
 
 
+def is_admin_user(user: sqlite3.Row | None) -> bool:
+    return bool(user and (
+        int(user["is_admin"]) or int(user["is_superadmin"])
+        or str(user["role"]).lower() in {"admin", "superadmin"}
+    ))
+
+
+def _account_table(name: str) -> str:
+    return f"app.{name}" if DATABASE_BACKEND == "postgres" else name
+
+
+def _account_connection():
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+        return connect_app_database()
+    conn = connect_inventory()
+    ensure_people_and_auth(conn)
+    return conn
+
+
+def _managed_usernames(user) -> set[str]:
+    if not user:
+        return set()
+    root = str(user["username"])
+    if is_superadmin_user(user):
+        conn = _account_connection()
+        try:
+            rows = conn.execute(f"SELECT username FROM {_account_table('users')}").fetchall()
+            return {str(row["username"]) for row in rows} | {root}
+        finally:
+            conn.close()
+    if not is_admin_user(user):
+        return {root}
+    conn = _account_connection()
+    try:
+        rows = conn.execute(
+            f"""SELECT username FROM {_account_table('users')}
+                WHERE lower(manager_username)=lower(?)
+                  AND lower(role) IN ('user', 'member')""",
+            (root,),
+        ).fetchall()
+        return {root} | {str(row["username"]) for row in rows}
+    finally:
+        conn.close()
+
+
+def _manageable_person_ids(user=None) -> set[int]:
+    user = user or current_user()
+    if not user:
+        return set()
+    conn = _account_connection()
+    try:
+        if is_superadmin_user(user):
+            rows = conn.execute(f"SELECT id FROM {_account_table('people')}").fetchall()
+            return {int(row["id"]) for row in rows}
+        username = str(user["username"] or "")
+        if is_admin_user(user):
+            rows = conn.execute(
+                f"""SELECT person_id FROM {_account_table('users')}
+                    WHERE person_id IS NOT NULL
+                      AND (
+                        lower(username)=lower(?)
+                        OR (
+                          lower(manager_username)=lower(?)
+                          AND lower(role) IN ('user', 'member')
+                        )
+                      )""",
+                (username, username),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"""SELECT person_id FROM {_account_table('users')}
+                    WHERE lower(username)=lower(?) AND person_id IS NOT NULL""",
+                (username,),
+            ).fetchall()
+        return {
+            int(row["person_id"])
+            for row in rows
+            if row["person_id"] is not None
+        }
+    finally:
+        conn.close()
+
+
+def _can_manage_person_name(person_name: str, user=None) -> bool:
+    name = " ".join(str(person_name or "").strip().split())
+    user = user or current_user()
+    if not name or not user:
+        return False
+    if is_superadmin_user(user):
+        return True
+    manageable_ids = _manageable_person_ids(user)
+    if not manageable_ids:
+        return False
+    conn = _account_connection()
+    try:
+        row = conn.execute(
+            f"SELECT id FROM {_account_table('people')} WHERE lower(name)=lower(?)",
+            (name,),
+        ).fetchone()
+        return bool(row and int(row["id"]) in manageable_ids)
+    finally:
+        conn.close()
+
+
+def _inventory_row_for_write(item_id: int):
+    conn = _account_connection()
+    try:
+        game_filter = " AND game_id='mtg'" if DATABASE_BACKEND == "postgres" else ""
+        return conn.execute(
+            f"""SELECT owner FROM {_account_table('inventory')}
+                WHERE id=?{game_filter}""",
+            (item_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def _can_manage_inventory_row(item_id: int, user=None) -> bool:
+    row = _inventory_row_for_write(item_id)
+    return bool(row and _can_manage_person_name(str(row["owner"] or ""), user))
+
+
+def _editable_deck_ids(user=None) -> set[int]:
+    """Return deck IDs whose owner belongs to this account's editable collections."""
+    editable_names = {name.casefold() for name in _accessible_person_names(user)}
+    if not editable_names:
+        return set()
+    conn = _account_connection()
+    try:
+        rows = conn.execute(
+            f"SELECT id, person_name FROM {_account_table('decklists')}"
+        ).fetchall()
+        return {
+            int(row["id"]) for row in rows
+            if str(row["person_name"] or "").casefold() in editable_names
+        }
+    finally:
+        conn.close()
+
+
+def _can_manage_deck(deck_id: int, user=None) -> bool:
+    user = user or current_user()
+    conn = _account_connection()
+    try:
+        row = conn.execute(
+            f"SELECT person_name FROM {_account_table('decklists')} WHERE id=?",
+            (deck_id,),
+        ).fetchone()
+        person_name = str(row["person_name"] or "") if row else ""
+    finally:
+        conn.close()
+    if row is None:
+        return False
+    if is_superadmin_user(user):
+        return True
+    return bool(person_name and _can_manage_person_name(person_name, user))
+
+
+def _can_manage_user_account(username: str, actor=None) -> bool:
+    actor = actor or current_user()
+    if not actor:
+        return False
+    if is_superadmin_user(actor):
+        return True
+    if not is_admin_user(actor):
+        return False
+    conn = _account_connection()
+    try:
+        target = conn.execute(
+            f"SELECT role, manager_username FROM {_account_table('users')} WHERE lower(username)=lower(?)",
+            (str(username or ""),),
+        ).fetchone()
+        return bool(
+            target
+            and str(target["role"] or "").lower() in {"user", "member"}
+            and str(target["manager_username"] or "").casefold()
+                == str(actor["username"] or "").casefold()
+        )
+    finally:
+        conn.close()
+
+
+def _person_name_by_id(person_id: int) -> str:
+    conn = _account_connection()
+    try:
+        row = conn.execute(
+            f"SELECT name FROM {_account_table('people')} WHERE id=?",
+            (person_id,),
+        ).fetchone()
+        return str(row["name"] or "") if row else ""
+    finally:
+        conn.close()
+
+
+def _accessible_person_names(user=None) -> list[str]:
+    """Return only collection names this account is allowed to manage."""
+    user = user or current_user()
+    if not user:
+        return []
+    ids = _manageable_person_ids(user)
+    if not ids:
+        return []
+    conn = _account_connection()
+    try:
+        marks = ", ".join("?" for _ in ids)
+        active_clause = "active IS TRUE" if DATABASE_BACKEND == "postgres" else "active=1"
+        rows = conn.execute(
+            f"SELECT name FROM {_account_table('people')} WHERE {active_clause} AND id IN ({marks}) ORDER BY lower(name)",
+            list(ids),
+        ).fetchall()
+        return [str(row["name"]) for row in rows]
+    finally:
+        conn.close()
+
+
+
+def _public_person_names() -> list[str]:
+    """Return active collections whose owners opted into public card viewing."""
+    conn = _account_connection()
+    try:
+        active_clause = "active IS TRUE" if DATABASE_BACKEND == "postgres" else "active=1"
+        public_clause = "is_public IS TRUE" if DATABASE_BACKEND == "postgres" else "is_public=1"
+        rows = conn.execute(
+            f"""
+            SELECT name FROM {_account_table('people')}
+            WHERE {active_clause} AND {public_clause}
+            ORDER BY lower(name)
+            """
+        ).fetchall()
+        return [str(row["name"]) for row in rows]
+    finally:
+        conn.close()
+
+
+def _effective_inventory_owner(
+    user=None,
+    requested_owner: str = "",
+    *,
+    owner_explicit: bool = False,
+    include_public: bool = False,
+) -> str | list[str]:
+    """Resolve readable owners without changing any collection write permissions."""
+    user = user or current_user()
+    if not user:
+        return "__no_assigned_collection__"
+    requested = " ".join(str(requested_owner or "").strip().split())
+    if is_superadmin_user(user):
+        return requested
+
+    manageable = _accessible_person_names(user)
+    manageable_by_key = {name.casefold(): name for name in manageable}
+    public_names = _public_person_names() if include_public else []
+    public_by_key = {name.casefold(): name for name in public_names}
+    own = str(user["person_name"] or "").strip()
+
+    if requested:
+        selected_managed = manageable_by_key.get(requested.casefold())
+        selected_public = public_by_key.get(requested.casefold())
+        if selected_managed:
+            if include_public:
+                return list(dict.fromkeys([selected_managed, *public_names]))
+            return selected_managed
+        if selected_public:
+            # Choosing one public collection narrows the owner filter to that
+            # collection; the public toggle remains enabled for future changes.
+            return selected_public
+        if is_admin_user(user):
+            selected = manageable_by_key.get(own.casefold()) if own else None
+            if not selected and manageable:
+                selected = sorted(manageable, key=str.casefold)[0]
+            if selected:
+                if include_public:
+                    return list(dict.fromkeys([selected, *public_names]))
+                return selected
+        return "__no_assigned_collection__"
+
+    if is_admin_user(user):
+        if owner_explicit:
+            base = manageable
+        else:
+            selected = manageable_by_key.get(own.casefold()) if own else None
+            base = [selected] if selected else sorted(manageable, key=str.casefold)[:1]
+    else:
+        base = [manageable_by_key[own.casefold()]] if own and own.casefold() in manageable_by_key else []
+
+    if include_public:
+        return list(dict.fromkeys([*base, *public_names])) or ["__no_assigned_collection__"]
+    if owner_explicit:
+        return manageable or ["__no_assigned_collection__"]
+    return base[0] if base else "__no_assigned_collection__"
+
+
+def _can_manage_inventory_rows(item_ids, user=None) -> bool:
+    cleaned = []
+    for raw in item_ids or []:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0 and value not in cleaned:
+            cleaned.append(value)
+    if not cleaned:
+        return False
+    user = user or current_user()
+    if is_superadmin_user(user):
+        return True
+    conn = _account_connection()
+    try:
+        marks = ", ".join("?" for _ in cleaned)
+        game_filter = " AND game_id='mtg'" if DATABASE_BACKEND == "postgres" else ""
+        rows = conn.execute(
+            f"SELECT DISTINCT owner FROM {_account_table('inventory')} "
+            f"WHERE id IN ({marks}){game_filter}",
+            cleaned,
+        ).fetchall()
+    finally:
+        conn.close()
+    # Missing and other-game IDs are ignored by the bulk updater. Authorize
+    # every existing MTG row, but preserve its no-op behavior for empty matches.
+    owners = {str(row["owner"] or "") for row in rows}
+    return not owners or all(_can_manage_person_name(owner, user) for owner in owners)
+
+
+def _can_access_deck(deck_id: int, user=None) -> bool:
+    """Allow access only to decks owned by this account or its managed Users."""
+    return _can_manage_deck(deck_id, user)
+
+
+def collection_access_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        user = current_user()
+        if not user:
+            if request.path.startswith("/api/") or request.method != "GET":
+                return jsonify({"success": False, "error": "Login required"}), 401
+            return redirect(url_for("login", next=request.full_path if request.query_string else request.path))
+        role = str(user["role"] or "").lower()
+        if role not in {"user", "member", "admin", "superadmin"} and not is_superadmin_user(user):
+            if request.path.startswith("/api/") or request.method != "GET":
+                return jsonify({"success": False, "error": "Collection access required"}), 403
+            return render_template("login.html", next_url="", error="Collection access required."), 403
+        return view(*args, **kwargs)
+    return wrapped
+
+
 def superadmin_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
@@ -698,9 +1097,23 @@ def admin_required(view):
             if request.path.startswith("/api/") or request.method != "GET":
                 return jsonify({"success": False, "error": "Login required"}), 401
             return redirect(url_for("login", next=request.full_path if request.query_string else request.path))
-        if not int(user["is_admin"]) and str(user["role"]).lower() != "admin":
+        role = str(user["role"] or "").lower()
+        collection_endpoints = {
+            "index", "manual_add", "search_suggest",
+            "api_card_info", "api_card_rulings",
+            "set_counts", "update_inventory", "bulk_update_inventory",
+            "move_quantity", "delete_item", "import_csv", "export_csv",
+            "export_manabox_csv", "decks_page", "decks_import",
+            "update_deck_settings", "update_deck_cover", "deck_view",
+            "edit_deck_card", "add_deck_card", "delete_deck_card",
+            "assign_free_to_deck", "move_inventory_to_deck", "delete_deck",
+            "deck_missing_csv",
+        }
+        if not is_admin_user(user) and not (
+            role in {"user", "member"} and request.endpoint in collection_endpoints
+        ) and not (role == "vendor" and request.endpoint == "index"):
             if request.path.startswith("/api/") or request.method != "GET":
-                return jsonify({"success": False, "error": "Admin access required"}), 403
+                return jsonify({"success": False, "error": "Administrator access required"}), 403
             return render_template("login.html", next_url="", error="Administrator access required."), 403
         return view(*args, **kwargs)
     return wrapped
@@ -725,7 +1138,12 @@ def vendor_or_admin_required(view):
             if request.method != "GET":
                 return jsonify({"success": False, "error": "Login required"}), 401
             return redirect(url_for("login", next=request.full_path if request.query_string else request.path))
-        if int(user["is_admin"]) or str(user["role"]).lower() == "vendor":
+        role = str(user["role"] or "").lower()
+        if (
+            int(user["is_admin"])
+            or role == "vendor"
+            or (request.endpoint == "api_price_history" and role in {"user", "member"})
+        ):
             return view(*args, **kwargs)
         return render_template("login.html", next_url="", error="Vendor access required."), 403
     return wrapped
@@ -856,6 +1274,8 @@ def security_gate():
             "rename_user": "POST",
             "change_user_role": "POST",
             "delete_user": "POST",
+            "set_collection_visibility": "POST",
+            "change_user_manager": "POST",
             "admin_change_password_legacy": "POST",
             "change_password": "POST",
             "set_counts": "POST",
@@ -926,7 +1346,7 @@ def security_gate():
     # Vendor accounts are deliberately restricted to vending and logout.
     user = current_user()
     if user and str(user["role"]).lower() == "vendor" and not int(user["is_admin"]):
-        allowed = {"vending_view", "vending_export_csv", "vending_labels", "logout", "login", "login_post", "static"}
+        allowed = {"vending_view", "vending_export_csv", "vending_labels", "index", "preferences_page", "set_collection_visibility", "logout", "login", "login_post", "static"}
         if request.endpoint not in allowed and not path.startswith("/static/"):
             return render_template("login.html", next_url="", error="This account only has access to the Vending area."), 403
 
@@ -1581,12 +2001,20 @@ def parse_scryfall_search(search: str) -> tuple[list[str], list[Any], str | None
 
 
 def _inventory_filter_parts(
-    search: str, owner_filter: str, finish_filter: str,
+    search: str, owner_filter: str | list[str], finish_filter: str,
     type_filter: str = "", color_filter: str = "", location_filter: str = "", vending_filter: str = "",
 ) -> tuple[list[str], list[Any], str | None, str | None]:
     """Build the common safe WHERE clauses for inventory rows and summary queries."""
     where, args, query_order, query_direction = parse_scryfall_search(search)
-    if owner_filter:
+    if isinstance(owner_filter, (list, tuple, set)):
+        scoped_owners = list(dict.fromkeys(str(name) for name in owner_filter if str(name)))
+        if scoped_owners:
+            placeholders = ", ".join("?" for _ in scoped_owners)
+            where.append(f"IFNULL(i.owner, 'Me') IN ({placeholders})")
+            args.extend(scoped_owners)
+        else:
+            where.append("1 = 0")
+    elif owner_filter:
         where.append("IFNULL(i.owner, 'Me') = ?")
         args.append(owner_filter)
     if finish_filter:
@@ -1613,7 +2041,7 @@ def _inventory_filter_parts(
 
 
 def inventory_summary(
-    search: str, owner_filter: str, finish_filter: str, sort_key: str, direction: str,
+    search: str, owner_filter: str | list[str], finish_filter: str, sort_key: str, direction: str,
     type_filter: str = "", color_filter: str = "", location_filter: str = "", vending_filter: str = "",
 ):
     """Calculate totals using a lightweight query without materializing card metadata/aliases."""
@@ -1773,7 +2201,7 @@ def _calculate_price_trend(
 
 
 def inventory_rows(
-    search: str, owner_filter: str, finish_filter: str, sort_key: str, direction: str,
+    search: str, owner_filter: str | list[str], finish_filter: str, sort_key: str, direction: str,
     type_filter: str = "", color_filter: str = "", location_filter: str = "", vending_filter: str = "",
     limit: int | None = None, offset: int = 0,
 ):
@@ -2357,7 +2785,10 @@ def insert_or_increment_scan(payload: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError("person_id must identify an active server person")
             person = owner_conn.execute(
                 """SELECT p.id, p.name, u.username AS account_id
-                   FROM people p LEFT JOIN users u ON u.person_id=p.id AND u.active=1
+                   FROM people p
+                   LEFT JOIN users u ON u.active=1 AND (
+                     u.person_id=p.id
+                   )
                    WHERE p.id=? AND p.active=1""",
                 (person_id,),
             ).fetchone()
@@ -2574,7 +3005,51 @@ def preferences_page():
     return render_template(
         "preferences.html",
         postgres_mode=(DATABASE_BACKEND == "postgres"),
+        collection_is_public=bool(current_user()["collection_is_public"]),
         message=request.args.get("message", ""),
+    )
+
+
+@app.post("/account/collection-visibility")
+@login_required
+def set_collection_visibility():
+    """Allow each signed-in account to change only its own collection visibility."""
+    user = current_user()
+    if not user or user["person_id"] is None:
+        return redirect(url_for("preferences_page", message="Your account has no assigned collection."))
+
+    is_public = request.form.get("is_public") == "1"
+    person_id = int(user["person_id"])
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+
+        conn = connect_app_database()
+        try:
+            conn.execute(
+                "UPDATE app.people SET is_public = ? WHERE id = ?",
+                (is_public, person_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    else:
+        conn = connect_inventory()
+        try:
+            ensure_people_and_auth(conn)
+            conn.execute(
+                "UPDATE people SET is_public = ? WHERE id = ?",
+                (1 if is_public else 0, person_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    g._current_user = None
+    return redirect(
+        url_for(
+            "preferences_page",
+            message="Your collection is now public." if is_public else "Your collection is now private.",
+        )
     )
 
 
@@ -2635,7 +3110,14 @@ def admin_page():
 
         conn = connect_app_database()
         try:
-            people, users = fetch_admin_page_data(conn)
+            people, users = fetch_admin_page_data(
+                conn,
+                username=str(current_user()["username"]),
+                superadmin=is_superadmin_user(current_user()),
+            )
+            managers = conn.execute(
+                'SELECT username, is_superadmin FROM app.users WHERE (is_admin IS TRUE OR is_superadmin IS TRUE) AND active IS TRUE ORDER BY lower(username) COLLATE "C"'
+            ).fetchall()
         finally:
             conn.close()
     else:
@@ -2661,21 +3143,50 @@ def admin_page():
             """
             SELECT
                 u.username, u.is_admin, u.role, u.is_superadmin, u.active,
-                u.created_at, u.last_login_at, u.person_id,
+                u.created_at, u.last_login_at, u.person_id, u.manager_username,
                 p.name AS person_name
             FROM users u
             LEFT JOIN people p ON p.id = u.person_id
+            WHERE (? = 1 OR lower(u.username) = lower(?) OR (lower(u.manager_username) = lower(?) AND lower(u.role) IN ('user', 'member')))
             ORDER BY u.is_superadmin DESC, u.username COLLATE NOCASE
-            """
+            """,
+            (1 if is_superadmin_user(current_user()) else 0, current_user()["username"], current_user()["username"]),
+        ).fetchall()
+        users = [dict(account) for account in users]
+        managers = conn.execute(
+            "SELECT username, is_superadmin FROM users WHERE (is_admin=1 OR is_superadmin=1) AND active=1 ORDER BY username COLLATE NOCASE"
         ).fetchall()
         conn.close()
 
+    manageable_people_ids = _manageable_person_ids(current_user())
+    assignable_people_ids = set(manageable_people_ids)
+    assign_conn = _account_connection()
+    try:
+        unassigned = assign_conn.execute(
+            f"""SELECT p.id FROM {_account_table('people')} p
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM {_account_table('users')} u
+                    WHERE u.person_id=p.id
+                )"""
+        ).fetchall()
+        unassigned_people_ids = {int(row["id"]) for row in unassigned}
+        if is_admin_user(current_user()) and not is_superadmin_user(current_user()):
+            assignable_people_ids.update(unassigned_people_ids)
+    finally:
+        assign_conn.close()
+    people = [person for person in people if int(person["id"]) in assignable_people_ids]
     return render_template(
         "admin.html",
         people=people,
         users=users,
-        account_people=[person for person in people if person["active"]],
+        account_people=[
+            person for person in people
+            if person["active"] and int(person["id"]) in unassigned_people_ids
+        ],
+        account_people_all=people,
+        managers=managers,
         admin_user=current_admin(),
+        current_role=str(current_user()["role"] or "user").lower(),
         admin_is_superadmin=is_superadmin_user(current_user()),
         message=request.args.get("message", ""),
         display_timezone=DISPLAY_TIMEZONE,
@@ -2830,7 +3341,9 @@ def catalog_suggest():
 def search_suggest():
     """Small, owner-scoped autocomplete endpoint; the main page no longer embeds the full index."""
     q = str(request.args.get("q") or "").strip()[:80]
-    owner = str(request.args.get("owner") or "").strip()
+    owner = _effective_inventory_owner(
+        current_user(), request.args.get("owner", "")
+    )
     if len(q) < 2:
         return jsonify({"success": True, "results": []})
 
@@ -3023,6 +3536,19 @@ def manual_add():
         return redirect(url_for("admin_page", message="Card name is required."))
 
     owner = str(request.form.get("owner") or "").strip()[:100]
+    owner_conn = _account_connection()
+    try:
+        active_owner = owner_conn.execute(
+            f"""SELECT 1 FROM {_account_table('people')}
+                WHERE lower(name)=lower(?) AND active IS TRUE LIMIT 1""",
+            (owner,),
+        ).fetchone()
+    finally:
+        owner_conn.close()
+    if not active_owner:
+        return redirect(url_for("index", message="Choose an active owner."))
+    if not _can_manage_person_name(owner):
+        return redirect(url_for("index", message="Choose a collection assigned to your account."))
     finish = normalize_finish(request.form.get("finish"))
     qty_raw = request.form.get("quantity", "1")
     try:
@@ -3207,6 +3733,8 @@ def add_person():
 @app.post("/admin/people/<int:person_id>/rename")
 @admin_required
 def rename_person(person_id: int):
+    if not _can_manage_person_name(_person_name_by_id(person_id)):
+        return redirect(url_for("admin_page", message="You can only rename collections you manage."))
     name = str(request.form.get("name") or "").strip()[:100]
     if name:
         if DATABASE_BACKEND == "postgres":
@@ -3247,6 +3775,8 @@ def rename_person(person_id: int):
 @app.post("/admin/people/<int:person_id>/toggle")
 @admin_required
 def toggle_person(person_id: int):
+    if not _can_manage_person_name(_person_name_by_id(person_id)):
+        return redirect(url_for("admin_page", message="You can only change collections you manage."))
     if DATABASE_BACKEND == "postgres":
         from postgres_app_db import connect_app_database
         from postgres_people import toggle_person as postgres_toggle_person
@@ -3280,9 +3810,39 @@ def toggle_person(person_id: int):
 @admin_required
 def delete_person(person_id: int):
     """Delete a person without discarding inventory or account relationships."""
+    source_person_name = _person_name_by_id(person_id)
+    if not _can_manage_person_name(source_person_name):
+        return redirect(url_for("admin_page", message="You can only delete collections you manage."))
+    owner_conn = _account_connection()
+    try:
+        assigned_account = owner_conn.execute(
+            f"SELECT username FROM {_account_table('users')} WHERE person_id=? LIMIT 1",
+            (person_id,),
+        ).fetchone()
+    finally:
+        owner_conn.close()
+    if assigned_account:
+        return redirect(url_for(
+            "admin_page",
+            message=f"{source_person_name} is the collection owned by {assigned_account['username']}. Delete that account before deleting its collection.",
+        ))
     transfer_to = " ".join(
         str(request.form.get("transfer_to") or "").strip().split()
     )[:100]
+    if transfer_to:
+        owner_conn = _account_connection()
+        try:
+            active_target = owner_conn.execute(
+                f"""SELECT 1 FROM {_account_table('people')}
+                    WHERE lower(name)=lower(?) AND active IS TRUE LIMIT 1""",
+                (transfer_to,),
+            ).fetchone()
+        finally:
+            owner_conn.close()
+        if not active_target:
+            return redirect(url_for("admin_page", message="Choose an active owner for the inventory transfer."))
+        if not _can_manage_person_name(transfer_to):
+            return redirect(url_for("admin_page", message="Choose a collection you manage as the transfer target."))
 
     if DATABASE_BACKEND == "postgres":
         conn = None
@@ -3317,6 +3877,14 @@ def delete_person(person_id: int):
                 conn.rollback()
                 return redirect(
                     url_for("admin_page", message="Person not found.")
+                )
+            if status == "assigned":
+                conn.rollback()
+                return redirect(
+                    url_for(
+                        "admin_page",
+                        message=f"{result['name']} is the collection owned by {result['username']}. Delete that account before deleting its collection.",
+                    )
                 )
 
             conn.commit()
@@ -3440,10 +4008,6 @@ def delete_person(person_id: int):
         else:
             conn.execute("BEGIN IMMEDIATE")
 
-        conn.execute(
-            "UPDATE users SET person_id = NULL WHERE person_id = ?",
-            (person_id,),
-        )
         conn.execute("DELETE FROM people WHERE id = ?", (person_id,))
         conn.commit()
 
@@ -3467,7 +4031,7 @@ def delete_person(person_id: int):
 
 
 @app.post("/admin/users")
-@superadmin_required
+@admin_required
 def add_user():
     if DATABASE_BACKEND == "postgres":
         from postgres_user_admin import handle_add_user
@@ -3475,18 +4039,39 @@ def add_user():
 
     username = " ".join(str(request.form.get("username") or "").strip().split())[:150]
     password = str(request.form.get("password") or "")
-    role = str(request.form.get("role") or "vendor").strip().lower()
+    actor = current_user()
+    actor_superadmin = is_superadmin_user(actor)
+    role = str(request.form.get("role") or "user").strip().lower()
+    manager_username = str(request.form.get("manager_username") or "").strip() if actor_superadmin else str(actor["username"])
+    if not actor_superadmin:
+        role = "user"
+    if role not in {"admin", "user", "vendor"}:
+        role = "user"
+    if actor_superadmin and role in {"admin", "user"} and not manager_username:
+        manager_username = str(actor["username"])
     raw_person_id = str(request.form.get("person_id") or "").strip()
     if not username or len(username) < 2:
         return redirect(url_for("admin_page", message="Username must be at least 2 characters."))
     if len(password) < 12:
         return redirect(url_for("admin_page", message="User password must be at least 12 characters."))
-    if role not in {"admin", "vendor"}:
-        role = "vendor"
+    if role not in {"admin", "user", "vendor"}:
+        role = "user"
     conn=connect_inventory(); ensure_people_and_auth(conn)
     if conn.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone():
         conn.close(); return redirect(url_for("admin_page", message="That username already exists."))
     person_id = None
+    if manager_username:
+        manager = conn.execute(
+            "SELECT username, is_admin, is_superadmin, active FROM users WHERE username=?",
+            (manager_username,),
+        ).fetchone()
+        if not manager or not int(manager["active"]) or not (
+            int(manager["is_admin"]) or int(manager["is_superadmin"])
+        ):
+            conn.close(); return redirect(url_for("admin_page", message="Choose an active administrator as the manager."))
+        if role == "admin" and not int(manager["is_superadmin"]):
+            conn.close(); return redirect(url_for("admin_page", message="Admin accounts must report directly to a Superadmin."))
+        manager_username = str(manager["username"])
     if raw_person_id:
         try:
             person_id = int(raw_person_id)
@@ -3495,18 +4080,34 @@ def add_user():
         person = conn.execute("SELECT id, name, active FROM people WHERE id=?", (person_id,)).fetchone()
         if not person or not int(person["active"]):
             conn.close(); return redirect(url_for("admin_page", message="Choose an active person for this account."))
-        if conn.execute("SELECT username FROM users WHERE person_id=?", (person_id,)).fetchone():
-            conn.close(); return redirect(url_for("admin_page", message="That person is already assigned to another account."))
-    conn.execute("INSERT INTO users(username,password_hash,is_admin,role,is_superadmin,active,person_id) VALUES (?,?,?,?,?,1,?)", (username,generate_password_hash(password),1 if role=="admin" else 0,role,0,person_id))
+        # A non-superadmin may use an unassigned collection for a new
+        # account. The ownership check below rejects every collection that
+        # already belongs to an account, including the actor's own collection.
+        assigned = conn.execute(
+            "SELECT username FROM users WHERE person_id=? LIMIT 1",
+            (person_id,),
+        ).fetchone()
+        if assigned:
+            conn.close(); return redirect(url_for("admin_page", message=f"That collection is already assigned to {assigned['username']}."))
+    conn.execute(
+        "INSERT INTO users(username,password_hash,is_admin,role,is_superadmin,active,person_id,manager_username) VALUES (?,?,?,?,?,1,?,?)",
+        (username,generate_password_hash(password),1 if role=="admin" else 0,role,0,person_id,manager_username),
+    )
+    linked = conn.execute(
+        "SELECT p.name FROM users u JOIN people p ON p.id=u.person_id WHERE u.username=?",
+        (username,),
+    ).fetchone()
     conn.commit(); conn.close()
-    assignment_note = "" if person_id is None else " and linked to the selected person"
-    return redirect(url_for("admin_page", message=f"Created {role} user {username}{assignment_note}."))
+    assignment_note = f" and assigned collection {linked['name']}" if linked else ""
+    return redirect(url_for("admin_page", message=f"Created {'Admin' if role == 'admin' else 'user'} {username}{assignment_note}."))
 
 
 @app.post("/admin/users/<username>/person")
-@superadmin_required
+@admin_required
 def assign_user_person(username: str):
-    """Associate a web account with its default collection person, or clear the link."""
+    """Assign a collection, or create a fresh collection when the selection is empty."""
+    if not _can_manage_user_account(username):
+        return redirect(url_for("admin_page", message="You can only manage accounts assigned to you."))
     if DATABASE_BACKEND == "postgres":
         from postgres_user_admin import handle_assign_user_person
         return handle_assign_user_person(username)
@@ -3523,34 +4124,48 @@ def assign_user_person(username: str):
     conn = connect_inventory()
     ensure_people_and_auth(conn)
     try:
-        user = conn.execute("SELECT username FROM users WHERE username=?", (username,)).fetchone()
+        user = conn.execute("SELECT username, person_id FROM users WHERE username=?", (username,)).fetchone()
         if not user:
             return redirect(url_for("admin_page", message="Web user not found."))
         if person_id is not None:
             person = conn.execute("SELECT id,name,active FROM people WHERE id=?", (person_id,)).fetchone()
             if not person or not int(person["active"]):
                 return redirect(url_for("admin_page", message="Choose an active person."))
-            other = conn.execute(
-                "SELECT username FROM users WHERE person_id=? AND username<>? COLLATE NOCASE",
+            assigned = conn.execute(
+                """SELECT username FROM users
+                   WHERE person_id=? AND lower(username)<>lower(?) LIMIT 1""",
                 (person_id, username),
             ).fetchone()
-            if other:
-                return redirect(url_for("admin_page", message=f"{person['name']} is already linked to {other['username']}. Unlink that account first."))
+            if assigned:
+                return redirect(url_for(
+                    "admin_page",
+                    message=f"{person['name']} is already assigned to {assigned['username']}. Choose an unassigned collection instead.",
+                ))
         conn.execute("UPDATE users SET person_id=? WHERE username=?", (person_id, username))
+        linked = conn.execute(
+            "SELECT p.id,p.name FROM users u JOIN people p ON p.id=u.person_id WHERE lower(u.username)=lower(?)",
+            (username,),
+        ).fetchone()
         conn.commit()
-        person_name = conn.execute("SELECT name FROM people WHERE id=?", (person_id,)).fetchone()[0] if person_id is not None else None
-        message = f"Linked {username} to {person_name}." if person_name else f"Removed the person assignment for {username}."
+        if linked and person_id is None:
+            message = f"Assigned {username} a new collection ({linked['name']})."
+        else:
+            message = f"Linked {username} to {linked['name']}." if linked else f"Could not resolve a collection for {username}."
         return redirect(url_for("admin_page", message=message))
     except sqlite3.IntegrityError:
         conn.rollback()
-        return redirect(url_for("admin_page", message="That person is already linked to another account."))
+        return redirect(url_for("admin_page", message="That collection is already assigned to another account."))
     finally:
         conn.close()
 
 
+
+
 @app.post("/admin/users/<username>/toggle")
-@superadmin_required
+@admin_required
 def toggle_user(username):
+    if not _can_manage_user_account(username):
+        return redirect(url_for("admin_page", message="You can only manage accounts assigned to you."))
     if DATABASE_BACKEND == "postgres":
         from postgres_user_admin import handle_toggle_user
         return handle_toggle_user(username)
@@ -3573,8 +4188,10 @@ def toggle_user(username):
 
 
 @app.post("/admin/users/<username>/password")
-@superadmin_required
+@admin_required
 def admin_reset_user_password(username):
+    if not _can_manage_user_account(username):
+        return redirect(url_for("admin_page", message="You can only manage accounts assigned to you."))
     if DATABASE_BACKEND == "postgres":
         from postgres_user_admin import handle_admin_reset_user_password
         return handle_admin_reset_user_password(username)
@@ -3587,8 +4204,10 @@ def admin_reset_user_password(username):
 
 
 @app.post("/admin/users/<username>/rename")
-@superadmin_required
+@admin_required
 def rename_user(username):
+    if not _can_manage_user_account(username):
+        return redirect(url_for("admin_page", message="You can only manage accounts assigned to you."))
     if DATABASE_BACKEND == "postgres":
         from postgres_user_admin import handle_rename_user
         return handle_rename_user(username)
@@ -3615,6 +4234,72 @@ def rename_user(username):
     except sqlite3.IntegrityError:
         conn.rollback()
         return redirect(url_for("admin_page", message="That username already exists."))
+    finally:
+        conn.close()
+
+
+@app.post("/admin/users/<username>/manager")
+@superadmin_required
+def change_user_manager(username):
+    """Assign or change an existing account's manager (Superadmin only)."""
+    if DATABASE_BACKEND == "postgres":
+        from postgres_user_admin import handle_change_user_manager
+        return handle_change_user_manager(username)
+
+    target_username = str(username)[:150]
+    requested_manager = str(request.form.get("manager_username") or "").strip()
+    conn = connect_inventory()
+    ensure_people_and_auth(conn)
+    try:
+        user = conn.execute(
+            """
+            SELECT username, role, is_admin, is_superadmin
+            FROM users
+            WHERE lower(username)=lower(?)
+            """,
+            (target_username,),
+        ).fetchone()
+        if not user:
+            return redirect(url_for("admin_page", message="User not found."))
+        role = str(user["role"] or "").strip().lower()
+        if int(user["is_superadmin"]) or role == "superadmin":
+            return redirect(url_for("admin_page", message="Superadmin accounts do not have a manager."))
+        manager_username = None
+        if requested_manager:
+            if requested_manager.casefold() == str(user["username"]).casefold():
+                return redirect(url_for("admin_page", message="An account cannot manage itself."))
+            manager = conn.execute(
+                """
+                SELECT username, is_admin, is_superadmin, active
+                FROM users
+                WHERE lower(username)=lower(?)
+                """,
+                (requested_manager,),
+            ).fetchone()
+            if not manager or not int(manager["active"]) or not (
+                int(manager["is_admin"]) or int(manager["is_superadmin"])
+            ):
+                return redirect(url_for("admin_page", message="Choose an active administrator as the manager."))
+            if role == "admin" and not int(manager["is_superadmin"]):
+                return redirect(url_for("admin_page", message="Admin accounts must report directly to a Superadmin."))
+            manager_username = str(manager["username"])
+        elif role == "admin":
+            return redirect(url_for("admin_page", message="Admin accounts must report directly to a Superadmin."))
+
+        conn.execute(
+            "UPDATE users SET manager_username=? WHERE username=?",
+            (manager_username, user["username"]),
+        )
+        conn.commit()
+        message = (
+            f"Updated manager for {user['username']} to {manager_username}."
+            if manager_username
+            else f"Removed the manager from {user['username']}."
+        )
+        return redirect(url_for("admin_page", message=message))
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return redirect(url_for("admin_page", message="Could not update the account manager."))
     finally:
         conn.close()
 
@@ -3650,8 +4335,10 @@ def change_user_role(username):
 
 
 @app.post("/admin/users/<username>/delete")
-@superadmin_required
+@admin_required
 def delete_user(username):
+    if not _can_manage_user_account(username):
+        return redirect(url_for("admin_page", message="You can only manage accounts assigned to you."))
     if DATABASE_BACKEND == "postgres":
         from postgres_user_admin import handle_delete_user
         return handle_delete_user(username)
@@ -3723,6 +4410,8 @@ def set_counts():
         return jsonify({"success": False, "error": "Counts must be whole numbers."}), 400
     if not scryfall_id or not owner:
         return jsonify({"success": False, "error": "scryfall_id and owner are required"}), 400
+    if not _can_manage_person_name(owner):
+        return jsonify({"success": False, "error": "You can only edit a collection you manage."}), 403
 
     if DATABASE_BACKEND == "postgres":
         from postgres_inventory_counts import set_inventory_finish_counts
@@ -3788,17 +4477,32 @@ def set_counts():
 def index():
     search = request.args.get("q", "").strip()
     owner_explicit = "owner" in request.args
-    owner_filter = request.args.get("owner", "").strip()
-    # A linked account starts in its own collection. Selecting "All owners"
-    # sends owner= explicitly, which preserves that choice across form submits.
-    if not owner_explicit:
-        user = current_user()
-        owner_filter = str(user["person_name"] or "").strip() if user else ""
+    requested_owner = request.args.get("owner", "").strip()
+    user = current_user()
+    editable_owners = _accessible_person_names(user)
+    include_public_cards = request.args.get("public", "").strip().lower() in {"1", "true", "yes", "on"}
+    owner_filter = _effective_inventory_owner(
+        user,
+        requested_owner,
+        owner_explicit=owner_explicit,
+        include_public=include_public_cards,
+    )
+    editable_deck_ids = _editable_deck_ids(user)
     finish_filter = request.args.get("finish", "").strip().lower()
     type_filter = request.args.get("type", "").strip()
     color_filter = request.args.get("color", "").strip().lower()
-    location_filter = request.args.get("location", "").strip()
-    vending_filter = request.args.get("vending", "").strip().lower()
+    public_filters_restricted = include_public_cards
+    if include_public_cards:
+        # Public mode shares card information, not collection-specific metadata.
+        # Ignore search qualifiers that would infer storage/deck/vending details.
+        search = re.sub(
+            r'(?<!\S)-?(?:loc|location|deck|vending)(?::|=)(?:"(?:\\.|[^"\\])*"|\S+)',
+            " ",
+            search,
+            flags=re.IGNORECASE,
+        ).strip()
+    location_filter = "" if public_filters_restricted else request.args.get("location", "").strip()
+    vending_filter = "" if public_filters_restricted else request.args.get("vending", "").strip().lower()
     if vending_filter not in {"", "yes", "no"}:
         vending_filter = ""
     if finish_filter not in {"", "normal", "foil"}:
@@ -3824,8 +4528,12 @@ def index():
     except (TypeError, ValueError):
         page = 1
 
-    only_owner_scope = bool(owner_filter) and not (
-        search or finish_filter or type_filter or color_filter or location_filter or vending_filter
+    only_owner_scope = (
+        bool(owner_filter)
+        and not isinstance(owner_filter, (list, tuple, set))
+        and not (
+            search or finish_filter or type_filter or color_filter or location_filter or vending_filter
+        )
     )
     if only_owner_scope:
         # The common default view is a linked person's collection. One grouped
@@ -3869,9 +4577,21 @@ def index():
             )
         finally:
             conn.close()
+        if not is_superadmin_user(user):
+            visible_owners = list(editable_owners)
+            if include_public_cards:
+                visible_owners.extend(_public_person_names())
+            allowed = {name.casefold() for name in visible_owners}
+            owners = [name for name in owners if str(name).casefold() in allowed]
     else:
         conn = connect_inventory()
         owners = active_people(conn)
+        if not is_superadmin_user(user):
+            visible_owners = list(editable_owners)
+            if include_public_cards:
+                visible_owners.extend(_public_person_names())
+            allowed = {name.casefold() for name in visible_owners}
+            owners = [name for name in owners if str(name).casefold() in allowed]
         decks = conn.execute("SELECT id, name FROM decklists ORDER BY name COLLATE NOCASE").fetchall()
         total_rows = conn.execute("SELECT COUNT(*) FROM inventory").fetchone()[0]
         total_cards = conn.execute("SELECT COALESCE(SUM(IFNULL(quantity,1)),0) FROM inventory").fetchone()[0]
@@ -3879,6 +4599,49 @@ def index():
         if "Free" not in locations:
             locations.insert(0, "Free")
         conn.close()
+
+    if not is_superadmin_user(user):
+        # Storage locations are private metadata and are never exposed for
+        # public-only collections, even when their cards are included.
+        readable_owner_names = list(editable_owners)
+        if readable_owner_names:
+            from_marks = ", ".join("?" for _ in readable_owner_names)
+            game_filter = " AND game_id = 'mtg'" if DATABASE_BACKEND == "postgres" else ""
+            location_conn = _account_connection()
+            try:
+                locations = [
+                    row["location"]
+                    for row in location_conn.execute(
+                        f"""
+                        SELECT location
+                        FROM (
+                            SELECT DISTINCT COALESCE(location, 'Free') AS location
+                            FROM {_account_table('inventory')}
+                            WHERE 1 = 1 {game_filter}
+                              AND lower(COALESCE(owner, 'Me')) IN ({from_marks})
+                        ) AS visible_locations
+                        ORDER BY lower(location), location
+                        """,
+                        [name.casefold() for name in readable_owner_names],
+                    ).fetchall()
+                ]
+            finally:
+                location_conn.close()
+        else:
+            locations = ["Free"]
+
+    if not is_superadmin_user(user):
+        visible_owners = list(editable_owners)
+        if include_public_cards:
+            visible_owners.extend(_public_person_names())
+        allowed = {name.casefold() for name in visible_owners}
+        owner_totals = {name: value for name, value in owner_totals.items() if name.casefold() in allowed}
+        owner_counts = {name: value for name, value in owner_counts.items() if name.casefold() in allowed}
+        grand_total = sum(float(value or 0) for value in owner_totals.values())
+        global_finish_totals = {
+            finish: sum(int(counts.get(finish, 0) or 0) for counts in owner_counts.values())
+            for finish in ("normal", "foil")
+        }
 
     return render_template(
         "index.html",
@@ -3892,7 +4655,13 @@ def index():
         global_finish_totals=global_finish_totals,
         visible_finish_totals=visible_finish_totals,
         owners=owners,
-        selected_owner=owner_filter,
+        selected_owner=(
+            requested_owner
+            if owner_explicit and requested_owner
+            else owner_filter if isinstance(owner_filter, str) else ""
+        ),
+        include_public_cards=include_public_cards,
+        public_filters_restricted=public_filters_restricted,
         owner_explicit=owner_explicit,
         selected_finish=finish_filter,
         selected_type=type_filter,
@@ -3901,6 +4670,7 @@ def index():
         selected_vending=vending_filter,
         locations=locations,
         decks=decks,
+        editable_deck_ids=editable_deck_ids,
         search=search,
         sort_key=sort_key,
         direction=direction,
@@ -3912,8 +4682,9 @@ def index():
         total_rows=total_rows,
         total_cards=total_cards,
         postgres_mode=(DATABASE_BACKEND == 'postgres'),
-        admin_user=current_admin(),
-        admin_is_superadmin=is_superadmin_user(current_user()),
+        editable_owners=editable_owners,
+        admin_user=(current_admin() or (str(user["username"]) if user and str(user["role"]).lower() in {"user", "member"} else None)),
+        admin_is_superadmin=is_superadmin_user(user),
     )
 
 
@@ -3927,22 +4698,29 @@ def update_inventory():
         return jsonify({"success": False, "error": "Invalid id"}), 400
     field = data.get("field")
     value = data.get("value")
+    if not _inventory_row_for_write(item_id):
+        return jsonify({"success": False, "error": "Inventory row not found."}), 404
+    if not _can_manage_inventory_row(item_id):
+        return jsonify({"success": False, "error": "You can only edit cards in collections you manage."}), 403
     if field not in {"quantity", "owner", "finish", "location", "for_vending", "deck_id"}:
         return jsonify({"success": False, "error": "Invalid field"}), 400
     if field == "quantity":
         value = parse_qty(value)
     elif field == "owner":
         value = str(value or "Me").strip()[:100] or "Me"
-        if DATABASE_BACKEND != "postgres":
-            conn_check = connect_inventory()
-            ensure_people_and_auth(conn_check)
+        conn_check = _account_connection()
+        try:
+            active_clause = "active IS TRUE" if DATABASE_BACKEND == "postgres" else "active=1"
             valid = conn_check.execute(
-                "SELECT 1 FROM people WHERE name = ? AND active=1",
+                f"SELECT 1 FROM {_account_table('people')} WHERE lower(name)=lower(?) AND {active_clause} LIMIT 1",
                 (value,),
             ).fetchone()
+        finally:
             conn_check.close()
-            if not valid:
-                return jsonify({"success": False, "error": "Owner is not active"}), 400
+        if not valid:
+            return jsonify({"success": False, "error": "Owner is not active"}), 400
+        if not _can_manage_person_name(value):
+            return jsonify({"success": False, "error": "You cannot move cards into a collection you do not manage."}), 403
     elif field == "finish":
         value = normalize_finish(value)
     elif field == "location":
@@ -4023,6 +4801,59 @@ def bulk_update_inventory():
     data = request.get_json(silent=True) or {}
 
     if DATABASE_BACKEND == "postgres":
+        raw_ids = data.get("ids")
+        if not isinstance(raw_ids, list):
+            return jsonify({"success": False, "error": "Select one or more inventory rows."}), 400
+        scoped_ids: list[int] = []
+        seen_ids: set[int] = set()
+        for raw_id in raw_ids:
+            try:
+                item_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if item_id > 0 and item_id not in seen_ids:
+                seen_ids.add(item_id)
+                scoped_ids.append(item_id)
+        if not scoped_ids or len(scoped_ids) > 5000:
+            return jsonify({"success": False, "error": "Select one or more valid inventory rows (maximum 5,000)."}), 400
+        if not _can_manage_inventory_rows(scoped_ids):
+            return jsonify({"success": False, "error": "You can only edit cards in collections you manage."}), 403
+        owner_supplied = "owner" in data and data.get("owner") not in (None, "", "unchanged")
+        owner_value = " ".join(str(data.get("owner") or "").split())[:100] if owner_supplied else None
+        if owner_supplied:
+            owner_conn = _account_connection()
+            try:
+                valid_owner = owner_conn.execute(
+                    f"""SELECT 1 FROM {_account_table('people')}
+                        WHERE lower(name)=lower(?) AND active IS TRUE LIMIT 1""",
+                    (owner_value,),
+                ).fetchone()
+            finally:
+                owner_conn.close()
+            if not valid_owner:
+                return jsonify({"success": False, "error": "Choose an active owner from the people list."}), 400
+            if not _can_manage_person_name(owner_value):
+                return jsonify({"success": False, "error": "You cannot move cards into a collection you do not manage."}), 403
+        raw_deck = data.get("deck_id", "unchanged")
+        if "deck_id" in data and raw_deck not in (None, "", "unchanged", "none", "unassigned", "null"):
+            try:
+                requested_deck_id = int(raw_deck)
+            except (TypeError, ValueError):
+                return jsonify({"success": False, "error": "Invalid deck selection."}), 400
+            deck_conn = _account_connection()
+            try:
+                valid_deck = deck_conn.execute(
+                    f"""SELECT 1 FROM {_account_table('decklists')}
+                        WHERE id=? AND game_id='mtg' LIMIT 1""",
+                    (requested_deck_id,),
+                ).fetchone()
+            finally:
+                deck_conn.close()
+            if not valid_deck:
+                return jsonify({"success": False, "error": "Selected deck does not exist."}), 400
+            if not _can_manage_deck(requested_deck_id):
+                return jsonify({"success": False, "error": "You cannot assign cards to a deck you do not manage."}), 403
+
         from postgres_inventory_bulk import apply_bulk_inventory_update
 
         result = apply_bulk_inventory_update(data)
@@ -4054,6 +4885,8 @@ def bulk_update_inventory():
         return jsonify({"success": False, "error": "Select one or more inventory rows."}), 400
     if len(ids) > 5000:
         return jsonify({"success": False, "error": "Select at most 5,000 rows per bulk operation."}), 400
+    if not _can_manage_inventory_rows(ids):
+        return jsonify({"success": False, "error": "You can only edit cards in collections you manage."}), 403
 
     assignments: list[str] = []
     values: list[Any] = []
@@ -4091,6 +4924,18 @@ def bulk_update_inventory():
             conn.close()
         if not valid_owner:
             return jsonify({"success": False, "error": "Choose an active owner from the people list."}), 400
+        if not _can_manage_person_name(owner_value):
+            return jsonify({"success": False, "error": "You cannot move cards into a collection you do not manage."}), 403
+    if deck_supplied and deck_value is not None:
+        conn = connect_inventory()
+        try:
+            valid_deck = conn.execute("SELECT 1 FROM decklists WHERE id=?", (deck_value,)).fetchone()
+        finally:
+            conn.close()
+        if not valid_deck:
+            return jsonify({"success": False, "error": "Selected deck does not exist."}), 400
+        if not _can_manage_deck(deck_value):
+            return jsonify({"success": False, "error": "You cannot assign cards to a deck you do not manage."}), 403
     if deck_supplied and deck_value is not None and vending_value == 1:
         return jsonify({"success": False, "error": "A card cannot be assigned to a deck and marked for vending in the same operation."}), 400
 
@@ -4146,6 +4991,10 @@ def move_quantity():
     except (TypeError, ValueError):
         return jsonify({"success": False, "error": "Invalid item or quantity."}), 400
     destination = " ".join(str(data.get("destination") or "").strip().split())[:120] or "Free"
+    if not _inventory_row_for_write(item_id):
+        return jsonify({"success": False, "error": "Inventory row not found."}), 404
+    if not _can_manage_inventory_row(item_id):
+        return jsonify({"success": False, "error": "You can only move cards in collections you manage."}), 403
     if move_qty < 1:
         return jsonify({"success": False, "error": "Quantity must be at least 1."}), 400
 
@@ -4251,6 +5100,10 @@ def move_quantity():
 @app.delete("/delete/<int:item_id>")
 @admin_required
 def delete_item(item_id: int):
+    if not _inventory_row_for_write(item_id):
+        return jsonify({"success": False})
+    if not _can_manage_inventory_row(item_id):
+        return jsonify({"success": False, "error": "You can only delete cards in collections you manage."}), 403
     if DATABASE_BACKEND == "postgres":
         from postgres_inventory_delete import delete_inventory_item
 
@@ -4296,6 +5149,21 @@ def import_csv():
     )
     owner_override = str(request.form.get("owner") or "").strip()[:100]
     location_override = str(request.form.get("location") or "").strip()[:120]
+    actor = current_user()
+    allowed_owners = None
+    default_owner = ""
+    if actor and not is_superadmin_user(actor):
+        allowed_names = _accessible_person_names(actor)
+        owner_lookup = {str(name).casefold(): str(name) for name in allowed_names}
+        if owner_override and owner_override.casefold() not in owner_lookup:
+            return jsonify({"success": False, "error": "You can only import cards into collections assigned to your account."}), 403
+        if owner_override:
+            owner_override = owner_lookup[owner_override.casefold()]
+        else:
+            default_owner = owner_lookup.get(str(actor["person_name"] or "").strip().casefold(), "")
+        allowed_owners = list(owner_lookup.values())
+        if not allowed_owners:
+            return jsonify({"success": False, "error": "Your account is not linked to an active collection."}), 403
 
     def manabox_finish(row: dict[str, Any]) -> str:
         # ManaBox exports a dedicated Foil boolean. It must override a generic
@@ -4318,6 +5186,8 @@ def import_csv():
                 reader,
                 owner_override=owner_override,
                 location_override=location_override,
+                allowed_owners=allowed_owners,
+                default_owner=default_owner,
                 parse_quantity=parse_qty,
                 normalize_finish=normalize_finish,
                 parse_foil_flag=_import_foil_flag,
@@ -4348,7 +5218,11 @@ def import_csv():
 
     conn = connect_inventory()
     ensure_people_and_auth(conn)
-    known_owners = {n.casefold() for n in active_people(conn)}
+    known_owner_lookup = {n.casefold(): n for n in active_people(conn)}
+    allowed_lookup = (
+        {str(name).casefold(): str(name) for name in allowed_owners}
+        if allowed_owners is not None else None
+    )
     unknown_owners: set[str] = set()
     count = 0
     skipped = 0
@@ -4363,11 +5237,17 @@ def import_csv():
         if rarity.islower():
             rarity = rarity.title()  # ManaBox uses lowercase (common, mythic...)
         price = get(row, "price", "scanned price", "scanned_price", "purchase price", default="0.00")
-        owner = owner_override or str(get(row, "owner", default="Me") or "Me").strip()[:100] or "Me"
-        if owner.casefold() not in known_owners:
-            unknown_owners.add(owner)
+        raw_owner = owner_override or str(
+            get(row, "owner", default=default_owner or "Me") or default_owner or "Me"
+        ).strip()[:100] or default_owner or "Me"
+        canonical_owner = known_owner_lookup.get(raw_owner.casefold())
+        if canonical_owner is None or (
+            allowed_lookup is not None and raw_owner.casefold() not in allowed_lookup
+        ):
+            unknown_owners.add(raw_owner)
             skipped += 1
             continue
+        owner = allowed_lookup.get(raw_owner.casefold(), canonical_owner) if allowed_lookup is not None else canonical_owner
         qty = parse_qty(get(row, "quantity", "qty", default=1))
         finish = manabox_finish(row)
         scan_time = get(row, "scan_date", "scan_time", "scan time", "date", "added", default=datetime.now(timezone.utc).isoformat())
@@ -4403,7 +5283,8 @@ def import_csv():
 @app.get("/export_csv")
 @admin_required
 def export_csv():
-    inventory, _, _, _, _, _ = inventory_rows("", "", "", "date", "desc")
+    owner = _effective_inventory_owner(current_user(), request.args.get("owner", ""))
+    inventory, _, _, _, _, _ = inventory_rows("", owner, "", "date", "desc")
     out = io.StringIO(newline="")
     writer = csv.writer(out)
     writer.writerow([
@@ -4428,7 +5309,7 @@ def export_csv():
 @admin_required
 def export_manabox_csv():
     """Export in ManaBox's collection CSV format (Collection > menu > Import)."""
-    owner = request.args.get("owner", "").strip()
+    owner = _effective_inventory_owner(current_user(), request.args.get("owner", ""))
     inventory, _, _, _, _, _ = inventory_rows("", owner, "", "date", "desc")
     out = io.StringIO(newline="")
     writer = csv.writer(out)
@@ -4491,7 +5372,11 @@ def _scanner_person_options(conn: sqlite3.Connection, people_rows=None) -> list[
     if people_rows is None:
         people_rows = conn.execute(
             """SELECT p.id, p.name, u.username AS account_id
-               FROM people p LEFT JOIN users u ON u.person_id=p.id AND u.active=1
+               FROM people p
+               LEFT JOIN users u
+                 ON u.active=1 AND (
+                   u.person_id=p.id
+                 )
                WHERE p.active=1 ORDER BY p.name COLLATE NOCASE"""
         ).fetchall()
     return [
@@ -4577,24 +5462,29 @@ def _scanner_mobile_authorized_people(conn: sqlite3.Connection, user) -> list[di
         from postgres_scanner import fetch_mobile_authorized_people
 
         return fetch_mobile_authorized_people(
-            conn, user, is_admin=_scanner_user_is_admin(user)
+            conn, user, is_superadmin=is_superadmin_user(user)
         )
 
     ensure_people_and_auth(conn)
-    if _scanner_user_is_admin(user):
+    if is_superadmin_user(user):
         rows = conn.execute(
             """SELECT p.id,p.name,u.username AS account_id
-               FROM people p LEFT JOIN users u ON u.person_id=p.id AND u.active=1
+               FROM people p
+               LEFT JOIN users u ON u.active=1 AND u.person_id=p.id
                WHERE p.active=1 ORDER BY p.name COLLATE NOCASE"""
         ).fetchall()
     else:
-        if user["person_id"] is None:
+        managed = _managed_usernames(user)
+        if not managed:
             return []
+        placeholders = ", ".join("?" for _ in managed)
         rows = conn.execute(
-            """SELECT p.id,p.name,u.username AS account_id
-               FROM people p JOIN users u ON u.person_id=p.id
-               WHERE p.active=1 AND u.active=1 AND u.username=? AND p.id=?""",
-            (user["username"], user["person_id"]),
+            f"""SELECT p.id,p.name,u.username AS account_id
+                FROM people p
+                JOIN users u ON u.active=1 AND u.person_id=p.id
+                WHERE p.active=1 AND lower(u.username) IN ({placeholders})
+                ORDER BY p.name COLLATE NOCASE""",
+            [name.casefold() for name in managed],
         ).fetchall()
     return _scanner_person_options(conn, rows)
 
@@ -6607,6 +7497,8 @@ def decks_page():
     query = str(request.args.get("q") or "").strip().casefold()
     selected_tag = str(request.args.get("tag") or "").strip()
     selected_person = str(request.args.get("person") or "").strip()
+    user = current_user()
+    editable_owners = _accessible_person_names(user)
     if DATABASE_BACKEND == "postgres":
         from postgres_app_db import connect_app_database
         from postgres_decks import fetch_deck_list_data
@@ -6631,6 +7523,30 @@ def decks_page():
             ).fetchall()
         ]
         conn.close()
+    if not is_superadmin_user(user):
+        allowed_names = {name.casefold() for name in editable_owners}
+        rows = [
+            row for row in rows
+            if str(dict(row).get("person_name") or "").strip().casefold() in allowed_names
+        ]
+        owners = [name for name in owners if str(name).casefold() in allowed_names]
+        if allowed_names:
+            owner_marks = ", ".join("?" for _ in allowed_names)
+            location_conn = _account_connection()
+            try:
+                locations = [
+                    row["location"] for row in location_conn.execute(
+                        f"""SELECT DISTINCT COALESCE(location, 'Free') AS location
+                            FROM {_account_table('inventory')}
+                            WHERE lower(COALESCE(owner, 'Me')) IN ({owner_marks})
+                            ORDER BY location""",
+                        [name.casefold() for name in allowed_names],
+                    ).fetchall()
+                ]
+            finally:
+                location_conn.close()
+        else:
+            locations = []
     decks: list[dict[str, Any]] = []
     all_tags: dict[str, str] = {}
     for row in rows:
@@ -6646,6 +7562,7 @@ def decks_page():
             all_tags.setdefault(tag.casefold(), tag)
         deck["cover_url"] = deck_cover_url(deck)
         deck["person_name"] = str(deck.get("person_name") or "").strip()
+        deck["editable"] = deck["person_name"].casefold() in {name.casefold() for name in editable_owners}
         if query and query not in " ".join([deck.get("name") or "", deck.get("source") or "", deck["person_name"], " ".join(deck["tags"])]).casefold():
             continue
         if selected_tag and selected_tag.casefold() not in {t.casefold() for t in deck["tags"]}:
@@ -6655,8 +7572,8 @@ def decks_page():
         decks.append(deck)
     current_user_row = current_user()
     default_person = str(current_user_row["person_name"] or "").strip() if current_user_row else ""
-    if not default_person and owners:
-        default_person = owners[0]
+    if default_person not in editable_owners:
+        default_person = editable_owners[0] if editable_owners else ""
     person_options = sorted({str(d.get("person_name") or "Unassigned") for d in (dict(r) for r in rows)}, key=str.casefold)
     grouped: dict[str, list[dict[str, Any]]] = {}
     for deck in decks:
@@ -6668,6 +7585,8 @@ def decks_page():
         message=request.args.get("message", ""), q=request.args.get("q", ""), selected_tag=selected_tag,
         selected_person=selected_person, tag_options=sorted(all_tags.values(), key=str.casefold),
         person_options=person_options, default_person=default_person,
+        editable_owners=editable_owners,
+        editable_deck_ids={int(deck["id"]) for deck in decks if deck["editable"]},
         postgres_mode=(DATABASE_BACKEND == "postgres"),
     )
 
@@ -6681,7 +7600,8 @@ def decks_import():
     include_extra = bool(request.form.get("include_extra"))
     add_inventory = bool(request.form.get("add_inventory"))
     store_free = bool(request.form.get("store_free"))
-    owner = str(request.form.get("owner") or "").strip()[:100] or "Me"
+    requested_inventory_owner = str(request.form.get("owner") or "").strip()[:100]
+    owner = requested_inventory_owner or "Me"
     location = str(request.form.get("location") or "").strip()[:120]
     source_file = request.files.get("deck_file")
     imported_tags: list[str] = []
@@ -6746,6 +7666,33 @@ def decks_import():
             raise ValueError("No cards were found in the decklist.")
         deck_tags = _clean_tag_list(imported_tags + _clean_tag_list(request.form.get("deck_tags") or ""))
         deck_person = str(request.form.get("deck_person") or "").strip()[:100]
+        if not deck_person:
+            current = current_user()
+            deck_person = str(current["person_name"] or "").strip() if current else ""
+        if not deck_person or not _can_manage_person_name(deck_person):
+            raise ValueError("Choose a deck owner assigned to your account.")
+        if requested_inventory_owner:
+            owner_conn = _account_connection()
+            try:
+                active_inventory_owner = owner_conn.execute(
+                    f"""SELECT 1 FROM {_account_table('people')}
+                        WHERE lower(name)=lower(?) AND active IS TRUE LIMIT 1""",
+                    (requested_inventory_owner,),
+                ).fetchone()
+            finally:
+                owner_conn.close()
+            if not active_inventory_owner:
+                raise ValueError("Choose an active collection for imported inventory.")
+
+        if is_superadmin_user(current_user()):
+            owner = requested_inventory_owner or deck_person
+        else:
+            if requested_inventory_owner:
+                if not _can_manage_person_name(requested_inventory_owner):
+                    raise ValueError("Choose an inventory collection assigned to your account.")
+                if requested_inventory_owner.casefold() != deck_person.casefold():
+                    raise ValueError("Imported inventory must use the selected deck collection.")
+            owner = deck_person
 
         if DATABASE_BACKEND == "postgres":
             from postgres_app_db import connect_app_database
@@ -6872,11 +7819,15 @@ def decks_import():
 @app.post("/decks/<int:deck_id>/settings")
 @admin_required
 def update_deck_settings(deck_id: int):
+    if not _can_manage_deck(deck_id):
+        return redirect(url_for("decks_page", message="You can only change decks assigned to collections you manage."))
     name = " ".join(str(request.form.get("name") or "").split())[:200]
     if not name:
         return redirect(url_for("deck_view", deck_id=deck_id, message="Deck name cannot be empty."))
     tags = _clean_tag_list(request.form.get("deck_tags") or "")
     person_name = str(request.form.get("person_name") or "").strip()[:100]
+    if not _can_manage_person_name(person_name):
+        return redirect(url_for("deck_view", deck_id=deck_id, message="You cannot move this deck to a collection you do not manage."))
     if DATABASE_BACKEND == "postgres":
         from postgres_app_db import connect_app_database
         from postgres_deck_lifecycle import update_deck_settings as pg_update_deck_settings
@@ -6955,6 +7906,8 @@ def _valid_cover_upload(upload) -> tuple[bytes, str]:
 @app.post("/decks/<int:deck_id>/cover")
 @admin_required
 def update_deck_cover(deck_id: int):
+    if not _can_manage_deck(deck_id):
+        return redirect(url_for("decks_page", message="You can only change decks assigned to collections you manage."))
     mode = str(request.form.get("cover_mode") or "none").strip().lower()
     if DATABASE_BACKEND == "postgres":
         from postgres_app_db import connect_app_database
@@ -7089,6 +8042,8 @@ def update_deck_cover(deck_id: int):
 @app.get("/decks/<int:deck_id>")
 @admin_required
 def deck_view(deck_id:int):
+    if not _can_access_deck(deck_id):
+        return render_template("login.html", next_url="", error="You do not have access to this deck."), 403
     fuzzy = request.args.get("fuzzy", "0").strip().lower() in {"1", "true", "yes", "on"}
 
     user = current_user()
@@ -7164,6 +8119,8 @@ def deck_view(deck_id:int):
     cover_cards = [card for card in deck_cards if card.get("scryfall_id")]
     owner = str(deck.get("person_name") or default_owner or "Jonathan").strip()
     comparison, stats = deck_comparison(deck_id, owner, fuzzy=fuzzy)
+    deck_editable = _can_manage_deck(deck_id, user)
+    editable_owners = _accessible_person_names(user)
     price_summary = deck_price_summary(comparison, get_tcg_prices())
     price_meta = get_price_meta()
     return render_template(
@@ -7171,6 +8128,8 @@ def deck_view(deck_id:int):
         price_summary=price_summary, price_meta=price_meta,
         owners=owners, selected_owner=owner, fuzzy=fuzzy, cover_cards=cover_cards,
         message=request.args.get("message", ""),
+        deck_editable=deck_editable,
+        editable_owners=editable_owners,
         postgres_mode=(DATABASE_BACKEND == "postgres"),
     )
 
@@ -7178,6 +8137,8 @@ def deck_view(deck_id:int):
 @app.post("/decks/<int:deck_id>/cards/<int:card_id>/edit")
 @admin_required
 def edit_deck_card(deck_id:int, card_id:int):
+    if not _can_manage_deck(deck_id):
+        return redirect(url_for("decks_page", message="You can only change decks assigned to collections you manage."))
     if DATABASE_BACKEND == "postgres":
         name = " ".join(str(request.form.get("name") or "").strip().split())
         if not name:
@@ -7281,6 +8242,8 @@ def edit_deck_card(deck_id:int, card_id:int):
 @app.post("/decks/<int:deck_id>/cards/add")
 @admin_required
 def add_deck_card(deck_id:int):
+    if not _can_manage_deck(deck_id):
+        return redirect(url_for("decks_page", message="You can only change decks assigned to collections you manage."))
     if DATABASE_BACKEND == "postgres":
         name = " ".join(str(request.form.get("name") or "").strip().split())
         if not name:
@@ -7363,6 +8326,8 @@ def add_deck_card(deck_id:int):
 @app.post("/decks/<int:deck_id>/cards/<int:card_id>/delete")
 @admin_required
 def delete_deck_card(deck_id:int, card_id:int):
+    if not _can_manage_deck(deck_id):
+        return redirect(url_for("decks_page", message="You can only change decks assigned to collections you manage."))
     if DATABASE_BACKEND == "postgres":
         from postgres_app_db import connect_app_database
         from postgres_deck_cards import delete_deck_card as delete_postgres_deck_card
@@ -7411,6 +8376,8 @@ def _deck_available_free_rows(conn: sqlite3.Connection, deck_card: sqlite3.Row, 
 @app.post("/decks/<int:deck_id>/assign-free")
 @admin_required
 def assign_free_to_deck(deck_id:int):
+    if not _can_manage_deck(deck_id):
+        return redirect(url_for("decks_page", message="You can only change decks assigned to collections you manage."))
     fuzzy=str(request.form.get("fuzzy") or "0").strip().lower() in {"1","true","yes","on"}
     if DATABASE_BACKEND == "postgres":
         from postgres_app_db import connect_app_database
@@ -7529,12 +8496,16 @@ def assign_free_to_deck(deck_id:int):
 @admin_required
 def move_inventory_to_deck(deck_id: int):
     """Move a physical copy between deck allocations without changing its owner or printing."""
+    if not _can_manage_deck(deck_id):
+        return redirect(url_for("decks_page", message="You can only change decks assigned to collections you manage."))
     try:
         inventory_id = int(request.form.get("inventory_id") or 0)
         quantity = max(1, int(request.form.get("quantity") or 1))
     except (TypeError, ValueError):
         return redirect(url_for("deck_view", deck_id=deck_id, message="Choose a valid inventory copy and quantity."))
     fuzzy = str(request.form.get("fuzzy") or "0").strip().lower() in {"1", "true", "yes", "on"}
+    if not _can_manage_inventory_row(inventory_id):
+        return redirect(url_for("deck_view", deck_id=deck_id, message="You can only move cards in collections you manage."))
 
     if DATABASE_BACKEND == "postgres":
         from postgres_app_db import connect_app_database
@@ -7687,6 +8658,8 @@ def deck_missing_csv(deck_id:int):
         conn.close()
     if not deck:
         return redirect(url_for("decks_page",message="Deck not found."))
+    if not _can_access_deck(deck_id):
+        return redirect(url_for("decks_page", message="You do not have access to this deck."))
     owner=str(deck["person_name"] or "Jonathan").strip()
     fuzzy=request.args.get("fuzzy","0").strip().lower() in {"1","true","yes","on"}
     comparison,_=deck_comparison(deck_id,owner,fuzzy=fuzzy)
@@ -8154,9 +9127,15 @@ def enrich_metadata():
         from postgres_app_db import connect_app_database
         from postgres_scryfall_metadata import fetch_missing_scryfall_ids
 
+        allowed_owners = (
+            None if is_superadmin_user(current_user())
+            else _accessible_person_names(current_user())
+        )
         conn = connect_app_database()
         try:
-            ids = fetch_missing_scryfall_ids(conn, limit)
+            ids = fetch_missing_scryfall_ids(
+                conn, limit, owners=allowed_owners
+            )
         finally:
             conn.close()
 
@@ -8167,13 +9146,29 @@ def enrich_metadata():
             time.sleep(0.12)
     else:
         conn = connect_inventory()
+        allowed_owners = (
+            None if is_superadmin_user(current_user())
+            else _accessible_person_names(current_user())
+        )
+        owner_sql = ""
+        params = [limit]
+        if allowed_owners is not None:
+            if not allowed_owners:
+                owner_sql = " AND 1=0"
+            else:
+                owner_marks = ", ".join("?" for _ in allowed_owners)
+                owner_sql = (
+                    f" AND lower(COALESCE(owner, 'Me')) IN ({owner_marks})"
+                )
+                params = [*sorted(name.casefold() for name in allowed_owners), limit]
+                # SQL placeholders for collection names precede LIMIT.
         ids = [
             row[0] for row in conn.execute(
                 "SELECT DISTINCT scryfall_id FROM inventory "
                 "WHERE scryfall_id IS NOT NULL AND scryfall_id != '' "
                 "AND scryfall_id NOT IN (SELECT scryfall_id FROM card_metadata) "
-                "LIMIT ?",
-                (limit,),
+                + owner_sql + " LIMIT ?",
+                tuple(params),
             ).fetchall()
         ]
         conn.close()
@@ -8193,6 +9188,8 @@ def enrich_metadata():
 @app.post("/decks/<int:deck_id>/delete")
 @admin_required
 def delete_deck(deck_id: int):
+    if not _can_manage_deck(deck_id):
+        return redirect(url_for("decks_page", message="You can only change decks assigned to collections you manage."))
     if DATABASE_BACKEND == "postgres":
         from postgres_app_db import connect_app_database
         from postgres_deck_lifecycle import delete_deck as pg_delete_deck

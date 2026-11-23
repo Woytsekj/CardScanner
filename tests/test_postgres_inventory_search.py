@@ -316,13 +316,16 @@ class PostgreSQLInventorySearchHTTPTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertIn("/login", response.location)
 
-    def test_non_admin_is_denied(self):
+    def test_user_inventory_search_is_scoped_to_their_collection(self):
         response = self.user_client.get(
             "/search_suggest?q=Mountain",
             base_url="http://localhost",
         )
 
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        payload = response.get_json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["results"], [])
 
 
 if __name__ == "__main__":

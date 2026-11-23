@@ -17,8 +17,10 @@
   <details class="app-nav-menu" id="siteNavMenu" open>
     <summary class="app-nav-toggle" aria-label="Open application navigation"><span aria-hidden="true">☰</span><span>Navigate</span></summary>
     <nav class="app-primary-nav" aria-label="Site navigation">
-      {% if app_is_admin %}
+      {% if app_is_admin or app_can_vend or app_user_role in ['user', 'member'] %}
       <a class="app-nav-link{% if active_page == 'inventory' %} is-active{% endif %}" href="{{ url_for('index') }}"{% if active_page == 'inventory' %} aria-current="page"{% endif %}>Inventory</a>
+      {% endif %}
+      {% if app_is_admin %}
       <a class="app-nav-link{% if active_page == 'decks' %} is-active{% endif %}" href="{{ url_for('decks_page') }}"{% if active_page == 'decks' %} aria-current="page"{% endif %}>Decks</a>
       {% endif %}
       {% if app_can_vend %}<a class="app-nav-link{% if active_page == 'vending' %} is-active{% endif %}" href="{{ url_for('vending_view') }}"{% if active_page == 'vending' %} aria-current="page"{% endif %}>Vending</a>{% endif %}

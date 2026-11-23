@@ -14,7 +14,7 @@ All tables in this migration live in the `app` schema:
 | Table | Purpose |
 | --- | --- |
 | `people` | Named collection owners, with active state |
-| `users` | Web login accounts, password hashes, roles, and optional default person |
+| `users` | Web login accounts, password hashes, roles, default person, and manager |
 | `login_attempts` | Login rate-limit state |
 | `app_state` | String-valued application key/value state |
 | `app_migrations` | One-time application data-migration markers |
@@ -35,8 +35,13 @@ or drop an otherwise valid legacy row.
   importer can preserve SQLite IDs.
 - People and usernames have normalized case-insensitive unique indexes to
   reproduce SQLite `NOCASE` uniqueness.
-- One non-null `users.person_id` can be linked to only one account. Unlinked
-  service/vendor users remain valid.
+- `users.person_id` is the account's sole collection link. A unique index
+  ensures one collection belongs to at most one account; each login has
+  at most one collection link.
+- `users.manager_username` establishes the account reporting hierarchy.
+  Existing non-superadmin accounts are assigned to the active superadmin by
+  migration. Admins manage their own account plus directly assigned User
+  accounts; Superadmins retain global account and collection access.
 - `inventory.owner` and `decklists.person_name` remain as display/source
   snapshots beside nullable `person_id` references. Deleting a person clears
   the relationship but does not erase the historical label.
@@ -99,6 +104,30 @@ The 0005–0007 migrations are schema-only. Their application to development
 PostgreSQL did not import production SQLite rows or replace the production
 databases. The separate artwork database tables remain represented in the
 `catalog` migrations 0002 and 0003.
+
+## Account and collection hierarchy (Migration 0009)
+
+Migration `0009_account_people_hierarchy.sql` adds
+`app.users.manager_username`, a self-reference representing the
+Superadmin → Admin → User reporting chain. Existing non-superadmin accounts
+are assigned to the active superadmin by migration.
+
+Migration `0010_single_collection_per_account.sql` removes the experimental
+`app.user_people` table if it remains from an earlier preview deployment.
+
+Migration `0011_required_account_collections.sql` makes `app.users.person_id`
+NOT NULL and unique. Every existing account without a collection receives a
+new dedicated person row; existing non-null ownership links remain unchanged.
+Database triggers automatically create a collection for newly inserted
+accounts and replace a link if an application explicitly submits an empty
+assignment. Collections cannot be deleted while an account owns them. Deleting
+an account leaves its collection intact and unassigned; no collection or
+inventory is transferred to the account's manager.
+
+Server-side route checks enforce collection-level edit rights. Admins can
+administer User accounts assigned directly to them; Superadmins retain global
+account and collection access. Managing another account does not make that
+account's collection owned by the administrator.
 
 ## Import prerequisites
 

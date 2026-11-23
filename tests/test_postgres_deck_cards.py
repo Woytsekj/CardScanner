@@ -50,7 +50,7 @@ class PostgreSQLDeckCardTests(unittest.TestCase):
                     username, password_hash, is_admin, role,
                     is_superadmin, active
                 )
-                VALUES (?, ?, TRUE, 'admin', FALSE, TRUE)
+                VALUES (?, ?, TRUE, 'superadmin', TRUE, TRUE)
                 """,
                 (self.admin_username, "unused-deck-card-admin-hash"),
             )

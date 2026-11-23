@@ -1780,3 +1780,204 @@ tr.is-active { outline: 2px solid var(--cyan); outline-offset: 1px; border-radiu
     max-height: 94dvh;
   }
 }
+
+
+/* Issue #44: Administration workspaces, account hierarchy, and contained danger zones. */
+.admin-workspaces { display:grid; gap:24px; }
+.admin-workspace-section { min-width:0; }
+.admin-workspace-heading { display:flex; align-items:flex-end; justify-content:space-between; gap:16px; margin:0 0 12px; padding:0 2px 10px; border-bottom:1px solid var(--border); }
+.admin-workspace-heading h2 { margin:0; font-size:21px; }
+.admin-workspace-heading p { margin:4px 0 0; }
+.admin-account-grid,.admin-configuration-grid { align-items:start; }
+.admin-account-grid .admin-panel,.admin-configuration-grid .admin-panel { min-width:0; }
+.account-collection-form { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:end; gap:9px; min-width:min(100%,260px); }
+.account-collection-form label { display:grid; gap:5px; min-width:0; }
+.admin-danger-action { margin-top:6px; padding:6px 9px; border:1px solid color-mix(in srgb,var(--danger,#b65b65) 55%,var(--border)); border-radius:7px; }
+.admin-danger-action > summary { color:var(--danger,#d16b74); cursor:pointer; font-size:12px; font-weight:650; }
+.admin-danger-action[open] { background:color-mix(in srgb,var(--danger,#b65b65) 7%,transparent); }
+.admin-danger-action .button.danger { margin-top:8px; }
+@media (max-width:760px) {
+  .admin-workspace-heading { align-items:flex-start; flex-direction:column; }
+  .account-collection-form { width:100%; grid-template-columns:1fr; }
+}
+
+
+/* Responsive Administration layout: reflow controls instead of squeezing them. */
+.account-workspace .admin-panel,
+.account-workspace .person-row-rich,
+.account-workspace .person-main,
+.account-workspace .person-actions,
+.user-row {
+  min-width: 0;
+}
+.account-workspace .person-row-rich {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr);
+}
+.account-workspace .person-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 10px;
+}
+.account-workspace .person-main > .person-name-form {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) auto;
+  width: 100%;
+  min-width: 0;
+  flex: none;
+}
+.account-workspace .person-main > .person-name-form input {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+.account-workspace .person-main > .badge {
+  grid-column: 1;
+  grid-row: 2;
+  justify-self: start;
+}
+.account-workspace .person-main > .subtle {
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.account-workspace .person-actions {
+  justify-content: flex-start;
+  align-content: center;
+}
+.account-workspace .person-actions > form {
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 auto;
+}
+.account-workspace .person-actions .delete-person-form {
+  flex: 1 1 230px;
+}
+.account-workspace .person-actions .delete-person-form select {
+  flex: 1 1 160px;
+  min-width: 0;
+  max-width: 100%;
+}
+.account-workspace .add-person-form {
+  width: 100%;
+  max-width: 900px;
+}
+.account-workspace .add-person-form input {
+  width: 100%;
+  min-width: 0;
+}
+.user-row {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+}
+.user-row > form {
+  min-width: 0;
+  max-width: 100%;
+}
+.user-row form input,
+.user-row form select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.user-row .account-collection-form {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.user-row .account-collection-form button {
+  max-width: 100%;
+  white-space: normal;
+}
+@media (max-width: 1200px) and (min-width: 761px) {
+  .app-topbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px 16px;
+  }
+  .app-nav-menu {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .app-primary-nav {
+    justify-content: flex-start;
+  }
+  main {
+    padding: 18px clamp(14px, 2vw, 22px) 36px;
+  }
+  .account-workspace .admin-panel {
+    padding: clamp(16px, 1.8vw, 22px);
+  }
+}
+@media (max-width: 760px) {
+  .account-workspace .person-row-rich {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .account-workspace .person-actions {
+    align-items: flex-start;
+  }
+  .account-workspace .person-actions > form {
+    flex: 1 1 100%;
+  }
+  .account-workspace .person-actions .delete-person-form select {
+    width: 100%;
+  }
+  .user-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .user-row > form {
+    width: 100%;
+  }
+  .user-row .account-collection-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+
+/* Owner-controlled public collections and read-only public-card viewer. */
+.public-card-filter {
+  align-self: center;
+  min-width: max-content;
+}
+.public-card-filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  cursor: pointer;
+}
+.public-card-filter-toggle input,
+.collection-visibility-toggle input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent, #159b87);
+}
+.public-card-badge {
+  display: inline-flex;
+  vertical-align: middle;
+  margin: 0 0 0 5px;
+  font-size: 10px;
+}
+.collection-visibility-form {
+  gap: 12px;
+}
+.collection-visibility-toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: fit-content;
+  cursor: pointer;
+}
+@media (max-width: 760px) {
+  .public-card-filter {
+    width: 100%;
+    min-width: 0;
+  }
+  .public-card-filter-toggle {
+    width: 100%;
+  }
+}

@@ -68,11 +68,26 @@ class PostgreSQLInventoryUpdateTests(unittest.TestCase):
                 """
                 INSERT INTO app.users (
                     username, password_hash, is_admin, role,
-                    is_superadmin, active
+                    is_superadmin, active, person_id
                 )
-                VALUES (?, ?, TRUE, 'admin', FALSE, TRUE)
+                VALUES (?, ?, TRUE, 'admin', FALSE, TRUE, ?)
                 """,
-                (self.admin_username, "unused-inventory-update-admin-hash"),
+                (self.admin_username, "unused-inventory-update-admin-hash", self.owner_person_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO app.users (
+                    username, password_hash, is_admin, role,
+                    is_superadmin, active, person_id, manager_username
+                )
+                VALUES (?, ?, FALSE, 'user', FALSE, TRUE, ?, ?)
+                """,
+                (
+                    f"pg-invupdate-managed-{self.token}",
+                    "unused-inventory-update-managed-hash",
+                    self.target_person_id,
+                    self.admin_username,
+                ),
             )
             conn.execute(
                 """
@@ -120,8 +135,12 @@ class PostgreSQLInventoryUpdateTests(unittest.TestCase):
                 )
 
             conn.execute(
-                "DELETE FROM app.users WHERE username IN (?, ?)",
-                (self.admin_username, self.vendor_username),
+                "DELETE FROM app.users WHERE username IN (?, ?, ?)",
+                (
+                    self.admin_username,
+                    self.vendor_username,
+                    f"pg-invupdate-managed-{self.token}",
+                ),
             )
             conn.execute(
                 "DELETE FROM app.people WHERE id IN (?, ?, ?)",

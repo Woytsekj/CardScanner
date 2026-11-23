@@ -131,13 +131,57 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
     def tearDown(self):
         conn = connect_app_database(expected_database="cardscanner_dev")
         try:
-            # Delete only accounts and people created by this test.
+            # Account-insert triggers create one collection per test account.
+            # Find every collection created during this test by its unique token,
+            # including old collections replaced by blank assignment or username
+            # renames. The regular person fixtures do not use this name pattern.
+            generated_collections = conn.execute(
+                """
+                SELECT id
+                FROM app.people
+                WHERE name LIKE ?
+                """,
+                (f"%{self.token}% Collection%",),
+            ).fetchall()
+            generated_collection_ids = [
+                int(row["id"]) for row in generated_collections
+            ]
+
+            # Delete only accounts created by this test. Their collections are
+            # deliberately retained by production behavior, so clean those
+            # test-only rows separately below.
             for username in self.usernames_to_clean:
                 conn.execute(
                     "DELETE FROM app.users WHERE username = ?",
                     (username,),
                 )
 
+            for person_id in generated_collection_ids:
+                # Never remove a collection that has acquired an account,
+                # inventory, or decklist reference, even during test cleanup.
+                conn.execute(
+                    """
+                    DELETE FROM app.people AS p
+                    WHERE p.id = ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM app.users u
+                          WHERE u.person_id = p.id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM app.inventory i
+                          WHERE i.person_id = p.id
+                             OR (i.game_id = 'mtg' AND i.owner = p.name)
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM app.decklists d
+                          WHERE d.person_id = p.id
+                             OR d.person_name = p.name
+                      )
+                    """,
+                    (person_id,),
+                )
+
+            # These are the two explicit person fixtures made by setUp().
             for person_id in self.person_ids_to_clean:
                 conn.execute(
                     "DELETE FROM app.people WHERE id = ?",
@@ -175,7 +219,7 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
             return conn.execute(
                 """
                 SELECT username, password_hash, is_admin, role,
-                       is_superadmin, active, person_id
+                       is_superadmin, active, person_id, manager_username
                 FROM app.users
                 WHERE lower(btrim(username)) = lower(btrim(?))
                 LIMIT 1
@@ -196,8 +240,11 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
         )
         html = response.get_data(as_text=True)
 
-        self.assertIn("Web users</h2>", html)
+        self.assertIn("Web accounts</h3>", html)
         self.assertIn("Create User", html)
+        self.assertIn("Collection", html)
+        self.assertNotIn("Collections this account can manage", html)
+        self.assertNotIn("default_person_id", html)
         self.assertIn("Reset password", html)
         self.assertIn(self.superadmin_username, html)
         self.assertIn(self.admin_username, html)
@@ -211,6 +258,26 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
         self.assertIn('action="/admin/enrich_metadata"', html)
         self.assertIn('action="/admin/refresh_scryfall_bulk"', html)
         self.assertNotIn("Back to inventory", html)
+
+    def test_admin_page_keeps_an_inactive_owned_collection_selected(self):
+        conn = connect_app_database(expected_database="cardscanner_dev")
+        try:
+            conn.execute(
+                "UPDATE app.users SET person_id = ? WHERE username = ?",
+                (self.inactive_person_id, self.admin_username),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        response = self.superadmin_client.get("/admin", base_url="http://localhost")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        html = response.get_data(as_text=True)
+        expected = (
+            f'value="{self.inactive_person_id}" selected>'
+            f'{self.inactive_person_name} (inactive)</option>'
+        )
+        self.assertIn(expected, html)
 
     def test_create_user_hashes_password_and_assigns_active_person(self):
         username = f"pg-useradmin-created-{self.token}"
@@ -228,7 +295,7 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 302)
-        self.assertIn(f"Created admin user {username}", self.message(response))
+        self.assertEqual(self.message(response), f"Created Admin {username} and assigned collection {self.active_person_name}.")
 
         user = self.fetch_user(username)
         self.assertIsNotNone(user)
@@ -239,6 +306,43 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
         self.assertEqual(user["person_id"], self.active_person_id)
         self.assertTrue(check_password_hash(user["password_hash"], password))
 
+    def test_admin_creates_managed_user_with_exactly_one_unowned_collection(self):
+        username = f"pg-useradmin-managed-collection-{self.token}"
+        second_username = f"pg-useradmin-managed-collection-taken-{self.token}"
+        self.track_username(username)
+        self.track_username(second_username)
+
+        created = self.post(
+            "/admin/users",
+            {
+                "username": username,
+                "password": f"Long-Enough-Password-{self.token}",
+                "role": "admin",
+                "person_id": str(self.active_person_id),
+            },
+            client=self.admin_client,
+        )
+        self.assertEqual(created.status_code, 302)
+        self.assertEqual(self.message(created), f"Created user {username} and assigned collection {self.active_person_name}.")
+
+        user = self.fetch_user(username)
+        self.assertEqual(user["role"], "user")
+        self.assertEqual(user["manager_username"], self.admin_username)
+        self.assertEqual(user["person_id"], self.active_person_id)
+
+        duplicate = self.post(
+            "/admin/users",
+            {
+                "username": second_username,
+                "password": f"Long-Enough-Password-{self.token}",
+                "role": "user",
+                "person_id": str(self.active_person_id),
+            },
+            client=self.admin_client,
+        )
+        self.assertEqual(duplicate.status_code, 302)
+        self.assertEqual(self.message(duplicate), "That person is already assigned to another account.")
+        self.assertIsNone(self.fetch_user(second_username))
     def test_create_user_rejects_short_password_and_inactive_person(self):
         short_password = self.post(
             "/admin/users",
@@ -326,7 +430,7 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
         )
         self.assertIsNone(self.fetch_user(username))
 
-    def test_assign_person_enforces_unique_assignment_and_can_unlink(self):
+    def test_assign_person_enforces_unique_assignment_and_blank_creates_replacement(self):
         assigned = self.post(
             f"/admin/users/{self.admin_username}/person",
             {"person_id": str(self.active_person_id)},
@@ -346,19 +450,38 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
             {"person_id": str(self.active_person_id)},
         )
         self.assertEqual(conflict.status_code, 302)
-        self.assertIn("already linked", self.message(conflict))
-        self.assertIsNone(self.fetch_user(self.vendor_username)["person_id"])
+        self.assertIn("already assigned", self.message(conflict))
+        vendor_person_id = self.fetch_user(self.vendor_username)["person_id"]
+        self.assertIsNotNone(vendor_person_id)
 
-        unlinked = self.post(
+        replacement = self.post(
             f"/admin/users/{self.admin_username}/person",
             {"person_id": ""},
         )
-        self.assertEqual(unlinked.status_code, 302)
-        self.assertEqual(
-            self.message(unlinked),
-            f"Removed the person assignment for {self.admin_username}.",
+        self.assertEqual(replacement.status_code, 302)
+        self.assertIn(
+            f"Assigned {self.admin_username} a new collection (",
+            self.message(replacement),
         )
-        self.assertIsNone(self.fetch_user(self.admin_username)["person_id"])
+        replacement_id = self.fetch_user(self.admin_username)["person_id"]
+        self.assertIsNotNone(replacement_id)
+        self.assertNotEqual(replacement_id, self.active_person_id)
+
+    def test_assigned_collection_cannot_be_deleted_while_account_exists(self):
+        assigned_person_id = int(self.fetch_user(self.admin_username)["person_id"])
+        response = self.post(
+            f"/admin/people/{assigned_person_id}/delete",
+            {},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(
+            f"is the collection owned by {self.admin_username}",
+            self.message(response),
+        )
+        self.assertEqual(
+            self.fetch_user(self.admin_username)["person_id"],
+            assigned_person_id,
+        )
 
     def test_assign_person_rejects_inactive_or_invalid_person(self):
         inactive = self.post(
@@ -616,44 +739,306 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
         )
         self.assertIsNone(self.fetch_user(target))
 
-    def test_non_superadmin_cannot_create_or_manage_accounts(self):
-        requests = (
-            (
-                "/admin/users",
-                {
-                    "username": f"pg-useradmin-denied-{self.token}",
-                    "password": f"Long-Enough-Password-{self.token}",
-                    "role": "vendor",
-                },
-            ),
-            (
-                f"/admin/users/{self.vendor_username}/toggle",
-                {},
-            ),
-            (
-                f"/admin/users/{self.vendor_username}/password",
-                {"password": f"Long-Enough-Password-{self.token}"},
-            ),
-            (
-                f"/admin/users/{self.vendor_username}/role",
-                {"role": "admin"},
-            ),
-            (
-                f"/admin/users/{self.vendor_username}/delete",
-                {},
-            ),
+    def test_admin_all_owners_includes_only_own_and_managed_user_collections(self):
+        managed_one = f"pg-useradmin-scope-managed-one-{self.token}"
+        managed_two = f"pg-useradmin-scope-managed-two-{self.token}"
+        unrelated_user = f"pg-useradmin-scope-unrelated-{self.token}"
+        for username in (managed_one, managed_two, unrelated_user):
+            self.track_username(username)
+
+        # An Admin-created User is automatically assigned to that Admin.
+        created_one = self.post(
+            "/admin/users",
+            {
+                "username": managed_one,
+                "password": f"Long-Enough-Password-{self.token}",
+                "role": "user",
+            },
+            client=self.admin_client,
+        )
+        self.assertEqual(created_one.status_code, 302)
+        self.assertEqual(
+            self.fetch_user(managed_one)["manager_username"],
+            self.admin_username,
         )
 
+        # A Superadmin can also assign an existing/new User to this Admin.
+        created_two = self.post(
+            "/admin/users",
+            {
+                "username": managed_two,
+                "password": f"Long-Enough-Password-{self.token}",
+                "role": "user",
+                "manager_username": self.admin_username,
+            },
+            client=self.superadmin_client,
+        )
+        self.assertEqual(created_two.status_code, 302)
+        self.assertEqual(
+            self.fetch_user(managed_two)["manager_username"],
+            self.admin_username,
+        )
+
+        # This User belongs to the Superadmin and must stay outside this Admin's scope.
+        created_unrelated = self.post(
+            "/admin/users",
+            {
+                "username": unrelated_user,
+                "password": f"Long-Enough-Password-{self.token}",
+                "role": "user",
+                "manager_username": self.superadmin_username,
+            },
+            client=self.superadmin_client,
+        )
+        self.assertEqual(created_unrelated.status_code, 302)
+
+        conn = connect_app_database(expected_database="cardscanner_dev")
+        try:
+            admin = conn.execute(
+                """
+                SELECT u.username, u.role, u.is_admin, u.is_superadmin,
+                       u.person_id, p.name AS person_name
+                FROM app.users u
+                JOIN app.people p ON p.id = u.person_id
+                WHERE u.username = ?
+                """,
+                (self.admin_username,),
+            ).fetchone()
+            collection_names = conn.execute(
+                """
+                SELECT u.username, p.name
+                FROM app.users u
+                JOIN app.people p ON p.id = u.person_id
+                WHERE u.username IN (?, ?, ?, ?)
+                """,
+                (
+                    self.admin_username,
+                    managed_one,
+                    managed_two,
+                    unrelated_user,
+                ),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        names_by_user = {
+            str(row["username"]): str(row["name"])
+            for row in collection_names
+        }
+        own_name = names_by_user[self.admin_username]
+        managed_names = {
+            own_name,
+            names_by_user[managed_one],
+            names_by_user[managed_two],
+        }
+        unrelated_name = names_by_user[unrelated_user]
+
+        # The default view remains the Admin's own collection.
+        default_owner = self.app_module._effective_inventory_owner(admin)
+        self.assertEqual(default_owner, own_name)
+
+        # An explicit empty owner filter means all collections in this Admin's scope.
+        all_owners = self.app_module._effective_inventory_owner(
+            admin, "", owner_explicit=True
+        )
+        self.assertIsInstance(all_owners, list)
+        self.assertEqual(set(all_owners), managed_names)
+        self.assertNotIn(unrelated_name, all_owners)
+
+        # PostgreSQL must build an IN filter for the complete scoped owner list.
+        from postgres_inventory import _inventory_filters
+
+        where, args, _, _ = _inventory_filters("", all_owners, "")
+        owner_clause = next(clause for clause in where if "i.owner" in clause)
+        self.assertIn(" IN (", owner_clause)
+        self.assertEqual(args, list(all_owners))
+        self.assertNotIn(unrelated_name, args)
+
+        # The rendered owner selector exposes managed collections but not unrelated users.
+        page = self.admin_client.get(
+            "/?owner=",
+            base_url="http://localhost",
+        )
+        self.assertEqual(page.status_code, 200, page.get_data(as_text=True))
+        html = page.get_data(as_text=True)
+        self.assertIn(names_by_user[managed_one], html)
+        self.assertIn(names_by_user[managed_two], html)
+        self.assertNotIn(unrelated_name, html)
+
+    def test_superadmin_can_reassign_existing_account_managers(self):
+        managed_username = f"pg-useradmin-manager-target-{self.token}"
+        secondary_admin = f"pg-useradmin-manager-admin-{self.token}"
+        self.track_username(managed_username)
+        self.track_username(secondary_admin)
+
+        created_admin = self.post(
+            "/admin/users",
+            {
+                "username": secondary_admin,
+                "password": f"Long-Enough-Password-{self.token}",
+                "role": "admin",
+                "manager_username": self.superadmin_username,
+            },
+        )
+        self.assertEqual(created_admin.status_code, 302)
+        self.assertEqual(self.fetch_user(secondary_admin)["manager_username"], self.superadmin_username)
+
+        created_user = self.post(
+            "/admin/users",
+            {
+                "username": managed_username,
+                "password": f"Long-Enough-Password-{self.token}",
+                "role": "user",
+                "manager_username": self.superadmin_username,
+            },
+        )
+        self.assertEqual(created_user.status_code, 302)
+        self.assertEqual(self.fetch_user(managed_username)["role"], "user")
+
+        # Superadmin may assign an existing User to an active Admin.
+        assigned = self.post(
+            f"/admin/users/{managed_username}/manager",
+            {"manager_username": self.admin_username},
+        )
+        self.assertEqual(assigned.status_code, 302)
+        self.assertEqual(
+            self.message(assigned),
+            f"Updated manager for {managed_username} to {self.admin_username}.",
+        )
+        self.assertEqual(self.fetch_user(managed_username)["manager_username"], self.admin_username)
+
+        # A regular Admin cannot transfer the User to another manager.
+        forbidden = self.post(
+            f"/admin/users/{managed_username}/manager",
+            {"manager_username": self.superadmin_username},
+            client=self.admin_client,
+        )
+        self.assertEqual(forbidden.status_code, 403)
+        self.assertEqual(self.fetch_user(managed_username)["manager_username"], self.admin_username)
+
+        # The Superadmin can move the User again or remove its manager.
+        moved = self.post(
+            f"/admin/users/{managed_username}/manager",
+            {"manager_username": self.superadmin_username},
+        )
+        self.assertEqual(moved.status_code, 302)
+        self.assertEqual(self.fetch_user(managed_username)["manager_username"], self.superadmin_username)
+
+        cleared = self.post(
+            f"/admin/users/{managed_username}/manager",
+            {"manager_username": ""},
+        )
+        self.assertEqual(cleared.status_code, 302)
+        self.assertIsNone(self.fetch_user(managed_username)["manager_username"])
+
+        # Admin accounts must report to a Superadmin, never a regular Admin.
+        admin_to_superadmin = self.post(
+            f"/admin/users/{self.admin_username}/manager",
+            {"manager_username": self.superadmin_username},
+        )
+        self.assertEqual(admin_to_superadmin.status_code, 302)
+        self.assertEqual(self.fetch_user(self.admin_username)["manager_username"], self.superadmin_username)
+
+        invalid_admin_manager = self.post(
+            f"/admin/users/{self.admin_username}/manager",
+            {"manager_username": secondary_admin},
+        )
+        self.assertEqual(invalid_admin_manager.status_code, 302)
+        self.assertEqual(
+            self.message(invalid_admin_manager),
+            "Admin accounts must report directly to a Superadmin.",
+        )
+        self.assertEqual(self.fetch_user(self.admin_username)["manager_username"], self.superadmin_username)
+
+        # Existing-account rows expose the manager editor to Superadmins.
+        page = self.superadmin_client.get("/admin", base_url="http://localhost")
+        self.assertEqual(page.status_code, 200, page.get_data(as_text=True))
+        self.assertIn(f'action="/admin/users/{managed_username}/manager"', page.get_data(as_text=True))
+        self.assertIn("Save manager", page.get_data(as_text=True))
+
+    def test_admin_accounts_must_report_directly_to_a_superadmin(self):
+        username = f"pg-useradmin-nested-admin-{self.token}"
+        self.track_username(username)
+        response = self.post(
+            "/admin/users",
+            {
+                "username": username,
+                "password": f"Long-Enough-Password-{self.token}",
+                "role": "admin",
+                "manager_username": self.admin_username,
+            },
+            client=self.superadmin_client,
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            self.message(response),
+            "Admin accounts must report directly to a Superadmin.",
+        )
+        self.assertIsNone(self.fetch_user(username))
+    def test_admin_can_create_managed_user_but_cannot_change_roles_or_manage_siblings(self):
+        username = f"pg-useradmin-managed-{self.token}"
+        self.track_username(username)
+        created = self.post(
+            "/admin/users",
+            {
+                "username": username,
+                "password": f"Long-Enough-Password-{self.token}",
+                "role": "admin",
+            },
+            client=self.admin_client,
+        )
+        self.assertEqual(created.status_code, 302)
+        self.assertIn(f"Created user {username} and assigned collection ", self.message(created))
+        self.assertIsNotNone(self.fetch_user(username)["person_id"])
+
+        managed = self.fetch_user(username)
+        self.assertEqual(managed["role"], "user")
+        self.assertFalse(managed["is_admin"])
+        self.assertEqual(managed["manager_username"], self.admin_username)
+
+        # The manager can administer their direct user, but cannot elevate it.
+        deactivate = self.post(
+            f"/admin/users/{username}/toggle", {}, client=self.admin_client,
+        )
+        self.assertEqual(deactivate.status_code, 302)
+        self.assertEqual(self.message(deactivate), f"Deactivated {username}.")
+        self.assertFalse(self.fetch_user(username)["active"])
+
+        role_change = self.post(
+            f"/admin/users/{username}/role",
+            {"role": "admin"},
+            client=self.admin_client,
+        )
+        self.assertEqual(role_change.status_code, 403)
+
+        # Existing unassigned vendor accounts are not implicitly adopted.
+        requests = (
+            (f"/admin/users/{self.vendor_username}/toggle", {}),
+            (f"/admin/users/{self.vendor_username}/password", {
+                "password": f"Long-Enough-Password-{self.token}",
+            }),
+            (f"/admin/users/{self.vendor_username}/role", {"role": "admin"}),
+            (f"/admin/users/{self.vendor_username}/delete", {}),
+        )
+        original_vendor = self.fetch_user(self.vendor_username)
+        original_password_hash = original_vendor["password_hash"]
         for path, payload in requests:
             with self.subTest(path=path):
-                response = self.post(
-                    path,
-                    payload,
-                    client=self.admin_client,
-                )
-                self.assertEqual(response.status_code, 403)
+                response = self.post(path, payload, client=self.admin_client)
+                if path.endswith("/role"):
+                    self.assertEqual(response.status_code, 403)
+                else:
+                    self.assertEqual(response.status_code, 302)
+                    self.assertEqual(
+                        self.message(response),
+                        "You can only manage accounts assigned to you.",
+                    )
+                unchanged = self.fetch_user(self.vendor_username)
+                self.assertIsNotNone(unchanged)
+                self.assertEqual(unchanged["password_hash"], original_password_hash)
+                self.assertEqual(unchanged["active"], original_vendor["active"])
 
-    def test_all_eight_user_write_routes_require_csrf(self):
+    def test_all_user_write_routes_require_csrf(self):
         requests = (
             ("/admin/users", {
                 "username": f"pg-useradmin-no-csrf-{self.token}",
@@ -670,6 +1055,9 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
             }),
             (f"/admin/users/{self.vendor_username}/role", {
                 "role": "admin",
+            }),
+            (f"/admin/users/{self.vendor_username}/manager", {
+                "manager_username": self.superadmin_username,
             }),
             (f"/admin/users/{self.vendor_username}/delete", {}),
             ("/admin/password", {

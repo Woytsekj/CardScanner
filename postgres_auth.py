@@ -14,8 +14,8 @@ def load_current_user(username: str):
             """
             SELECT u.username, u.password_hash, u.is_admin, u.role,
                    u.is_superadmin, u.active, u.created_at,
-                   u.last_login_at, u.person_id,
-                   p.name AS person_name
+                   u.last_login_at, u.person_id, u.manager_username,
+                   p.name AS person_name, p.is_public AS collection_is_public
             FROM app.users AS u
             LEFT JOIN app.people AS p ON p.id = u.person_id
             WHERE lower(u.username) = lower(?)
@@ -157,5 +157,18 @@ def clear_login_failures(keys: list[str]) -> None:
                 (key,),
             )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def load_account_person_ids(username: str) -> list[int]:
+    """Return the single collection linked to a login, if one is assigned."""
+    conn = connect_app_database()
+    try:
+        row = conn.execute(
+            "SELECT person_id FROM app.users WHERE lower(username)=lower(?)",
+            (username,),
+        ).fetchone()
+        return [int(row["person_id"])] if row and row["person_id"] is not None else []
     finally:
         conn.close()

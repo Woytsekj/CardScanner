@@ -38,6 +38,7 @@ class PostgreSQLInventoryPageHTTPTests(unittest.TestCase):
         self.token = uuid4().hex
         self.prefix = f"PGInvPage{self.token}"
         self.owner = f"PG Inventory Page Owner {self.token}"
+        self.public_owner = f"PG Inventory Page Public Owner {self.token}"
         self.admin_username = f"pg-invpage-admin-{self.token}"
         self.csrf = f"csrf-invpage-{self.token}"
         self.inventory_names = []
@@ -53,6 +54,15 @@ class PostgreSQLInventoryPageHTTPTests(unittest.TestCase):
                 (self.owner,),
             ).fetchone()
             self.person_id = int(person["id"])
+            public_person = conn.execute(
+                """
+                INSERT INTO app.people (name, active, is_public)
+                VALUES (?, TRUE, TRUE)
+                RETURNING id
+                """,
+                (self.public_owner,),
+            ).fetchone()
+            self.public_person_id = int(public_person["id"])
 
             conn.execute(
                 """
@@ -86,6 +96,21 @@ class PostgreSQLInventoryPageHTTPTests(unittest.TestCase):
                     f"{0.25 + index / 100:.2f}",
                     base_time - timedelta(seconds=index),
                 ))
+
+            public_card_name = f"{self.prefix} Public Card"
+            self.inventory_names.append(public_card_name)
+            inventory_rows.append((
+                public_card_name,
+                "PGI",
+                "PUB",
+                2,
+                self.public_owner,
+                "normal",
+                "PG Public Secret Shelf",
+                False,
+                "1.25",
+                base_time + timedelta(seconds=2),
+            ))
 
             outsider_name = f"{self.prefix} Card 999"
             self.inventory_names.append(outsider_name)
@@ -138,8 +163,8 @@ class PostgreSQLInventoryPageHTTPTests(unittest.TestCase):
                 (self.admin_username,),
             )
             conn.execute(
-                "DELETE FROM app.people WHERE id = ?",
-                (self.person_id,),
+                "DELETE FROM app.people WHERE id IN (?, ?)",
+                (self.person_id, self.public_person_id),
             )
             conn.commit()
         except Exception:
@@ -189,7 +214,7 @@ class PostgreSQLInventoryPageHTTPTests(unittest.TestCase):
         self.assertIn(f"{self.prefix} Card 100", second_html)
         self.assertIn(f"{self.prefix} Card 104", second_html)
 
-    def test_explicit_all_owners_includes_other_owner_rows(self):
+    def test_explicit_all_owners_still_excludes_unassigned_other_owner_rows(self):
         response = self.client.get(
             f"/?q={self.prefix}&owner=&sort=name&dir=asc&page=2",
             base_url="http://localhost",
@@ -197,7 +222,107 @@ class PostgreSQLInventoryPageHTTPTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         html = response.get_data(as_text=True)
         self.assertIn("Search, filter, and manage your collection.", html)
-        self.assertIn(f"{self.prefix} Card 999", html)
+        self.assertNotIn(f"{self.prefix} Card 999", html)
+
+    def test_public_cards_are_opt_in_read_only_and_hide_private_metadata(self):
+        response = self.client.get(
+            f"/?q={self.prefix}&public=1&view=list",
+            base_url="http://localhost",
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        html = response.get_data(as_text=True)
+        self.assertIn(f"{self.prefix} Public Card", html)
+        self.assertNotIn(f"{self.prefix} Card 999", html)
+        self.assertIn("Include public cards", html)
+        self.assertIn("Public", html)
+        self.assertIn("Not shared", html)
+        self.assertNotIn("PG Public Secret Shelf", html)
+
+        # The public toggle remains additive with a specific owner selection.
+        selected_owner = self.client.get(
+            f"/?q={self.prefix}&owner={self.owner.replace(' ', '+')}&public=1&view=list",
+            base_url="http://localhost",
+        )
+        self.assertEqual(selected_owner.status_code, 200, selected_owner.get_data(as_text=True))
+        selected_html = selected_owner.get_data(as_text=True)
+        self.assertIn(f"{self.prefix} Public Card", selected_html)
+        self.assertIn(f'name="owner"', selected_html)
+
+        # Private metadata qualifiers cannot filter public rows or reveal values.
+        private_filter = self.client.get(
+            f"/?q={self.prefix}+loc:%22PG+Public+Secret+Shelf%22&public=1&view=list",
+            base_url="http://localhost",
+        )
+        self.assertEqual(private_filter.status_code, 200, private_filter.get_data(as_text=True))
+        private_filter_html = private_filter.get_data(as_text=True)
+        self.assertIn(f"{self.prefix} Public Card", private_filter_html)
+        self.assertNotIn("PG Public Secret Shelf", private_filter_html)
+        self.assertIn("Location, deck, and vending filters are paused", private_filter_html)
+
+        location_param = self.client.get(
+            f"/?q={self.prefix}&location=PG+Public+Secret+Shelf&public=1&view=list",
+            base_url="http://localhost",
+        )
+        self.assertEqual(location_param.status_code, 200, location_param.get_data(as_text=True))
+        self.assertIn(f"{self.prefix} Public Card", location_param.get_data(as_text=True))
+
+        row_start = html.index(f"{self.prefix} Public Card")
+        row_start = html.rfind('<tr id="row-', 0, row_start)
+        row_end = html.index("</tr>", row_start)
+        public_row = html[row_start:row_end]
+        self.assertNotIn("qty-input", public_row)
+        self.assertNotIn("owner-input", public_row)
+        self.assertNotIn("location-input", public_row)
+
+        hidden = self.client.get(
+            f"/?q={self.prefix}&view=list",
+            base_url="http://localhost",
+        )
+        self.assertEqual(hidden.status_code, 200)
+        self.assertNotIn(f"{self.prefix} Public Card", hidden.get_data(as_text=True))
+
+    def test_account_owner_can_toggle_only_their_own_collection_public(self):
+        preferences = self.client.get("/preferences", base_url="http://localhost")
+        self.assertEqual(preferences.status_code, 200, preferences.get_data(as_text=True))
+        self.assertIn("Make my collection public", preferences.get_data(as_text=True))
+
+        enabled = self.client.post(
+            "/account/collection-visibility",
+            data={"csrf_token": self.csrf, "is_public": "1"},
+            base_url="http://localhost",
+        )
+        self.assertEqual(enabled.status_code, 302)
+
+        conn = connect_app_database(expected_database="cardscanner_dev")
+        try:
+            own = conn.execute(
+                "SELECT is_public FROM app.people WHERE id = ?",
+                (self.person_id,),
+            ).fetchone()
+            other = conn.execute(
+                "SELECT is_public FROM app.people WHERE id = ?",
+                (self.public_person_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertTrue(bool(own["is_public"]))
+        self.assertTrue(bool(other["is_public"]))
+
+        disabled = self.client.post(
+            "/account/collection-visibility",
+            data={"csrf_token": self.csrf},
+            base_url="http://localhost",
+        )
+        self.assertEqual(disabled.status_code, 302)
+        conn = connect_app_database(expected_database="cardscanner_dev")
+        try:
+            own = conn.execute(
+                "SELECT is_public FROM app.people WHERE id = ?",
+                (self.person_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertFalse(bool(own["is_public"]))
 
     def test_combined_finish_location_and_vending_filters(self):
         response = self.client.get(

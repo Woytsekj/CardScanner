@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 
-def fetch_admin_page_data(conn):
-    """Return people and users in the shapes expected by admin.html."""
+def fetch_admin_page_data(conn, *, username=None, superadmin=False):
+    """Return visible people and manageable users for the administration workspace."""
     people = conn.execute(
         """
         SELECT
@@ -37,11 +37,16 @@ def fetch_admin_page_data(conn):
             u.created_at,
             u.last_login_at,
             u.person_id,
+            u.manager_username,
             p.name AS person_name
         FROM app.users AS u
         LEFT JOIN app.people AS p ON p.id = u.person_id
+        WHERE (? IS TRUE OR lower(u.username) = lower(?) OR (lower(u.manager_username) = lower(?) AND lower(u.role) IN ('user', 'member')))
         ORDER BY u.is_superadmin DESC, lower(u.username) COLLATE "C"
-        """
+        """,
+        (bool(superadmin), username, username),
     ).fetchall()
+
+    users = [dict(account) for account in users]
 
     return people, users

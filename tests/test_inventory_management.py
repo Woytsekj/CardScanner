@@ -42,6 +42,23 @@ class InventoryManagementTests(unittest.TestCase):
         app_module._PRICE_CACHE = {"key": None, "prices": {}}
         app_module._AUTH_READY = False
         app_module.migrate_db()
+        # Most legacy inventory/deck regression tests exercise the unrestricted
+        # administrative workflows. Keep their fixture account explicitly
+        # Superadmin; dedicated hierarchy tests create scoped Admin/User accounts.
+        conn = self.connect()
+        app_module.ensure_people_and_auth(conn)
+        conn.execute(
+            """
+            INSERT INTO users(
+                username, password_hash, is_admin, role, is_superadmin, active
+            )
+            VALUES('ci-admin', 'unused-test-password-hash', 1, 'superadmin', 1, 1)
+            ON CONFLICT(username) DO UPDATE SET
+                is_admin=1, is_superadmin=1, role='superadmin', active=1
+            """
+        )
+        conn.commit()
+        conn.close()
         self.client = app_module.app.test_client()
         self.csrf = "unit-test-csrf-token-012345678901234567890"
         with self.client.session_transaction() as session:
@@ -371,10 +388,428 @@ class InventoryManagementTests(unittest.TestCase):
         self.assertIn("Nick Vending Card", vending_page, "vending is shared across owners by default")
 
         deck_id = self.add_deck("Jonathan Deck")
+        deck_conn = self.connect()
+        deck_conn.execute(
+            "UPDATE decklists SET person_name='Jonathan' WHERE id=?",
+            (deck_id,),
+        )
+        deck_conn.commit()
+        deck_conn.close()
         deck_response = self.client.get(f"/decks/{deck_id}", base_url="http://localhost")
         self.assertEqual(deck_response.status_code, 200)
         deck_page = deck_response.get_data(as_text=True)
         self.assertIn('<option value="Jonathan" selected>', deck_page)
+
+    def test_accounts_always_keep_one_collection_and_assigned_collection_cannot_be_deleted(self) -> None:
+        conn = self.connect()
+        conn.execute(
+            "INSERT INTO users(username,password_hash,is_admin,role,is_superadmin,active) VALUES(?,?,?,?,?,1)",
+            ("collection-owner", app_module.generate_password_hash("collection-owner-password"), 0, "user", 0),
+        )
+        owner = conn.execute(
+            "SELECT person_id FROM users WHERE username='collection-owner'"
+        ).fetchone()
+        self.assertIsNotNone(owner["person_id"])
+        original_person_id = int(owner["person_id"])
+        conn.commit()
+        conn.close()
+
+        # A blank assignment creates a replacement collection; it never unlinks.
+        response = self.client.post(
+            "/admin/users/collection-owner/person",
+            data={"person_id": "", "csrf_token": self.csrf},
+            base_url="http://localhost",
+        )
+        self.assertEqual(response.status_code, 302)
+        conn = self.connect()
+        updated = conn.execute(
+            "SELECT person_id FROM users WHERE username='collection-owner'"
+        ).fetchone()
+        self.assertIsNotNone(updated["person_id"])
+        self.assertNotEqual(int(updated["person_id"]), original_person_id)
+        assigned_person_id = int(updated["person_id"])
+        conn.commit()
+        conn.close()
+
+        blocked = self.client.post(
+            f"/admin/people/{assigned_person_id}/delete",
+            data={"csrf_token": self.csrf},
+            base_url="http://localhost",
+        )
+        self.assertEqual(blocked.status_code, 302)
+        conn = self.connect()
+        still_assigned = conn.execute(
+            "SELECT person_id FROM users WHERE username='collection-owner'"
+        ).fetchone()
+        still_exists = conn.execute(
+            "SELECT id FROM people WHERE id=?", (assigned_person_id,)
+        ).fetchone()
+        conn.close()
+        self.assertEqual(int(still_assigned["person_id"]), assigned_person_id)
+        self.assertIsNotNone(still_exists)
+
+    def test_admin_can_create_user_with_an_unassigned_collection(self) -> None:
+        unassigned_name = "Unassigned For Managed User"
+        conn = self.connect()
+        conn.execute(
+            "INSERT INTO people(name,active) VALUES(?,1)",
+            (unassigned_name,),
+        )
+        unassigned_id = int(conn.execute(
+            "SELECT id FROM people WHERE name=?", (unassigned_name,)
+        ).fetchone()[0])
+        conn.execute(
+            """
+            INSERT INTO users(
+                username,password_hash,is_admin,role,is_superadmin,active,manager_username
+            ) VALUES(?,?,?,?,?,1,?)
+            """,
+            (
+                "middle-admin",
+                app_module.generate_password_hash("middle-admin-password"),
+                1, "admin", 0, "ci-admin",
+            ),
+        )
+        middle_admin_person_id = int(conn.execute(
+            "SELECT person_id FROM users WHERE username='middle-admin'"
+        ).fetchone()[0])
+        conn.commit()
+        conn.close()
+
+        admin_client = app_module.app.test_client()
+        with admin_client.session_transaction() as session:
+            session["username"] = "middle-admin"
+            session["csrf_token"] = self.csrf
+
+        page = admin_client.get("/admin", base_url="http://localhost")
+        self.assertEqual(page.status_code, 200)
+        html = page.get_data(as_text=True)
+        create_start = html.index('action="/admin/users"')
+        create_end = html.index("</form>", create_start)
+        create_form = html[create_start:create_end]
+        self.assertIn(f'value="{unassigned_id}"', create_form)
+        self.assertNotIn(f'value="{middle_admin_person_id}"', create_form)
+
+        created_username = "managed-from-unassigned"
+        response = admin_client.post(
+            "/admin/users",
+            data={
+                "csrf_token": self.csrf,
+                "username": created_username,
+                "password": "managed-user-password",
+                "person_id": str(unassigned_id),
+            },
+            base_url="http://localhost",
+        )
+        self.assertEqual(response.status_code, 302)
+        conn = self.connect()
+        created = conn.execute(
+            "SELECT role,manager_username,person_id FROM users WHERE username=?",
+            (created_username,),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(created["role"], "user")
+        self.assertEqual(created["manager_username"], "middle-admin")
+        self.assertEqual(int(created["person_id"]), unassigned_id)
+
+    def test_regular_user_can_only_view_and_edit_assigned_collections(self) -> None:
+        conn = self.connect()
+        my_person = conn.execute("SELECT id FROM people WHERE name='Me'").fetchone()
+        friend_person = conn.execute("SELECT id FROM people WHERE name='Friend'").fetchone()
+        self.assertIsNotNone(my_person)
+        self.assertIsNotNone(friend_person)
+        conn.execute(
+            """INSERT INTO users(
+                username,password_hash,is_admin,role,is_superadmin,active,
+                person_id,manager_username
+            ) VALUES(?,?,?,?,?,1,?,?)""",
+            (
+                "normal-collector",
+                app_module.generate_password_hash("normal-user-password-123"),
+                0, "user", 0, int(my_person["id"]), "ci-admin",
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        own_id = self.add_card("Only My Card", owner="Me")
+        foreign_id = self.add_card("Other Person Card", owner="Friend")
+        user_client = app_module.app.test_client()
+        with user_client.session_transaction() as session:
+            session["username"] = "normal-collector"
+            session["csrf_token"] = "normal-user-csrf-token-0123456789"
+
+        page = user_client.get("/", base_url="http://localhost")
+        self.assertEqual(page.status_code, 200)
+        html = page.get_data(as_text=True)
+        self.assertIn("Only My Card", html)
+        self.assertNotIn("Other Person Card", html)
+
+        other_collection = user_client.get("/?owner=Friend", base_url="http://localhost")
+        self.assertEqual(other_collection.status_code, 200)
+        self.assertNotIn("Other Person Card", other_collection.get_data(as_text=True))
+
+        own_update = user_client.post(
+            "/update",
+            json={"id": own_id, "field": "quantity", "value": 2},
+            headers={"X-CSRFToken": "normal-user-csrf-token-0123456789"},
+            base_url="http://localhost",
+        )
+        self.assertEqual(own_update.status_code, 200, own_update.get_data(as_text=True))
+        foreign_update = user_client.post(
+            "/update",
+            json={"id": foreign_id, "field": "quantity", "value": 99},
+            headers={"X-CSRFToken": "normal-user-csrf-token-0123456789"},
+            base_url="http://localhost",
+        )
+        self.assertEqual(foreign_update.status_code, 403)
+
+        mixed_bulk = user_client.post(
+            "/admin/inventory/bulk-update",
+            json={"ids": [own_id, foreign_id], "location": "Binder"},
+            headers={"X-CSRFToken": "normal-user-csrf-token-0123456789"},
+            base_url="http://localhost",
+        )
+        self.assertEqual(mixed_bulk.status_code, 403)
+
+        export = user_client.get("/export_csv", base_url="http://localhost")
+        self.assertEqual(export.status_code, 200)
+        exported = export.get_data(as_text=True)
+        self.assertIn("Only My Card", exported)
+        self.assertNotIn("Other Person Card", exported)
+
+    def test_public_collections_are_opt_in_read_only_and_owner_controlled(self) -> None:
+        conn = self.connect()
+        conn.execute("INSERT OR IGNORE INTO people(name,active) VALUES('Me',1)")
+        conn.execute("INSERT OR IGNORE INTO people(name,active) VALUES('Friend',1)")
+        conn.execute("INSERT OR IGNORE INTO people(name,active) VALUES('Private Stranger',1)")
+        my_person = int(conn.execute(
+            "SELECT id FROM people WHERE name='Me'"
+        ).fetchone()[0])
+        public_person = int(conn.execute(
+            "SELECT id FROM people WHERE name='Friend'"
+        ).fetchone()[0])
+        private_person = int(conn.execute(
+            "SELECT id FROM people WHERE name='Private Stranger'"
+        ).fetchone()[0])
+        conn.execute("UPDATE people SET is_public=1 WHERE id=?", (public_person,))
+
+        password_hash = app_module.generate_password_hash("normal-public-viewer-password")
+        for username, person_id in (
+            ("normal-public-viewer", my_person),
+            ("public-owner", public_person),
+            ("private-owner", private_person),
+        ):
+            conn.execute(
+                """
+                INSERT INTO users(
+                    username,password_hash,is_admin,role,is_superadmin,active,
+                    person_id,manager_username
+                ) VALUES(?,?,0,'user',0,1,?,'ci-admin')
+                """,
+                (username, password_hash, person_id),
+            )
+        conn.commit()
+        conn.close()
+
+        own_card_id = self.add_card(
+            "My Private Card",
+            owner="Me",
+            location="My Secret Shelf",
+        )
+        public_card_id = self.add_card(
+            "Public Friend Card",
+            owner="Friend",
+            location="Friend Secret Shelf",
+            quantity=2,
+        )
+        private_card_id = self.add_card(
+            "Private Stranger Card",
+            owner="Private Stranger",
+            location="Private Stranger Shelf",
+        )
+
+        viewer = app_module.app.test_client()
+        viewer_csrf = "public-viewer-csrf-token-0123456789"
+        with viewer.session_transaction() as session:
+            session["username"] = "normal-public-viewer"
+            session["csrf_token"] = viewer_csrf
+
+        # Public collections stay hidden until the viewer opts in.
+        private_view = viewer.get("/?view=list", base_url="http://localhost")
+        self.assertEqual(private_view.status_code, 200)
+        self.assertIn("My Private Card", private_view.get_data(as_text=True))
+        self.assertNotIn("Public Friend Card", private_view.get_data(as_text=True))
+        self.assertNotIn("Private Stranger Card", private_view.get_data(as_text=True))
+
+        # Opting in adds public cards, but does not expose other private collections.
+        public_view = viewer.get(
+            "/?public=1&view=list",
+            base_url="http://localhost",
+        )
+        self.assertEqual(public_view.status_code, 200, public_view.get_data(as_text=True))
+        public_html = public_view.get_data(as_text=True)
+        self.assertIn("My Private Card", public_html)
+        self.assertIn("Public Friend Card", public_html)
+        self.assertIn('href="/"', public_html)
+        self.assertIn(">Inventory</a>", public_html)
+        self.assertNotIn("Private Stranger Card", public_html)
+        self.assertIn("Public", public_html)
+        self.assertIn("Not shared", public_html)
+        self.assertNotIn("Friend Secret Shelf", public_html)
+        self.assertNotIn("Private Stranger Shelf", public_html)
+        self.assertIn("My Secret Shelf", public_html)  # Own collection locations remain visible.
+
+        # The public toggle remains additive even when the viewer selects one owner.
+        selected_owner_view = viewer.get(
+            "/?owner=Me&public=1&view=list",
+            base_url="http://localhost",
+        )
+        self.assertEqual(selected_owner_view.status_code, 200)
+        selected_owner_html = selected_owner_view.get_data(as_text=True)
+        self.assertIn("My Private Card", selected_owner_html)
+        self.assertIn("Public Friend Card", selected_owner_html)
+        self.assertNotIn("Private Stranger Card", selected_owner_html)
+        self.assertIn('name="public" value="1" checked', selected_owner_html)
+        self.assertIn('value="Me" selected', selected_owner_html)
+
+        # Selecting one public collection narrows the view to that collection.
+        one_public_owner = viewer.get(
+            "/?owner=Friend&public=1&view=list",
+            base_url="http://localhost",
+        )
+        self.assertEqual(one_public_owner.status_code, 200)
+        one_public_html = one_public_owner.get_data(as_text=True)
+        self.assertIn("Public Friend Card", one_public_html)
+        self.assertNotIn("My Private Card", one_public_html)
+        self.assertNotIn("Private Stranger Card", one_public_html)
+
+        # Private-data qualifiers and query filters cannot infer public storage metadata.
+        private_qualifier_view = viewer.get(
+            '/?q=loc:"Friend%20Secret%20Shelf"&public=1&view=list',
+            base_url="http://localhost",
+        )
+        self.assertEqual(private_qualifier_view.status_code, 200)
+        private_qualifier_html = private_qualifier_view.get_data(as_text=True)
+        self.assertIn("Public Friend Card", private_qualifier_html)
+        self.assertNotIn("Friend Secret Shelf", private_qualifier_html)
+        self.assertIn("Location, deck, and vending filters are paused", private_qualifier_html)
+
+        location_param_view = viewer.get(
+            "/?location=Friend%20Secret%20Shelf&public=1&view=list",
+            base_url="http://localhost",
+        )
+        self.assertEqual(location_param_view.status_code, 200)
+        self.assertIn("Public Friend Card", location_param_view.get_data(as_text=True))
+
+        # Public cards have no edit controls, and server-side writes are denied.
+        public_row_start = public_html.index(f'id="row-{public_card_id}"')
+        public_row_end = public_html.index("</tr>", public_row_start)
+        public_row = public_html[public_row_start:public_row_end]
+        self.assertNotIn("qty-input", public_row)
+        self.assertNotIn("owner-input", public_row)
+        self.assertNotIn("location-input", public_row)
+
+        denied_update = viewer.post(
+            "/update",
+            json={"id": public_card_id, "field": "quantity", "value": 99},
+            headers={"X-CSRFToken": viewer_csrf},
+            base_url="http://localhost",
+        )
+        self.assertEqual(denied_update.status_code, 403)
+
+        # Preferences let the signed-in owner change only their own collection.
+        preferences = viewer.get("/preferences", base_url="http://localhost")
+        self.assertEqual(preferences.status_code, 200)
+        self.assertIn("Make my collection public", preferences.get_data(as_text=True))
+
+        enabled = viewer.post(
+            "/account/collection-visibility",
+            data={
+                "csrf_token": viewer_csrf,
+                "is_public": "1",
+                "person_id": str(private_person),  # ignored; only the session owner's collection is changed
+            },
+            base_url="http://localhost",
+        )
+        self.assertEqual(enabled.status_code, 302)
+        conn = self.connect()
+        visibility = {
+            row["name"]: int(row["is_public"])
+            for row in conn.execute(
+                "SELECT name,is_public FROM people WHERE id IN (?,?,?)",
+                (my_person, public_person, private_person),
+            ).fetchall()
+        }
+        conn.close()
+        self.assertEqual(visibility["Me"], 1)
+        self.assertEqual(visibility["Friend"], 1)
+        self.assertEqual(visibility["Private Stranger"], 0)
+
+        # Unchecking the preference turns only the account owner's collection private again.
+        disabled = viewer.post(
+            "/account/collection-visibility",
+            data={"csrf_token": viewer_csrf},
+            base_url="http://localhost",
+        )
+        self.assertEqual(disabled.status_code, 302)
+        conn = self.connect()
+        own_visibility = conn.execute(
+            "SELECT is_public FROM people WHERE id=?",
+            (my_person,),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(int(own_visibility["is_public"]), 0)
+
+    def test_regular_user_cannot_import_or_manually_add_to_another_collection(self) -> None:
+        conn = self.connect()
+        my_person = conn.execute("SELECT id FROM people WHERE name='Me'").fetchone()
+        conn.execute(
+            """INSERT INTO users(
+                username,password_hash,is_admin,role,is_superadmin,active,
+                person_id,manager_username
+            ) VALUES(?,?,?,?,?,1,?,?)""",
+            (
+                "normal-importer",
+                app_module.generate_password_hash("normal-user-password-456"),
+                0, "user", 0, int(my_person["id"]), "ci-admin",
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        user_client = app_module.app.test_client()
+        with user_client.session_transaction() as session:
+            session["username"] = "normal-importer"
+            session["csrf_token"] = "normal-user-csrf-token-import"
+
+        csv_response = user_client.post(
+            "/import_csv",
+            data={
+                "csrf_token": "normal-user-csrf-token-import",
+                "owner": "Friend",
+                "file": (io.BytesIO(b"name,owner,quantity\\nForged Import,Friend,1\\n"), "cards.csv"),
+            },
+            content_type="multipart/form-data",
+            base_url="http://localhost",
+        )
+        self.assertEqual(csv_response.status_code, 403)
+        manual_response = user_client.post(
+            "/admin/manual_add",
+            data={
+                "csrf_token": "normal-user-csrf-token-import",
+                "name": "Forged Manual Add",
+                "owner": "Friend",
+                "quantity": "1",
+            },
+            base_url="http://localhost",
+        )
+        self.assertEqual(manual_response.status_code, 302)
+        conn = self.connect()
+        self.assertIsNone(conn.execute(
+            "SELECT id FROM inventory WHERE name='Forged Manual Add'"
+        ).fetchone())
+        conn.close()
 
     def test_person_assignment_form_in_admin_has_csrf_token(self) -> None:
         conn = self.connect()
@@ -428,7 +863,8 @@ class InventoryManagementTests(unittest.TestCase):
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
                 self.assertIn("person_id", columns)
                 row = conn.execute("SELECT username,password_hash,person_id FROM users WHERE username='legacy-admin'").fetchone()
-                self.assertEqual(row, ("legacy-admin", "already-hashed-password", None))
+                self.assertEqual(row[:2], ("legacy-admin", "already-hashed-password"))
+                self.assertIsNotNone(row[2], "legacy accounts receive a dedicated collection during migration")
         finally:
             app_module.DB_INV = original_db
             app_module._AUTH_READY = original_auth

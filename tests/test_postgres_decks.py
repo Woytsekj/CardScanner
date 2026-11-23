@@ -44,15 +44,20 @@ class PostgreSQLDeckComparisonTests(unittest.TestCase):
 
         conn = connect_app_database(expected_database="cardscanner_dev")
         try:
+            person = conn.execute(
+                "INSERT INTO app.people (name, active) VALUES (?, TRUE) RETURNING id",
+                (self.owner,),
+            ).fetchone()
+            self.person_id = int(person["id"])
             conn.execute(
                 """
                 INSERT INTO app.users (
                     username, password_hash, is_admin, role,
-                    is_superadmin, active
+                    is_superadmin, active, person_id
                 )
-                VALUES (?, ?, TRUE, 'admin', FALSE, TRUE)
+                VALUES (?, ?, TRUE, 'admin', FALSE, TRUE, ?)
                 """,
-                (self.username, "unused-deck-read-test-hash"),
+                (self.username, "unused-deck-read-test-hash", self.person_id),
             )
             self.deck_id = self.add_deck(conn, "Primary")
             self.other_deck_id = self.add_deck(conn, "Other")
@@ -86,6 +91,7 @@ class PostgreSQLDeckComparisonTests(unittest.TestCase):
                 "DELETE FROM app.users WHERE username = ?",
                 (self.username,),
             )
+            conn.execute("DELETE FROM app.people WHERE id = ?", (self.person_id,))
             conn.commit()
         except Exception:
             conn.rollback()
@@ -211,7 +217,7 @@ class PostgreSQLDeckComparisonTests(unittest.TestCase):
         self.assertIn(f"PG comparison Primary {self.token}", listing_html)
         self.assertIn('action="/decks/import"', listing_html)
         self.assertIn("Import a deck", listing_html)
-        self.assertNotIn(f"/decks/{self.deck_id}/delete", listing_html)
+        self.assertIn(f"/decks/{self.deck_id}/delete", listing_html)
 
         detail = self.client.get(
             f"/decks/{self.deck_id}", base_url="http://localhost"
@@ -224,9 +230,9 @@ class PostgreSQLDeckComparisonTests(unittest.TestCase):
         self.assertIn(f"/decks/{self.deck_id}/cards/0/edit", detail_html)
         self.assertIn(f"/decks/{self.deck_id}/cards/0/delete", detail_html)
 
-        self.assertNotIn(f"/decks/{self.deck_id}/settings", detail_html)
-        self.assertNotIn(f"/decks/{self.deck_id}/cover", detail_html)
-        self.assertNotIn(f"/decks/{self.deck_id}/missing.csv", detail_html)
+        self.assertIn(f"/decks/{self.deck_id}/settings", detail_html)
+        self.assertIn(f"/decks/{self.deck_id}/cover", detail_html)
+        self.assertIn(f"/decks/{self.deck_id}/missing.csv", detail_html)
         self.assertNotIn(f"/decks/{self.deck_id}/move-inventory", detail_html)
 
     def test_deck_detail_get_does_not_assign_missing_owner_or_update_timestamp(self):
@@ -268,8 +274,7 @@ class PostgreSQLDeckComparisonTests(unittest.TestCase):
         response = self.client.get(
             f"/decks/{self.deck_id}", base_url="http://localhost"
         )
-        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
-        self.assertIn(f"Deck for {expected_owner}", response.get_data(as_text=True))
+        self.assertEqual(response.status_code, 403)
 
         conn = connect_app_database(expected_database="cardscanner_dev")
         try:

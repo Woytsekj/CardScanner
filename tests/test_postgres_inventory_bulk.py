@@ -74,11 +74,11 @@ class PostgreSQLInventoryBulkTests(unittest.TestCase):
                 """
                 INSERT INTO app.users (
                     username, password_hash, is_admin, role,
-                    is_superadmin, active
+                    is_superadmin, active, person_id
                 )
-                VALUES (?, ?, TRUE, 'admin', FALSE, TRUE)
+                VALUES (?, ?, TRUE, 'admin', FALSE, TRUE, ?)
                 """,
-                (self.admin_username, "unused-inventory-bulk-admin-hash"),
+                (self.admin_username, "unused-inventory-bulk-admin-hash", self.owner_person_id),
             )
             conn.execute(
                 """
@@ -89,6 +89,21 @@ class PostgreSQLInventoryBulkTests(unittest.TestCase):
                 VALUES (?, ?, FALSE, 'vendor', FALSE, TRUE)
                 """,
                 (self.vendor_username, "unused-inventory-bulk-vendor-hash"),
+            )
+            conn.execute(
+                """
+                INSERT INTO app.users (
+                    username, password_hash, is_admin, role,
+                    is_superadmin, active, person_id, manager_username
+                )
+                VALUES (?, ?, FALSE, 'user', FALSE, TRUE, ?, ?)
+                """,
+                (
+                    f"pg-invbulk-user-{self.token}",
+                    "unused-inventory-bulk-user-hash",
+                    self.target_person_id,
+                    self.admin_username,
+                ),
             )
             conn.commit()
         except Exception:
@@ -125,8 +140,12 @@ class PostgreSQLInventoryBulkTests(unittest.TestCase):
                 )
 
             conn.execute(
-                "DELETE FROM app.users WHERE username IN (?, ?)",
-                (self.admin_username, self.vendor_username),
+                "DELETE FROM app.users WHERE username IN (?, ?, ?)",
+                (
+                    self.admin_username,
+                    self.vendor_username,
+                    f"pg-invbulk-user-{self.token}",
+                ),
             )
             conn.execute(
                 "DELETE FROM app.people WHERE id IN (?, ?, ?)",
@@ -149,12 +168,18 @@ class PostgreSQLInventoryBulkTests(unittest.TestCase):
             row = conn.execute(
                 """
                 INSERT INTO app.decklists (
-                    game_id, name, source, created_at, updated_at, tags_json
+                    game_id, name, source, created_at, updated_at, tags_json,
+                    person_id, person_name
                 )
-                VALUES (?, ?, 'manual', now(), now(), '[]'::jsonb)
+                VALUES (?, ?, 'manual', now(), now(), '[]'::jsonb, ?, ?)
                 RETURNING id
                 """,
-                (game_id, f"PG Inventory Bulk Deck {self.token} {len(self.deck_ids)}"),
+                (
+                    game_id,
+                    f"PG Inventory Bulk Deck {self.token} {len(self.deck_ids)}",
+                    self.owner_person_id,
+                    self.owner_name,
+                ),
             ).fetchone()
             conn.commit()
             deck_id = int(row["id"])

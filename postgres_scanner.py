@@ -57,8 +57,8 @@ def _person_rows(conn, *, username: str | None = None, person_id=None):
             SELECT p.id, p.name, u.username AS account_id
             FROM app.people AS p
             LEFT JOIN app.users AS u
-              ON u.person_id = p.id
-             AND u.active IS TRUE
+              ON u.active IS TRUE
+             AND u.person_id = p.id
             WHERE p.active IS TRUE
             ORDER BY LOWER(p.name), p.name
             """
@@ -69,13 +69,13 @@ def _person_rows(conn, *, username: str | None = None, person_id=None):
         SELECT p.id, p.name, u.username AS account_id
         FROM app.people AS p
         JOIN app.users AS u
-          ON u.person_id = p.id
-         AND u.active IS TRUE
+          ON u.active IS TRUE
+         AND u.username = ?
+         AND u.person_id = p.id
         WHERE p.active IS TRUE
-          AND u.username = ?
-          AND p.id = ?
+        ORDER BY LOWER(p.name), p.name
         """,
-        (username, person_id),
+        (username,),
     ).fetchall()
 
 
@@ -112,17 +112,30 @@ def fetch_scanner_options(conn) -> dict:
     }
 
 
-def fetch_mobile_authorized_people(conn, user, *, is_admin: bool) -> list[dict]:
-    if is_admin:
+def fetch_mobile_authorized_people(conn, user, *, is_superadmin: bool) -> list[dict]:
+    if is_superadmin:
         rows = _person_rows(conn)
     else:
-        if user["person_id"] is None:
-            return []
-        rows = _person_rows(
-            conn,
-            username=str(user["username"]),
-            person_id=user["person_id"],
-        )
+        username = str(user["username"])
+        rows = conn.execute(
+            """
+            SELECT p.id, p.name, u.username AS account_id
+            FROM app.users AS u
+            JOIN app.people AS p
+              ON p.id = u.person_id
+             AND p.active IS TRUE
+            WHERE u.active IS TRUE
+              AND (
+                lower(u.username) = lower(?)
+                OR (
+                  lower(u.manager_username) = lower(?)
+                  AND lower(u.role) IN ('user', 'member')
+                )
+              )
+            ORDER BY lower(p.name), p.name
+            """,
+            (username, username),
+        ).fetchall()
     return _format_person_options(rows)
 
 
@@ -238,7 +251,8 @@ def insert_or_increment_scan(
             SELECT p.id, p.name, u.username AS account_id
             FROM app.people AS p
             LEFT JOIN app.users AS u
-              ON u.person_id = p.id AND u.active IS TRUE
+              ON u.active IS TRUE
+             AND u.person_id = p.id
             WHERE p.id = ? AND p.active IS TRUE
             LIMIT 1
             """,

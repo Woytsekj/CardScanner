@@ -42,6 +42,7 @@ class PostgreSQLInventoryImportHTTPTests(unittest.TestCase):
         self.admin_username = f"pg-import-admin-{self.token}"
         self.vendor_username = f"pg-import-vendor-{self.token}"
         self.user_username = f"pg-import-user-{self.token}"
+        self.user_owner = f"PG Import User Owner {self.token}"
         self.csrf_token = f"csrf-import-{self.token}"
 
         conn = connect_app_database(expected_database="cardscanner_dev")
@@ -55,27 +56,51 @@ class PostgreSQLInventoryImportHTTPTests(unittest.TestCase):
                 (self.owner,),
             ).fetchone()
             self.person_id = int(person["id"])
+            user_person = conn.execute(
+                """
+                INSERT INTO app.people (name, active)
+                VALUES (?, TRUE)
+                RETURNING id
+                """,
+                (self.user_owner,),
+            ).fetchone()
+            self.user_person_id = int(user_person["id"])
 
-            for username, is_admin, role in (
-                (self.admin_username, True, "admin"),
-                (self.vendor_username, False, "vendor"),
-                (self.user_username, False, "user"),
-            ):
-                conn.execute(
-                    """
-                    INSERT INTO app.users (
-                        username, password_hash, is_admin, role,
-                        is_superadmin, active
-                    )
-                    VALUES (?, ?, ?, ?, FALSE, TRUE)
-                    """,
-                    (
-                        username,
-                        "unused-import-test-password-hash",
-                        is_admin,
-                        role,
-                    ),
+            conn.execute(
+                """
+                INSERT INTO app.users (
+                    username, password_hash, is_admin, role,
+                    is_superadmin, active, person_id
                 )
+                VALUES (?, ?, TRUE, 'admin', FALSE, TRUE, ?)
+                """,
+                (self.admin_username, "unused-import-test-password-hash", self.person_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO app.users (
+                    username, password_hash, is_admin, role,
+                    is_superadmin, active
+                )
+                VALUES (?, ?, FALSE, 'vendor', FALSE, TRUE)
+                """,
+                (self.vendor_username, "unused-import-test-password-hash"),
+            )
+            conn.execute(
+                """
+                INSERT INTO app.users (
+                    username, password_hash, is_admin, role,
+                    is_superadmin, active, person_id, manager_username
+                )
+                VALUES (?, ?, FALSE, 'user', FALSE, TRUE, ?, ?)
+                """,
+                (
+                    self.user_username,
+                    "unused-import-test-password-hash",
+                    self.user_person_id,
+                    self.admin_username,
+                ),
+            )
             conn.commit()
         except Exception:
             conn.rollback()
@@ -155,8 +180,8 @@ class PostgreSQLInventoryImportHTTPTests(unittest.TestCase):
                 ),
             )
             conn.execute(
-                "DELETE FROM app.people WHERE id = ?",
-                (self.person_id,),
+                "DELETE FROM app.people WHERE id IN (?, ?)",
+                (self.person_id, self.user_person_id),
             )
             conn.commit()
         except Exception:
@@ -198,7 +223,7 @@ class PostgreSQLInventoryImportHTTPTests(unittest.TestCase):
         self.assertEqual(row["rarity"], "Mythic")
         self.assertEqual(row["price"], "1.25")
         self.assertEqual(row["quantity"], 3)
-        self.assertEqual(row["owner"], self.owner.upper())
+        self.assertEqual(row["owner"], self.owner)
         self.assertEqual(row["person_id"], self.person_id)
         self.assertEqual(row["finish"], "normal")
         self.assertEqual(row["collector_number"], "007")
@@ -281,6 +306,8 @@ class PostgreSQLInventoryImportHTTPTests(unittest.TestCase):
         self.assertEqual(result["count"], 1)
         self.assertEqual(result["skipped"], 2)
         self.assertEqual(result["unknown_owners"], ["Not An Active Person"])
+        rows = self.imported_rows()
+        self.assertEqual({row["owner"] for row in rows}, {self.owner})
         self.assertEqual(
             result["note"],
             "Rows for unknown owners were skipped. Add those people in Admin, then re-import.",
@@ -320,19 +347,26 @@ class PostgreSQLInventoryImportHTTPTests(unittest.TestCase):
         self.assertFalse(response.get_json()["success"])
         self.assertEqual(self.imported_rows(), [])
 
-    def test_import_is_admin_only_and_requires_csrf(self):
+    def test_import_is_available_to_scoped_users_and_requires_csrf(self):
         csv_data = self.make_csv(
             ["name", "owner"],
             [[f"{self.prefix} Permissions", self.owner]],
+        )
+        user_csv = self.make_csv(
+            ["name", "owner"],
+            [[f"{self.prefix} User Permissions", self.user_owner]],
         )
 
         self.assertEqual(
             self.upload(self.vendor_client, csv_data).status_code,
             403,
         )
+        user_response = self.upload(self.user_client, user_csv)
+        self.assertEqual(user_response.status_code, 200, user_response.get_data(as_text=True))
+        self.assertEqual(user_response.get_json()["count"], 1)
         self.assertEqual(
-            self.upload(self.user_client, csv_data).status_code,
-            403,
+            {row["owner"] for row in self.imported_rows()},
+            {self.user_owner},
         )
         self.assertEqual(
             self.upload(self.guest_client, csv_data).status_code,
@@ -346,7 +380,11 @@ class PostgreSQLInventoryImportHTTPTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("CSRF", response.get_data(as_text=True))
-        self.assertEqual(self.imported_rows(), [])
+        self.assertEqual(len(self.imported_rows()), 1)
+        self.assertEqual(
+            {row["owner"] for row in self.imported_rows()},
+            {self.user_owner},
+        )
 
 
 if __name__ == "__main__":

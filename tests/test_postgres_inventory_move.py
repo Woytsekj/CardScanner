@@ -85,11 +85,11 @@ class PostgreSQLInventoryMoveTests(unittest.TestCase):
                 """
                 INSERT INTO app.users (
                     username, password_hash, is_admin, role,
-                    is_superadmin, active
+                    is_superadmin, active, person_id
                 )
-                VALUES (?, ?, TRUE, 'admin', FALSE, TRUE)
+                VALUES (?, ?, TRUE, 'admin', FALSE, TRUE, ?)
                 """,
-                (self.admin_username, "unused-inventory-move-admin-hash"),
+                (self.admin_username, "unused-inventory-move-admin-hash", self.person_id),
             )
             conn.execute(
                 """
@@ -154,12 +154,13 @@ class PostgreSQLInventoryMoveTests(unittest.TestCase):
             row = conn.execute(
                 """
                 INSERT INTO app.decklists (
-                    game_id, name, source, created_at, updated_at, tags_json
+                    game_id, name, source, created_at, updated_at, tags_json,
+                    person_id, person_name
                 )
-                VALUES ('mtg', ?, 'manual', now(), now(), '[]'::jsonb)
+                VALUES ('mtg', ?, 'manual', now(), now(), '[]'::jsonb, ?, ?)
                 RETURNING id
                 """,
-                (f"PG Inventory Move Deck {self.token}",),
+                (f"PG Inventory Move Deck {self.token}", self.person_id, self.owner_name),
             ).fetchone()
             conn.commit()
             deck_id = int(row["id"])

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="csrf-token" content="{{ csrf_token }}"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Admin · MTG Inventory</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.17.0') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.18.0') }}">
 <script src="{{ url_for('static', filename='security.js') }}" defer></script>
 <script src="{{ url_for('static', filename='theme.js', v='39.13.0') }}" defer></script>
 </head>
@@ -15,9 +15,149 @@
 {% include '_app_header.html' %}
 <main>
 {% if message %}<div class="status admin-message">{{ message }}</div>{% endif %}
-<section class="admin-grid">
+<section class="admin-workspaces" aria-label="Administration workspaces">
+  <section class="admin-workspace-section account-workspace" aria-labelledby="accountWorkspaceTitle">
+    <header class="admin-workspace-heading"><div><h2 id="accountWorkspaceTitle">Accounts & collections</h2><p class="subtle">Manage account access, collection ownership, and reporting relationships.</p></div></header>
+    <div class="admin-grid admin-account-grid">
+      <div class="admin-panel">
+  <h3>Collection owners</h3>
+  <p class="subtle">Every account owns exactly one collection. New accounts receive a dedicated collection automatically, or can be assigned an unassigned collection. Admins manage User accounts assigned to them; Superadmins can manage every account. An account’s collection cannot be deleted while the account exists.</p>
+  <form method="post" action="{{ url_for('add_person') }}" class="add-person-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input name="name" placeholder="New person name" maxlength="100" required><button class="button">Add person</button>
+  </form>
+  <div class="person-list">
+    {% for person in people %}
+    <div class="person-row person-row-rich">
+      <div class="person-main">
+        <form method="post" action="{{ url_for('rename_person', person_id=person.id) }}" class="person-name-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input name="name" value="{{ person.name }}" maxlength="100"><button class="button secondary">Rename</button>
+        </form>
+        <span class="badge">{{ 'Active' if person.active else 'Inactive' }}</span>
+        <span class="subtle">{{ person.card_count|int }} card(s) owned</span>
+      </div>
+      <div class="person-actions">
+        <form method="post" action="{{ url_for('toggle_person', person_id=person.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary">{{ 'Deactivate' if person.active else 'Activate' }}</button></form>
+        {% set transfer_choices = people|rejectattr('id','equalto',person.id)|selectattr('active')|list %}
+        <form method="post" action="{{ url_for('delete_person', person_id=person.id) }}" class="delete-person-form" data-person="{{ person.name|e }}" data-count="{{ person.card_count|int }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          {% if person.card_count|int > 0 %}
+          <select name="transfer_to" aria-label="Transfer {{ person.name }} cards to"><option value="">Transfer cards to…</option>{% for target in transfer_choices %}<option value="{{ target.name }}">{{ target.name }}</option>{% endfor %}</select>
+          {% endif %}
+          <details class="admin-danger-action"><summary>Danger zone</summary><button class="button danger" type="submit">Delete permanently</button></details>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+      <div class="admin-panel">
+  <h3>Web accounts</h3>
+  <p class="subtle">Superadmins oversee every account. Admins manage the users assigned below them. Users manage their own collections and decks; they cannot change another account's cards.</p>
 
-<div class="admin-panel">
+  {% if admin_is_superadmin or current_role == 'admin' %}
+  <form method="post" action="{{ url_for('add_user') }}" class="manual-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-grid-2">
+      <label>Username<input name="username" maxlength="150" required></label>
+      <label>Password<input type="password" name="password" minlength="12" autocomplete="new-password" required></label>
+      {% if admin_is_superadmin %}<label>Role<select name="role"><option value="user">User</option><option value="admin">Admin</option><option value="vendor">Vendor</option></select></label><label>Managed by<select name="manager_username"><option value="">No manager</option>{% for manager in managers %}<option value="{{ manager.username }}">{{ manager.username }}</option>{% endfor %}</select></label>{% else %}<input type="hidden" name="role" value="user"><div class="subtle">New account role: User (managed by you)</div>{% endif %}
+      <label>Collection<select name="person_id"><option value="">Create a new collection for this account</option>{% for person in account_people %}<option value="{{ person.id }}">{{ person.name }}</option>{% endfor %}</select></label>
+    </div>
+    <button class="button" type="submit">Create User</button>
+  </form>
+  {% else %}
+  <div class="status">You are a regular admin. User-account management is restricted to the superadmin.</div>
+  {% endif %}
+
+  <div class="person-list">
+    {% for user in users %}
+    <div class="person-row user-row">
+      <div style="flex:1">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <strong>{{ user.username }}</strong>
+          {% if user.is_superadmin %}<span class="badge">Superadmin</span>{% endif %}
+        </div>
+        <div class="subtle">{{ user.role|capitalize }} · {{ 'Active' if user.active else 'Inactive' }} · Managed by: {{ user.manager_username or '—' }} · Collection: {{ user.person_name or 'Not linked' }}{% if user.last_login_at %} · Last login {{ user.last_login_at|localdt }}{% endif %}</div>
+      </div>
+
+      {% if admin_is_superadmin or (current_role == 'admin' and user.manager_username == admin_user) %}
+      <form method="post" action="{{ url_for('assign_user_person', username=user.username) }}" class="account-collection-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label>Collection<select name="person_id" aria-label="Collection assigned to {{ user.username }}">
+          <option value="">Create a new collection for this account</option>
+          {% for person in account_people_all %}<option value="{{ person.id }}" {% if user.person_id == person.id %}selected{% endif %}>{{ person.name }}{% if not person.active %} (inactive){% endif %}</option>{% endfor %}
+        </select></label>
+        <button class="button secondary" type="submit">Save collection</button>
+      </form>
+
+      {% if admin_is_superadmin and not user.is_superadmin %}
+      <form method="post" action="{{ url_for('change_user_manager', username=user.username) }}" class="search-inline account-manager-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label>Managed by<select name="manager_username" aria-label="Manager for {{ user.username }}">
+          <option value="" {% if not user.manager_username and user.role|lower != 'admin' %}selected{% endif %}>No manager</option>
+          {% for manager in managers %}
+            {% if manager.username|lower != user.username|lower and (user.role|lower != 'admin' or manager.is_superadmin) %}
+            <option value="{{ manager.username }}" {% if user.manager_username == manager.username %}selected{% endif %}>{{ manager.username }}</option>
+            {% endif %}
+          {% endfor %}
+          {% if user.manager_username and not (managers|selectattr('username', 'equalto', user.manager_username)|list) %}
+          <option value="{{ user.manager_username }}" selected>{{ user.manager_username }} (inactive — choose an active manager to reassign)</option>
+          {% endif %}
+        </select></label>
+        <button class="button secondary" type="submit">Save manager</button>
+      </form>
+      {% endif %}
+
+      <form method="post" action="{{ url_for('rename_user', username=user.username) }}" class="search-inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input name="new_username" value="{{ user.username }}" maxlength="150" required aria-label="New username for {{ user.username }}">
+        <button class="button secondary" type="submit">Change username</button>
+      </form>
+
+      {% if admin_is_superadmin and not user.is_superadmin %}
+      <form method="post" action="{{ url_for('change_user_role', username=user.username) }}" class="search-inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <select name="role" aria-label="Role for {{ user.username }}">
+          <option value="user"{% if user.role|lower == 'user' %} selected{% endif %}>User</option>
+          <option value="vendor"{% if user.role|lower == 'vendor' %} selected{% endif %}>Vendor</option>
+          <option value="admin"{% if user.role|lower == 'admin' %} selected{% endif %}>Admin</option>
+        </select>
+        <button class="button secondary" type="submit">Set role</button>
+      </form>
+      {% elif user.is_superadmin %}
+      <span class="subtle">Superadmin</span>
+      {% else %}
+      <span class="subtle">Role controlled by superadmin</span>
+      {% endif %}
+
+      {% if user.username|lower != admin_user|lower and (admin_is_superadmin or (current_role == 'admin' and user.manager_username == admin_user)) %}
+      <form method="post" action="{{ url_for('toggle_user', username=user.username) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button secondary" type="submit" onclick="return confirm('Change access status for {{ user.username|e }}?');">{{ 'Deactivate' if user.active else 'Activate' }}</button>
+      </form>
+      <form method="post" action="{{ url_for('admin_reset_user_password', username=user.username) }}" class="search-inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="password" name="password" minlength="12" placeholder="New password" required>
+        <button class="button secondary" type="submit">Reset password</button>
+      </form>
+      <form method="post" action="{{ url_for('delete_user', username=user.username) }}" class="delete-user-form" data-user="{{ user.username|e }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <details class="admin-danger-action"><summary>Danger zone</summary><button class="button danger" type="submit">Delete user</button></details>
+      </form>
+      {% else %}
+      <span class="subtle">Current account</span>
+      {% endif %}
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+    </div>
+  </section>
+  <section class="admin-workspace-section configuration-workspace" aria-labelledby="configurationWorkspaceTitle">
+    <header class="admin-workspace-heading"><div><h2 id="configurationWorkspaceTitle">System configuration</h2><p class="subtle">Catalog lookup, pricing notifications, and metadata maintenance.</p></div></header>
+    <div class="admin-grid admin-configuration-grid">
+      <div class="admin-panel">
   <h2>Catalog search aliases</h2>
   <p class="subtle">Manage alternate names that should find a catalog printing in Inventory search. This is useful for Secret Lair and re-themed cards.</p>
   <div class="manual-search">
@@ -43,39 +183,7 @@
     <div id="aliasList" class="alias-list"></div>
   </div>
 </div>
-<div class="admin-panel">
-  <h2>People</h2>
-  <p class="subtle">These names appear in every scanner's owner dropdown. You can deactivate a person, or permanently delete them. Deleting a person never silently destroys inventory: if they still own cards, choose another active owner to receive those cards.</p>
-  <form method="post" action="{{ url_for('add_person') }}" class="add-person-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input name="name" placeholder="New person name" maxlength="100" required><button class="button">Add person</button>
-  </form>
-  <div class="person-list">
-    {% for person in people %}
-    <div class="person-row person-row-rich">
-      <div class="person-main">
-        <form method="post" action="{{ url_for('rename_person', person_id=person.id) }}" class="person-name-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <input name="name" value="{{ person.name }}" maxlength="100"><button class="button secondary">Rename</button>
-        </form>
-        <span class="badge">{{ 'Active' if person.active else 'Inactive' }}</span>
-        <span class="subtle">{{ person.card_count|int }} card(s) owned</span>
-      </div>
-      <div class="person-actions">
-        <form method="post" action="{{ url_for('toggle_person', person_id=person.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button secondary">{{ 'Deactivate' if person.active else 'Activate' }}</button></form>
-        {% set transfer_choices = people|rejectattr('id','equalto',person.id)|selectattr('active')|list %}
-        <form method="post" action="{{ url_for('delete_person', person_id=person.id) }}" class="delete-person-form" data-person="{{ person.name|e }}" data-count="{{ person.card_count|int }}">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          {% if person.card_count|int > 0 %}
-          <select name="transfer_to" aria-label="Transfer {{ person.name }} cards to"><option value="">Transfer cards to…</option>{% for target in transfer_choices %}<option value="{{ target.name }}">{{ target.name }}</option>{% endfor %}</select>
-          {% endif %}
-          <button class="button danger" type="submit">Delete permanently</button>
-        </form>
-      </div>
-    </div>
-    {% endfor %}
-  </div>
-</div>
-
-{% if not postgres_mode %}
+      {% if not postgres_mode %}
 <div class="admin-panel">
   <h2>Price History & Discord Alerts</h2>
   <p class="subtle">The updater records one history point per owned TCGplayer product whenever TCGCSV publishes a new build. History is retained for <strong>{{ price_history_days }} days</strong>.</p>
@@ -133,95 +241,16 @@
   {% endif %}
 </div>
 {% endif %}
-
-<div class="admin-panel">
-  <h2>Web users</h2>
-  <p class="subtle">The <strong>Superadmin</strong> is the highest-power account. Only a superadmin can create/delete web users, change usernames, or change their roles. Admin accounts can manage the collection; Vendor accounts can access only Vending.</p>
-
-  {% if admin_is_superadmin %}
-  <form method="post" action="{{ url_for('add_user') }}" class="manual-form">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <div class="form-grid-2">
-      <label>Username<input name="username" maxlength="150" required></label>
-      <label>Password<input type="password" name="password" minlength="12" autocomplete="new-password" required></label>
-      <label>Role<select name="role"><option value="vendor">Vendor</option><option value="admin">Admin</option></select></label>
-      <label>Linked person (optional)<select name="person_id"><option value="">No linked person</option>{% for person in account_people %}<option value="{{ person.id }}">{{ person.name }}</option>{% endfor %}</select></label>
     </div>
-    <button class="button" type="submit">Create User</button>
-  </form>
-  {% else %}
-  <div class="status">You are a regular admin. User-account management is restricted to the superadmin.</div>
-  {% endif %}
-
-  <div class="person-list">
-    {% for user in users %}
-    <div class="person-row user-row">
-      <div style="flex:1">
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <strong>{{ user.username }}</strong>
-          {% if user.is_superadmin %}<span class="badge">Superadmin</span>{% endif %}
-        </div>
-        <div class="subtle">{{ user.role|capitalize }} · {{ 'Active' if user.active else 'Inactive' }} · Collection: {{ user.person_name or 'Not linked' }}{% if user.last_login_at %} · Last login {{ user.last_login_at|localdt }}{% endif %}</div>
-      </div>
-
-      {% if admin_is_superadmin %}
-      <form method="post" action="{{ url_for('assign_user_person', username=user.username) }}" class="search-inline user-person-form">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <label>Default collection
-          <select name="person_id" aria-label="Person linked to {{ user.username }}">
-            <option value="">No linked person</option>
-            {% for person in account_people %}<option value="{{ person.id }}" {% if user.person_id == person.id %}selected{% endif %}>{{ person.name }}</option>{% endfor %}
-          </select>
-        </label>
-        <button class="button secondary" type="submit">Save person</button>
-      </form>
-
-      <form method="post" action="{{ url_for('rename_user', username=user.username) }}" class="search-inline">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input name="new_username" value="{{ user.username }}" maxlength="150" required aria-label="New username for {{ user.username }}">
-        <button class="button secondary" type="submit">Change username</button>
-      </form>
-
-      {% if not user.is_superadmin %}
-      <form method="post" action="{{ url_for('change_user_role', username=user.username) }}" class="search-inline">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <select name="role" aria-label="Role for {{ user.username }}">
-          <option value="vendor"{% if user.role|lower == 'vendor' %} selected{% endif %}>Vendor</option>
-          <option value="admin"{% if user.role|lower == 'admin' %} selected{% endif %}>Admin</option>
-        </select>
-        <button class="button secondary" type="submit">Set role</button>
-      </form>
-      {% else %}
-      <span class="subtle">Highest power</span>
-      {% endif %}
-
-      {% if user.username|lower != admin_user|lower %}
-      <form method="post" action="{{ url_for('toggle_user', username=user.username) }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button class="button secondary" type="submit">{{ 'Deactivate' if user.active else 'Activate' }}</button>
-      </form>
-      <form method="post" action="{{ url_for('admin_reset_user_password', username=user.username) }}" class="search-inline">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input type="password" name="password" minlength="12" placeholder="New password" required>
-        <button class="button secondary" type="submit">Reset password</button>
-      </form>
-      <form method="post" action="{{ url_for('delete_user', username=user.username) }}" class="delete-user-form" data-user="{{ user.username|e }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button class="button danger" type="submit">Delete user</button>
-      </form>
-      {% else %}
-      <span class="subtle">Current account</span>
-      {% endif %}
-      {% endif %}
-    </div>
-    {% endfor %}
-  </div>
-</div>
-
-
+  </section>
 </section>
 </main>
 <script>
+document.querySelectorAll('.admin-danger-action').forEach((details) => {
+  details.addEventListener('toggle', () => {
+    if (details.open) details.querySelector('button')?.focus();
+  });
+});
 const q = document.getElementById('catalogSearch');
 const suggestions = document.getElementById('catalogSuggestions');
 const results = document.getElementById('catalogResults');
