@@ -942,8 +942,13 @@ def _accessible_person_names(user=None) -> list[str]:
         conn.close()
 
 
-def _effective_inventory_owner(user=None, requested_owner: str = "") -> str:
-    """Resolve a non-superadmin inventory view to a collection in their scope."""
+def _effective_inventory_owner(
+    user=None,
+    requested_owner: str = "",
+    *,
+    owner_explicit: bool = False,
+) -> str | list[str]:
+    """Resolve the owner filter without allowing an account outside its scope."""
     user = user or current_user()
     if not user:
         return "__no_assigned_collection__"
@@ -955,10 +960,22 @@ def _effective_inventory_owner(user=None, requested_owner: str = "") -> str:
     by_key = {name.casefold(): name for name in allowed}
     own = str(user["person_name"] or "").strip()
     if is_admin_user(user):
-        if requested and requested.casefold() in by_key:
-            return by_key[requested.casefold()]
+        if requested:
+            if requested.casefold() in by_key:
+                return by_key[requested.casefold()]
+            if own and own.casefold() in by_key:
+                return own
+            return sorted(allowed, key=str.casefold)[0] if allowed else "__no_assigned_collection__"
+
+        # An explicitly selected empty Owner filter means "All owners in my
+        # scope" for Admins: their collection plus directly managed Users.
+        if owner_explicit:
+            return allowed or ["__no_assigned_collection__"]
+
+        # Preserve the existing default landing view until the Admin chooses
+        # All owners in the selector.
         if own and own.casefold() in by_key:
-            return by_key[own.casefold()]
+            return own
         return sorted(allowed, key=str.casefold)[0] if allowed else "__no_assigned_collection__"
 
     return own if own and own.casefold() in by_key else "__no_assigned_collection__"
@@ -1944,12 +1961,20 @@ def parse_scryfall_search(search: str) -> tuple[list[str], list[Any], str | None
 
 
 def _inventory_filter_parts(
-    search: str, owner_filter: str, finish_filter: str,
+    search: str, owner_filter: str | list[str], finish_filter: str,
     type_filter: str = "", color_filter: str = "", location_filter: str = "", vending_filter: str = "",
 ) -> tuple[list[str], list[Any], str | None, str | None]:
     """Build the common safe WHERE clauses for inventory rows and summary queries."""
     where, args, query_order, query_direction = parse_scryfall_search(search)
-    if owner_filter:
+    if isinstance(owner_filter, (list, tuple, set)):
+        scoped_owners = list(dict.fromkeys(str(name) for name in owner_filter if str(name)))
+        if scoped_owners:
+            placeholders = ", ".join("?" for _ in scoped_owners)
+            where.append(f"IFNULL(i.owner, 'Me') IN ({placeholders})")
+            args.extend(scoped_owners)
+        else:
+            where.append("1 = 0")
+    elif owner_filter:
         where.append("IFNULL(i.owner, 'Me') = ?")
         args.append(owner_filter)
     if finish_filter:
@@ -1976,7 +2001,7 @@ def _inventory_filter_parts(
 
 
 def inventory_summary(
-    search: str, owner_filter: str, finish_filter: str, sort_key: str, direction: str,
+    search: str, owner_filter: str | list[str], finish_filter: str, sort_key: str, direction: str,
     type_filter: str = "", color_filter: str = "", location_filter: str = "", vending_filter: str = "",
 ):
     """Calculate totals using a lightweight query without materializing card metadata/aliases."""
@@ -2136,7 +2161,7 @@ def _calculate_price_trend(
 
 
 def inventory_rows(
-    search: str, owner_filter: str, finish_filter: str, sort_key: str, direction: str,
+    search: str, owner_filter: str | list[str], finish_filter: str, sort_key: str, direction: str,
     type_filter: str = "", color_filter: str = "", location_filter: str = "", vending_filter: str = "",
     limit: int | None = None, offset: int = 0,
 ):
@@ -4371,7 +4396,9 @@ def index():
     requested_owner = request.args.get("owner", "").strip()
     user = current_user()
     editable_owners = _accessible_person_names(user)
-    owner_filter = _effective_inventory_owner(user, requested_owner)
+    owner_filter = _effective_inventory_owner(
+        user, requested_owner, owner_explicit=owner_explicit
+    )
     editable_deck_ids = _editable_deck_ids(user)
     finish_filter = request.args.get("finish", "").strip().lower()
     type_filter = request.args.get("type", "").strip()
@@ -4403,8 +4430,12 @@ def index():
     except (TypeError, ValueError):
         page = 1
 
-    only_owner_scope = bool(owner_filter) and not (
-        search or finish_filter or type_filter or color_filter or location_filter or vending_filter
+    only_owner_scope = (
+        bool(owner_filter)
+        and not isinstance(owner_filter, (list, tuple, set))
+        and not (
+            search or finish_filter or type_filter or color_filter or location_filter or vending_filter
+        )
     )
     if only_owner_scope:
         # The common default view is a linked person's collection. One grouped
@@ -4487,7 +4518,7 @@ def index():
         global_finish_totals=global_finish_totals,
         visible_finish_totals=visible_finish_totals,
         owners=owners,
-        selected_owner=owner_filter,
+        selected_owner=owner_filter if isinstance(owner_filter, str) else "",
         owner_explicit=owner_explicit,
         selected_finish=finish_filter,
         selected_type=type_filter,
