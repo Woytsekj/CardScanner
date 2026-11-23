@@ -238,6 +238,34 @@ class PostgreSQLInventoryPageHTTPTests(unittest.TestCase):
         self.assertIn("Not shared", html)
         self.assertNotIn("PG Public Secret Shelf", html)
 
+        # The public toggle remains additive with a specific owner selection.
+        selected_owner = self.client.get(
+            f"/?q={self.prefix}&owner={self.owner.replace(' ', '+')}&public=1&view=list",
+            base_url="http://localhost",
+        )
+        self.assertEqual(selected_owner.status_code, 200, selected_owner.get_data(as_text=True))
+        selected_html = selected_owner.get_data(as_text=True)
+        self.assertIn(f"{self.prefix} Public Card", selected_html)
+        self.assertIn(f'name="owner"', selected_html)
+
+        # Private metadata qualifiers cannot filter public rows or reveal values.
+        private_filter = self.client.get(
+            f"/?q={self.prefix}+loc:%22PG+Public+Secret+Shelf%22&public=1&view=list",
+            base_url="http://localhost",
+        )
+        self.assertEqual(private_filter.status_code, 200, private_filter.get_data(as_text=True))
+        private_filter_html = private_filter.get_data(as_text=True)
+        self.assertIn(f"{self.prefix} Public Card", private_filter_html)
+        self.assertNotIn("PG Public Secret Shelf", private_filter_html)
+        self.assertIn("Location, deck, and vending filters are paused", private_filter_html)
+
+        location_param = self.client.get(
+            f"/?q={self.prefix}&location=PG+Public+Secret+Shelf&public=1&view=list",
+            base_url="http://localhost",
+        )
+        self.assertEqual(location_param.status_code, 200, location_param.get_data(as_text=True))
+        self.assertIn(f"{self.prefix} Public Card", location_param.get_data(as_text=True))
+
         row_start = html.index(f"{self.prefix} Public Card")
         row_start = html.rfind('<tr id="row-', 0, row_start)
         row_end = html.index("</tr>", row_start)
