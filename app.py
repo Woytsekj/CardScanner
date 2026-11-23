@@ -986,8 +986,6 @@ def _effective_inventory_owner(
     if requested:
         selected = manageable_by_key.get(requested.casefold()) or public_by_key.get(requested.casefold())
         if selected:
-            if include_public:
-                return list(dict.fromkeys([selected, *public_names]))
             return selected
         if is_admin_user(user):
             selected = manageable_by_key.get(own.casefold()) if own else None
@@ -1106,7 +1104,7 @@ def admin_required(view):
         }
         if not is_admin_user(user) and not (
             role in {"user", "member"} and request.endpoint in collection_endpoints
-        ):
+        ) and not (role == "vendor" and request.endpoint == "index"):
             if request.path.startswith("/api/") or request.method != "GET":
                 return jsonify({"success": False, "error": "Administrator access required"}), 403
             return render_template("login.html", next_url="", error="Administrator access required."), 403
@@ -1341,7 +1339,7 @@ def security_gate():
     # Vendor accounts are deliberately restricted to vending and logout.
     user = current_user()
     if user and str(user["role"]).lower() == "vendor" and not int(user["is_admin"]):
-        allowed = {"vending_view", "vending_export_csv", "vending_labels", "preferences_page", "set_collection_visibility", "logout", "login", "login_post", "static"}
+        allowed = {"vending_view", "vending_export_csv", "vending_labels", "index", "preferences_page", "set_collection_visibility", "logout", "login", "login_post", "static"}
         if request.endpoint not in allowed and not path.startswith("/static/"):
             return render_template("login.html", next_url="", error="This account only has access to the Vending area."), 403
 
@@ -4584,6 +4582,34 @@ def index():
         if "Free" not in locations:
             locations.insert(0, "Free")
         conn.close()
+
+    if not is_superadmin_user(user):
+        readable_owner_names = (
+            list(owner_filter)
+            if isinstance(owner_filter, (list, tuple, set))
+            else ([owner_filter] if owner_filter and owner_filter != "__no_assigned_collection__" else [])
+        )
+        if readable_owner_names:
+            from_marks = ", ".join("?" for _ in readable_owner_names)
+            location_conn = _account_connection()
+            try:
+                locations = [
+                    row["location"]
+                    for row in location_conn.execute(
+                        f"""
+                        SELECT DISTINCT COALESCE(location, 'Free') AS location
+                        FROM {_account_table('inventory')}
+                        WHERE game_id = 'mtg'
+                          AND lower(COALESCE(owner, 'Me')) IN ({from_marks})
+                        ORDER BY lower(COALESCE(location, 'Free')), COALESCE(location, 'Free')
+                        """,
+                        [name.casefold() for name in readable_owner_names],
+                    ).fetchall()
+                ]
+            finally:
+                location_conn.close()
+        else:
+            locations = ["Free"]
 
     if not is_superadmin_user(user):
         visible_owners = list(editable_owners)
