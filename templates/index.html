@@ -53,7 +53,7 @@
         </div>
         <input type="hidden" name="sort" value="{{ sort_key }}">
         <input type="hidden" name="dir" value="{{ direction }}">
-        <input type="hidden" name="view" value="{{ view }}">
+        <input type="hidden" name="view" value="{{ view }}">{% if include_public_cards %}<input type="hidden" name="public" value="1">{% endif %}
         {% if owner_explicit %}<input type="hidden" name="owner" value="{{ selected_owner }}">{% endif %}
         {% if selected_finish %}<input type="hidden" name="finish" value="{{ selected_finish }}">{% endif %}
         {% if selected_type %}<input type="hidden" name="type" value="{{ selected_type }}">{% endif %}
@@ -62,7 +62,7 @@
         {% if selected_vending %}<input type="hidden" name="vending" value="{{ selected_vending }}">{% endif %}
         <button class="button" type="submit">Search</button>
         {% if search or selected_owner or selected_finish or selected_type or selected_color or selected_location or selected_vending %}
-        <a class="button secondary" href="{{ url_for('index', sort=sort_key, dir=direction, view=view) }}">Clear</a>
+        <a class="button secondary" href="{{ url_for('index', sort=sort_key, dir=direction, view=view, public='1' if include_public_cards else None) }}">Clear</a>
         {% endif %}
       </form>
     </section>
@@ -74,7 +74,7 @@
       <div class="toolbar-controls">
         <form class="sort-form" method="get" action="{{ url_for('index') }}">
           <input type="hidden" name="q" value="{{ search }}">
-          <input type="hidden" name="view" value="{{ view }}">
+          <input type="hidden" name="view" value="{{ view }}">{% if include_public_cards %}<input type="hidden" name="public" value="1">{% endif %}
           {% if owner_explicit %}<input type="hidden" name="owner" value="{{ selected_owner }}">{% endif %}
           {% if selected_finish %}<input type="hidden" name="finish" value="{{ selected_finish }}">{% endif %}
           {% if selected_type %}<input type="hidden" name="type" value="{{ selected_type }}">{% endif %}
@@ -101,25 +101,44 @@
         </form>
 
         <div class="quick-sort-actions">
-          <a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort='price', dir='desc', view=view) }}">↓ Highest price</a>
-          <a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort='price', dir='asc', view=view) }}">↑ Lowest price</a>
+          <a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort='price', dir='desc', view=view, public='1' if include_public_cards else None) }}">↓ Highest price</a>
+          <a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort='price', dir='asc', view=view, public='1' if include_public_cards else None) }}">↑ Lowest price</a>
         </div>
 
         <form class="owner-filter" method="get" action="{{ url_for('index') }}">
-          <input type="hidden" name="q" value="{{ search }}"><input type="hidden" name="sort" value="{{ sort_key }}"><input type="hidden" name="dir" value="{{ direction }}"><input type="hidden" name="view" value="{{ view }}">
+          <input type="hidden" name="q" value="{{ search }}"><input type="hidden" name="sort" value="{{ sort_key }}"><input type="hidden" name="dir" value="{{ direction }}"><input type="hidden" name="view" value="{{ view }}">{% if include_public_cards %}<input type="hidden" name="public" value="1">{% endif %}
           {% if selected_finish %}<input type="hidden" name="finish" value="{{ selected_finish }}">{% endif %}{% if selected_type %}<input type="hidden" name="type" value="{{ selected_type }}">{% endif %}{% if selected_color %}<input type="hidden" name="color" value="{{ selected_color }}">{% endif %}{% if selected_location %}<input type="hidden" name="location" value="{{ selected_location }}">{% endif %}{% if selected_vending %}<input type="hidden" name="vending" value="{{ selected_vending }}">{% endif %}
           <label for="owner">Owner</label><select id="owner" name="owner" onchange="this.form.submit()"><option value="">All owners</option>{% for owner in owners %}<option value="{{ owner }}" {% if selected_owner == owner %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select>
         </form>
 
+        {% if not admin_is_superadmin %}
+        <form class="owner-filter public-card-filter" method="get" action="{{ url_for('index') }}">
+          <input type="hidden" name="q" value="{{ search }}">
+          <input type="hidden" name="sort" value="{{ sort_key }}">
+          <input type="hidden" name="dir" value="{{ direction }}">
+          <input type="hidden" name="view" value="{{ view }}">
+          {% if owner_explicit %}<input type="hidden" name="owner" value="{{ selected_owner }}">{% endif %}
+          {% if selected_finish %}<input type="hidden" name="finish" value="{{ selected_finish }}">{% endif %}
+          {% if selected_type %}<input type="hidden" name="type" value="{{ selected_type }}">{% endif %}
+          {% if selected_color %}<input type="hidden" name="color" value="{{ selected_color }}">{% endif %}
+          {% if selected_location %}<input type="hidden" name="location" value="{{ selected_location }}">{% endif %}
+          {% if selected_vending %}<input type="hidden" name="vending" value="{{ selected_vending }}">{% endif %}
+          <label class="check-row public-card-filter-toggle">
+            <input type="checkbox" name="public" value="1" {% if include_public_cards %}checked{% endif %} onchange="this.form.submit()">
+            Include public cards
+          </label>
+        </form>
+        {% endif %}
+
         <form class="owner-filter" method="get" action="{{ url_for('index') }}">
-          <input type="hidden" name="q" value="{{ search }}"><input type="hidden" name="sort" value="{{ sort_key }}"><input type="hidden" name="dir" value="{{ direction }}"><input type="hidden" name="view" value="{{ view }}">
+          <input type="hidden" name="q" value="{{ search }}"><input type="hidden" name="sort" value="{{ sort_key }}"><input type="hidden" name="dir" value="{{ direction }}"><input type="hidden" name="view" value="{{ view }}">{% if include_public_cards %}<input type="hidden" name="public" value="1">{% endif %}
           {% if owner_explicit %}<input type="hidden" name="owner" value="{{ selected_owner }}">{% endif %}{% if selected_type %}<input type="hidden" name="type" value="{{ selected_type }}">{% endif %}{% if selected_color %}<input type="hidden" name="color" value="{{ selected_color }}">{% endif %}{% if selected_location %}<input type="hidden" name="location" value="{{ selected_location }}">{% endif %}{% if selected_vending %}<input type="hidden" name="vending" value="{{ selected_vending }}">{% endif %}
           <label for="finish">Finish</label><select id="finish" name="finish" onchange="this.form.submit()"><option value="">Normal + Foil</option><option value="normal" {% if selected_finish == 'normal' %}selected{% endif %}>Normal only</option><option value="foil" {% if selected_finish == 'foil' %}selected{% endif %}>Foil only</option></select>
         </form>
 
         <div class="view-toggle" aria-label="View mode">
-          <a class="button {% if view == 'list' %}{% else %}secondary{% endif %}" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view='list') }}">☷ List</a>
-          <a class="button {% if view == 'grid' %}{% else %}secondary{% endif %}" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view='grid') }}">▦ Grid</a>
+          <a class="button {% if view == 'list' %}{% else %}secondary{% endif %}" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view='list', public='1' if include_public_cards else None) }}">☷ List</a>
+          <a class="button {% if view == 'grid' %}{% else %}secondary{% endif %}" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view='grid', public='1' if include_public_cards else None) }}">▦ Grid</a>
         </div>
         {% if view == 'grid' %}
         <label class="grid-size-control" for="gridCardSize">
@@ -149,14 +168,14 @@
         <input type="hidden" name="q" value="{{ search }}">
         <input type="hidden" name="sort" value="{{ sort_key }}">
         <input type="hidden" name="dir" value="{{ direction }}">
-        <input type="hidden" name="view" value="{{ view }}">
+        <input type="hidden" name="view" value="{{ view }}">{% if include_public_cards %}<input type="hidden" name="public" value="1">{% endif %}
         {% if owner_explicit %}<input type="hidden" name="owner" value="{{ selected_owner }}">{% endif %}
         {% if selected_finish %}<input type="hidden" name="finish" value="{{ selected_finish }}">{% endif %}
         <label>Card type<select name="type" onchange="this.form.submit()"><option value="">All types</option>{% for t in ['Legendary','Creature','Artifact','Enchantment','Instant','Sorcery','Planeswalker','Land','Battle'] %}<option value="{{ t }}" {% if selected_type == t %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></label>
         <label>Color<select name="color" onchange="this.form.submit()"><option value="">All colors</option><option value="W" {% if selected_color == 'W' %}selected{% endif %}>White</option><option value="U" {% if selected_color == 'U' %}selected{% endif %}>Blue</option><option value="B" {% if selected_color == 'B' %}selected{% endif %}>Black</option><option value="R" {% if selected_color == 'R' %}selected{% endif %}>Red</option><option value="G" {% if selected_color == 'G' %}selected{% endif %}>Green</option><option value="colorless" {% if selected_color == 'colorless' %}selected{% endif %}>Colorless</option><option value="multicolor" {% if selected_color == 'multicolor' %}selected{% endif %}>Multicolor</option></select></label>
         <label>Location<select name="location" onchange="this.form.submit()"><option value="">All locations</option>{% for location in locations %}<option value="{{ location }}" {% if selected_location == location %}selected{% endif %}>{{ location }}</option>{% endfor %}</select></label>
         <label>Vending status<select name="vending" onchange="this.form.submit()"><option value="" {% if not selected_vending %}selected{% endif %}>All cards</option><option value="yes" {% if selected_vending == 'yes' %}selected{% endif %}>For vending</option><option value="no" {% if selected_vending == 'no' %}selected{% endif %}>Not for vending</option></select></label>
-        {% if selected_type or selected_color or selected_location or selected_vending %}<a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, sort=sort_key, dir=direction, view=view) }}">Clear filters</a>{% endif %}
+        {% if selected_type or selected_color or selected_location or selected_vending %}<a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, sort=sort_key, dir=direction, view=view, public='1' if include_public_cards else None) }}">Clear filters</a>{% endif %}
         <span class="filter-note">Search supports set:, cn:, t:, c:, o:, r:, art:, otag:, is:foil, owner:, loc:, deck:, vending:, order: and direction:. Use art: for illustration tags and otag: for Oracle/function tags.</span>
       </form>
     </section>
@@ -188,11 +207,11 @@
     {% if page_count > 1 %}
     <nav class="inventory-pagination" aria-label="Inventory pages">
       {% if page > 1 %}
-      <a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view=view, page=page-1) }}">← Previous</a>
+      <a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view=view, page=page-1, public='1' if include_public_cards else None) }}">← Previous</a>
       {% else %}<span class="button secondary disabled" aria-disabled="true">← Previous</span>{% endif %}
       <span>Page {{ page }} of {{ page_count }} · Rows {{ (page - 1) * page_size + 1 }}–{{ [page * page_size, result_count]|min }} of {{ result_count }}</span>
       {% if page < page_count %}
-      <a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view=view, page=page+1) }}">Next →</a>
+      <a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view=view, page=page+1, public='1' if include_public_cards else None) }}">Next →</a>
       {% else %}<span class="button secondary disabled" aria-disabled="true">Next →</span>{% endif %}
     </nav>
     {% endif %}
@@ -203,16 +222,18 @@
     <section class="card-grid" aria-label="Card collection">
       {% for item in inventory %}
       {% set item_editable = item.owner in editable_owners %}
+      {% set item_public_only = include_public_cards and not item_editable %}
       <article class="card-tile" id="tile-{{ item.id }}">
         {% if admin_user and item_editable %}<label class="inventory-select-label"><input class="inventory-select" type="checkbox" value="{{ item.id }}" aria-label="Select {{ item.name }} for bulk editing"> Select</label>{% endif %}
         <button type="button" class="card-art-trigger" title="{{ item.name|e }} · {{ item.set_code or '—' }} #{{ item.collector_number or '—' }}" aria-label="View details and price history for {{ item.name|e }}"
           data-scryfall="{{ item.scryfall_id or '' }}" data-tcg="{{ item.tcgplayer_id or '' }}" data-image="{{ item.image_url or '' }}" data-name="{{ item.name|e }}"
           data-set="{{ item.set_code or '' }}" data-collector="{{ item.collector_number or '' }}" data-rarity="{{ item.rarity or '' }}" data-finish="{{ item.finish }}"
-          data-owner="{{ item.owner|e }}" data-quantity="{{ item.quantity }}" data-location="{{ item.location|e }}" data-price="{{ '%.2f'|format(item.calculated_unit_price|float) }}">
+          data-owner="{{ item.owner|e }}" data-quantity="{{ item.quantity }}" data-location="{{ '' if item_public_only else item.location|e }}" data-price="{{ '%.2f'|format(item.calculated_unit_price|float) }}">
           <span class="tile-image-wrap">
             {% if item.image_url %}<img src="{{ item.image_url }}" class="card-image" alt="{{ item.name }}" loading="lazy" onerror="imageFailed(this)">
             {% else %}<span class="image-placeholder">No card image</span>{% endif %}
             <span class="finish-badge {{ item.finish }}">{{ item.finish|capitalize }}</span>
+            {% if item_public_only %}<span class="badge public-card-badge">Public</span>{% endif %}
           </span>
           <span class="tile-price-badge">
             <span class="tile-price-label">Per card</span>
@@ -279,17 +300,17 @@
               <td>{{ item.rarity }}</td>
               <td><span class="finish-pill {{ item.finish }}">{{ item.finish|capitalize }}</span></td>
               <td>
-                <span class="edit-value">{{ item.owner }}</span>
+                <span class="edit-value">{{ item.owner }}</span>{% if item_public_only %} <span class="badge public-card-badge">Public</span>{% endif %}
                 {% if admin_user and item_editable %}<select class="inline-input owner-input edit-only-control" data-id="{{ item.id }}" data-field="owner" aria-label="Owner for {{ item.name }}">{% for owner in editable_owners %}<option value="{{ owner }}" {% if owner == item.owner %}selected{% endif %}>{{ owner }}</option>{% endfor %}</select>{% endif %}
               </td>
               <td><span class="edit-value">{{ item.quantity }}</span>{% if admin_user and item_editable %}<input class="qty-input edit-only-control" type="number" min="1" step="1" data-id="{{ item.id }}" data-field="quantity" value="{{ item.quantity }}" aria-label="Quantity for {{ item.name }}">{% endif %}</td>
-              <td><span class="edit-value">{{ item.location }}</span>{% if admin_user and item_editable %}<input class="location-input edit-only-control" type="text" data-id="{{ item.id }}" data-field="location" value="{{ item.location|e }}" aria-label="Storage location for {{ item.name }}">{% endif %}</td>
+              <td>{% if item_public_only %}<span class="subtle">Not shared</span>{% else %}<span class="edit-value">{{ item.location }}</span>{% endif %}{% if admin_user and item_editable %}<input class="location-input edit-only-control" type="text" data-id="{{ item.id }}" data-field="location" value="{{ item.location|e }}" aria-label="Storage location for {{ item.name }}">{% endif %}</td>
               <td>
-                <span class="edit-value">{% if item.deck_id %}{% for deck in decks %}{% if deck.id == item.deck_id %}{{ deck.name }}{% endif %}{% endfor %}{% else %}Unassigned{% endif %}</span>
+                {% if item_public_only %}<span class="subtle">Not shared</span>{% else %}<span class="edit-value">{% if item.deck_id %}{% for deck in decks %}{% if deck.id == item.deck_id %}{{ deck.name }}{% endif %}{% endfor %}{% else %}Unassigned{% endif %}</span>{% endif %}
                 {% if admin_user and item_editable %}<select class="inline-input deck-input edit-only-control" data-id="{{ item.id }}" data-field="deck_id" aria-label="Deck assignment for {{ item.name }}"><option value="none" {% if not item.deck_id %}selected{% endif %}>Unassigned</option>{% for deck in decks %}{% if deck.id in editable_deck_ids %}<option value="{{ deck.id }}" {% if item.deck_id == deck.id %}selected{% endif %}>{{ deck.name }}</option>{% endif %}{% endfor %}</select>{% endif %}
               </td>
               <td>
-                <span class="edit-value">{{ 'Yes' if item.for_vending else 'No' }}</span>
+                {% if item_public_only %}<span class="subtle">Not shared</span>{% else %}<span class="edit-value">{{ 'Yes' if item.for_vending else 'No' }}</span>{% endif %}
                 {% if admin_user and item_editable %}<label class="check-row vending-cell edit-only-control"><input type="checkbox" class="vending-input" data-id="{{ item.id }}" data-field="for_vending" {% if item.for_vending %}checked{% endif %} {% if item.deck_id %}disabled{% endif %} aria-label="For vending: {{ item.name }}"></label>{% endif %}
               </td>
               <td><span class="count-pair">N {{ item.card_normal_qty }} · F {{ item.card_foil_qty }}</span></td>
@@ -392,11 +413,11 @@
     {% if page_count > 1 %}
     <nav class="inventory-pagination inventory-pagination-bottom" aria-label="Inventory pages (bottom)">
       {% if page > 1 %}
-      <a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view=view, page=page-1) }}">← Previous</a>
+      <a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view=view, page=page-1, public='1' if include_public_cards else None) }}">← Previous</a>
       {% else %}<span class="button secondary disabled" aria-disabled="true">← Previous</span>{% endif %}
       <span>Page {{ page }} of {{ page_count }} · Rows {{ (page - 1) * page_size + 1 }}–{{ [page * page_size, result_count]|min }} of {{ result_count }}</span>
       {% if page < page_count %}
-      <a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view=view, page=page+1) }}">Next →</a>
+      <a class="button secondary" href="{{ url_for('index', q=search, owner=selected_owner, finish=selected_finish, type=selected_type, color=selected_color, location=selected_location, vending=selected_vending, sort=sort_key, dir=direction, view=view, page=page+1, public='1' if include_public_cards else None) }}">Next →</a>
       {% else %}<span class="button secondary disabled" aria-disabled="true">Next →</span>{% endif %}
     </nav>
     {% endif %}
