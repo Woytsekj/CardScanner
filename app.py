@@ -407,7 +407,7 @@ def ensure_people_and_auth(conn: sqlite3.Connection, force: bool = False) -> Non
 
 def _ensure_people_and_auth(conn: sqlite3.Connection) -> None:
     c = conn.cursor()
-    c.execute("""CREATE TABLE IF NOT EXISTS people (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL COLLATE NOCASE UNIQUE, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS people (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL COLLATE NOCASE UNIQUE, active INTEGER NOT NULL DEFAULT 1, is_public INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         username TEXT PRIMARY KEY COLLATE NOCASE,
         password_hash TEXT NOT NULL,
@@ -426,6 +426,7 @@ def _ensure_people_and_auth(conn: sqlite3.Connection) -> None:
         "ALTER TABLE users ADD COLUMN last_login_at TEXT",
         "ALTER TABLE users ADD COLUMN person_id INTEGER REFERENCES people(id) ON DELETE SET NULL",
         "ALTER TABLE users ADD COLUMN manager_username TEXT REFERENCES users(username) ON DELETE SET NULL",
+        "ALTER TABLE people ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0",
     ):
         try: c.execute(ddl)
         except sqlite3.OperationalError: pass
@@ -689,7 +690,7 @@ def _load_current_user(username: str) -> sqlite3.Row | None:
                     SELECT u.username, u.password_hash, u.is_admin, u.role,
                            u.is_superadmin, u.active, u.created_at,
                            u.last_login_at, u.person_id, u.manager_username,
-                           p.name AS person_name
+                           p.name AS person_name, p.is_public AS collection_is_public
                     FROM users u
                     LEFT JOIN people p ON p.id = u.person_id
                     WHERE u.username = ?
@@ -942,13 +943,33 @@ def _accessible_person_names(user=None) -> list[str]:
         conn.close()
 
 
+
+def _public_person_names() -> list[str]:
+    """Return active collections whose owners opted into public card viewing."""
+    conn = _account_connection()
+    try:
+        active_clause = "active IS TRUE" if DATABASE_BACKEND == "postgres" else "active=1"
+        public_clause = "is_public IS TRUE" if DATABASE_BACKEND == "postgres" else "is_public=1"
+        rows = conn.execute(
+            f"""
+            SELECT name FROM {_account_table('people')}
+            WHERE {active_clause} AND {public_clause}
+            ORDER BY lower(name)
+            """
+        ).fetchall()
+        return [str(row["name"]) for row in rows]
+    finally:
+        conn.close()
+
+
 def _effective_inventory_owner(
     user=None,
     requested_owner: str = "",
     *,
     owner_explicit: bool = False,
+    include_public: bool = False,
 ) -> str | list[str]:
-    """Resolve the owner filter without allowing an account outside its scope."""
+    """Resolve readable owners without changing any collection write permissions."""
     user = user or current_user()
     if not user:
         return "__no_assigned_collection__"
@@ -956,29 +977,42 @@ def _effective_inventory_owner(
     if is_superadmin_user(user):
         return requested
 
-    allowed = _accessible_person_names(user)
-    by_key = {name.casefold(): name for name in allowed}
+    manageable = _accessible_person_names(user)
+    manageable_by_key = {name.casefold(): name for name in manageable}
+    public_names = _public_person_names() if include_public else []
+    public_by_key = {name.casefold(): name for name in public_names}
     own = str(user["person_name"] or "").strip()
+
+    if requested:
+        selected = manageable_by_key.get(requested.casefold()) or public_by_key.get(requested.casefold())
+        if selected:
+            if include_public:
+                return list(dict.fromkeys([selected, *public_names]))
+            return selected
+        if is_admin_user(user):
+            selected = manageable_by_key.get(own.casefold()) if own else None
+            if not selected and manageable:
+                selected = sorted(manageable, key=str.casefold)[0]
+            if selected:
+                if include_public:
+                    return list(dict.fromkeys([selected, *public_names]))
+                return selected
+        return "__no_assigned_collection__"
+
     if is_admin_user(user):
-        if requested:
-            if requested.casefold() in by_key:
-                return by_key[requested.casefold()]
-            if own and own.casefold() in by_key:
-                return own
-            return sorted(allowed, key=str.casefold)[0] if allowed else "__no_assigned_collection__"
-
-        # An explicitly selected empty Owner filter means "All owners in my
-        # scope" for Admins: their collection plus directly managed Users.
         if owner_explicit:
-            return allowed or ["__no_assigned_collection__"]
+            base = manageable
+        else:
+            selected = manageable_by_key.get(own.casefold()) if own else None
+            base = [selected] if selected else sorted(manageable, key=str.casefold)[:1]
+    else:
+        base = [manageable_by_key[own.casefold()]] if own and own.casefold() in manageable_by_key else []
 
-        # Preserve the existing default landing view until the Admin chooses
-        # All owners in the selector.
-        if own and own.casefold() in by_key:
-            return own
-        return sorted(allowed, key=str.casefold)[0] if allowed else "__no_assigned_collection__"
-
-    return own if own and own.casefold() in by_key else "__no_assigned_collection__"
+    if include_public:
+        return list(dict.fromkeys([*base, *public_names])) or ["__no_assigned_collection__"]
+    if owner_explicit:
+        return manageable or ["__no_assigned_collection__"]
+    return base[0] if base else "__no_assigned_collection__"
 
 
 def _can_manage_inventory_rows(item_ids, user=None) -> bool:
@@ -1235,6 +1269,7 @@ def security_gate():
             "rename_user": "POST",
             "change_user_role": "POST",
             "delete_user": "POST",
+            "set_collection_visibility": "POST",
             "change_user_manager": "POST",
             "admin_change_password_legacy": "POST",
             "change_password": "POST",
@@ -1306,7 +1341,7 @@ def security_gate():
     # Vendor accounts are deliberately restricted to vending and logout.
     user = current_user()
     if user and str(user["role"]).lower() == "vendor" and not int(user["is_admin"]):
-        allowed = {"vending_view", "vending_export_csv", "vending_labels", "logout", "login", "login_post", "static"}
+        allowed = {"vending_view", "vending_export_csv", "vending_labels", "preferences_page", "set_collection_visibility", "logout", "login", "login_post", "static"}
         if request.endpoint not in allowed and not path.startswith("/static/"):
             return render_template("login.html", next_url="", error="This account only has access to the Vending area."), 403
 
@@ -2965,7 +3000,51 @@ def preferences_page():
     return render_template(
         "preferences.html",
         postgres_mode=(DATABASE_BACKEND == "postgres"),
+        collection_is_public=bool(current_user()["collection_is_public"]),
         message=request.args.get("message", ""),
+    )
+
+
+@app.post("/account/collection-visibility")
+@login_required
+def set_collection_visibility():
+    """Allow each signed-in account to change only its own collection visibility."""
+    user = current_user()
+    if not user or user["person_id"] is None:
+        return redirect(url_for("preferences_page", message="Your account has no assigned collection."))
+
+    is_public = request.form.get("is_public") == "1"
+    person_id = int(user["person_id"])
+    if DATABASE_BACKEND == "postgres":
+        from postgres_app_db import connect_app_database
+
+        conn = connect_app_database()
+        try:
+            conn.execute(
+                "UPDATE app.people SET is_public = ? WHERE id = ?",
+                (is_public, person_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    else:
+        conn = connect_inventory()
+        try:
+            ensure_people_and_auth(conn)
+            conn.execute(
+                "UPDATE people SET is_public = ? WHERE id = ?",
+                (1 if is_public else 0, person_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    g._current_user = None
+    return redirect(
+        url_for(
+            "preferences_page",
+            message="Your collection is now public." if is_public else "Your collection is now private.",
+        )
     )
 
 
@@ -4396,8 +4475,12 @@ def index():
     requested_owner = request.args.get("owner", "").strip()
     user = current_user()
     editable_owners = _accessible_person_names(user)
+    include_public_cards = request.args.get("public", "").strip().lower() in {"1", "true", "yes", "on"}
     owner_filter = _effective_inventory_owner(
-        user, requested_owner, owner_explicit=owner_explicit
+        user,
+        requested_owner,
+        owner_explicit=owner_explicit,
+        include_public=include_public_cards,
     )
     editable_deck_ids = _editable_deck_ids(user)
     finish_filter = request.args.get("finish", "").strip().lower()
@@ -4480,13 +4563,19 @@ def index():
         finally:
             conn.close()
         if not is_superadmin_user(user):
-            allowed = {name.casefold() for name in editable_owners}
+            visible_owners = list(editable_owners)
+            if include_public_cards:
+                visible_owners.extend(_public_person_names())
+            allowed = {name.casefold() for name in visible_owners}
             owners = [name for name in owners if str(name).casefold() in allowed]
     else:
         conn = connect_inventory()
         owners = active_people(conn)
         if not is_superadmin_user(user):
-            allowed = {name.casefold() for name in editable_owners}
+            visible_owners = list(editable_owners)
+            if include_public_cards:
+                visible_owners.extend(_public_person_names())
+            allowed = {name.casefold() for name in visible_owners}
             owners = [name for name in owners if str(name).casefold() in allowed]
         decks = conn.execute("SELECT id, name FROM decklists ORDER BY name COLLATE NOCASE").fetchall()
         total_rows = conn.execute("SELECT COUNT(*) FROM inventory").fetchone()[0]
@@ -4497,7 +4586,10 @@ def index():
         conn.close()
 
     if not is_superadmin_user(user):
-        allowed = {name.casefold() for name in editable_owners}
+        visible_owners = list(editable_owners)
+        if include_public_cards:
+            visible_owners.extend(_public_person_names())
+        allowed = {name.casefold() for name in visible_owners}
         owner_totals = {name: value for name, value in owner_totals.items() if name.casefold() in allowed}
         owner_counts = {name: value for name, value in owner_counts.items() if name.casefold() in allowed}
         grand_total = sum(float(value or 0) for value in owner_totals.values())
@@ -4519,6 +4611,7 @@ def index():
         visible_finish_totals=visible_finish_totals,
         owners=owners,
         selected_owner=owner_filter if isinstance(owner_filter, str) else "",
+        include_public_cards=include_public_cards,
         owner_explicit=owner_explicit,
         selected_finish=finish_filter,
         selected_type=type_filter,
