@@ -101,7 +101,7 @@
             {% endif %}
           {% endfor %}
           {% if user.manager_username and not (managers|selectattr('username', 'equalto', user.manager_username)|list) %}
-          <option value="{{ user.manager_username }}" selected disabled>{{ user.manager_username }} (inactive)</option>
+          <option value="{{ user.manager_username }}" selected>{{ user.manager_username }} (inactive — choose an active manager to reassign)</option>
           {% endif %}
         </select></label>
         <button class="button secondary" type="submit">Save manager</button>
