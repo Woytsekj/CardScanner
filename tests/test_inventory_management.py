@@ -651,6 +651,8 @@ class InventoryManagementTests(unittest.TestCase):
         public_html = public_view.get_data(as_text=True)
         self.assertIn("My Private Card", public_html)
         self.assertIn("Public Friend Card", public_html)
+        self.assertIn('href="/"', public_html)
+        self.assertIn(">Inventory</a>", public_html)
         self.assertNotIn("Private Stranger Card", public_html)
         self.assertIn("Public", public_html)
         self.assertIn("Not shared", public_html)
