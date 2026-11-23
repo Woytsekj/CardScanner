@@ -131,13 +131,57 @@ class PostgreSQLUserAdminTests(unittest.TestCase):
     def tearDown(self):
         conn = connect_app_database(expected_database="cardscanner_dev")
         try:
-            # Delete only accounts and people created by this test.
+            # Account-insert triggers create one collection per test account.
+            # Find every collection created during this test by its unique token,
+            # including old collections replaced by blank assignment or username
+            # renames. The regular person fixtures do not use this name pattern.
+            generated_collections = conn.execute(
+                """
+                SELECT id
+                FROM app.people
+                WHERE name LIKE ?
+                """,
+                (f"%{self.token}% Collection%",),
+            ).fetchall()
+            generated_collection_ids = [
+                int(row["id"]) for row in generated_collections
+            ]
+
+            # Delete only accounts created by this test. Their collections are
+            # deliberately retained by production behavior, so clean those
+            # test-only rows separately below.
             for username in self.usernames_to_clean:
                 conn.execute(
                     "DELETE FROM app.users WHERE username = ?",
                     (username,),
                 )
 
+            for person_id in generated_collection_ids:
+                # Never remove a collection that has acquired an account,
+                # inventory, or decklist reference, even during test cleanup.
+                conn.execute(
+                    """
+                    DELETE FROM app.people AS p
+                    WHERE p.id = ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM app.users u
+                          WHERE u.person_id = p.id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM app.inventory i
+                          WHERE i.person_id = p.id
+                             OR (i.game_id = 'mtg' AND i.owner = p.name)
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM app.decklists d
+                          WHERE d.person_id = p.id
+                             OR d.person_name = p.name
+                      )
+                    """,
+                    (person_id,),
+                )
+
+            # These are the two explicit person fixtures made by setUp().
             for person_id in self.person_ids_to_clean:
                 conn.execute(
                     "DELETE FROM app.people WHERE id = ?",
