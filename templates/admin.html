@@ -96,7 +96,7 @@
         <label>Managed by<select name="manager_username" aria-label="Manager for {{ user.username }}">
           <option value="" {% if not user.manager_username and user.role|lower != 'admin' %}selected{% endif %}>No manager</option>
           {% for manager in managers %}
-            {% if user.role|lower != 'admin' or manager.is_superadmin %}
+            {% if manager.username|lower != user.username|lower and (user.role|lower != 'admin' or manager.is_superadmin) %}
             <option value="{{ manager.username }}" {% if user.manager_username == manager.username %}selected{% endif %}>{{ manager.username }}</option>
             {% endif %}
           {% endfor %}
