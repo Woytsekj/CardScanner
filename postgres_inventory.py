@@ -433,7 +433,7 @@ def parse_postgres_inventory_search(
 
 def _inventory_filters(
     search: str,
-    owner_filter: str,
+    owner_filter: str | list[str],
     finish_filter: str,
     type_filter: str = "",
     color_filter: str = "",
@@ -442,7 +442,15 @@ def _inventory_filters(
 ) -> tuple[list[str], list[Any], str | None, str | None]:
     where, args, query_order, query_direction = parse_postgres_inventory_search(search)
 
-    if owner_filter:
+    if isinstance(owner_filter, (list, tuple, set)):
+        scoped_owners = list(dict.fromkeys(str(name) for name in owner_filter if str(name)))
+        if scoped_owners:
+            placeholders = ", ".join("?" for _ in scoped_owners)
+            where.append(f"COALESCE(i.owner, 'Me') IN ({placeholders})")
+            args.extend(scoped_owners)
+        else:
+            where.append("FALSE")
+    elif owner_filter:
         where.append("COALESCE(i.owner, 'Me') = ?")
         args.append(owner_filter)
 
