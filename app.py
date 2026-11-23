@@ -4491,7 +4491,7 @@ def index():
         # Public mode shares card information, not collection-specific metadata.
         # Ignore search qualifiers that would infer storage/deck/vending details.
         search = re.sub(
-            r'(?<!\\S)-?(?:loc|location|deck|vending)(?::|=)(?:"(?:\\\\.|[^"\\\\])*"|\\S+)',
+            r'(?<!\S)-?(?:loc|location|deck|vending)(?::|=)(?:"(?:\\.|[^"\\])*"|\S+)',
             " ",
             search,
             flags=re.IGNORECASE,
