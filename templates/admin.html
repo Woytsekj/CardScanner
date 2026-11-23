@@ -90,6 +90,29 @@
         <button class="button secondary" type="submit">Save collection</button>
       </form>
 
+      {% if admin_is_superadmin and not user.is_superadmin %}
+      <form method="post" action="{{ url_for('change_user_manager', username=user.username) }}" class="search-inline account-manager-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label>Managed by<select name="manager_username" aria-label="Manager for {{ user.username }}">
+          <option value="" {% if not user.manager_username and user.role|lower != 'admin' %}selected{% endif %}>No manager</option>
+          {% for manager in managers %}
+            {% if user.role|lower != 'admin' or manager.is_superadmin %}
+            <option value="{{ manager.username }}" {% if user.manager_username == manager.username %}selected{% endif %}>{{ manager.username }}</option>
+            {% endif %}
+          {% endfor %}
+          {% if user.manager_username and not (managers|selectattr('username', 'equalto', user.manager_username)|list) %}
+          <option value="{{ user.manager_username }}" selected disabled>{{ user.manager_username }} (inactive)</option>
+          {% endif %}
+        </select></label>
+        <button class="button secondary" type="submit">Save manager</button>
+      </form>
+      {% endif %}
+
+      <form method="post" action="{{ url_for('rename_user', username=user.username) }}" class="search-inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input name="new_username" value="{{ user.username }}" maxlength="150" required aria-label="New username for {{ user.username }}">
+        <button class="button secondary" type="submit">Change username</button>
+      </form>
       <form method="post" action="{{ url_for('rename_user', username=user.username) }}" class="search-inline">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input name="new_username" value="{{ user.username }}" maxlength="150" required aria-label="New username for {{ user.username }}">
