@@ -656,7 +656,7 @@ class InventoryManagementTests(unittest.TestCase):
         self.assertIn("Not shared", public_html)
         self.assertNotIn("Friend Secret Shelf", public_html)
         self.assertNotIn("Private Stranger Shelf", public_html)
-        self.assertNotIn("My Secret Shelf", public_html)
+        self.assertIn("My Secret Shelf", public_html)  # Own collection locations remain visible.
 
         # Public cards have no edit controls, and server-side writes are denied.
         public_row_start = public_html.index(f'id="row-{public_card_id}"')
