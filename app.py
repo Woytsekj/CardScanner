@@ -4128,6 +4128,72 @@ def rename_user(username):
         conn.close()
 
 
+@app.post("/admin/users/<username>/manager")
+@superadmin_required
+def change_user_manager(username):
+    """Assign or change an existing account's manager (Superadmin only)."""
+    if DATABASE_BACKEND == "postgres":
+        from postgres_user_admin import handle_change_user_manager
+        return handle_change_user_manager(username)
+
+    target_username = str(username)[:150]
+    requested_manager = str(request.form.get("manager_username") or "").strip()
+    conn = connect_inventory()
+    ensure_people_and_auth(conn)
+    try:
+        user = conn.execute(
+            """
+            SELECT username, role, is_admin, is_superadmin
+            FROM users
+            WHERE lower(username)=lower(?)
+            """,
+            (target_username,),
+        ).fetchone()
+        if not user:
+            return redirect(url_for("admin_page", message="User not found."))
+        role = str(user["role"] or "").strip().lower()
+        if int(user["is_superadmin"]) or role == "superadmin":
+            return redirect(url_for("admin_page", message="Superadmin accounts do not have a manager."))
+        manager_username = None
+        if requested_manager:
+            if requested_manager.casefold() == str(user["username"]).casefold():
+                return redirect(url_for("admin_page", message="An account cannot manage itself."))
+            manager = conn.execute(
+                """
+                SELECT username, is_admin, is_superadmin, active
+                FROM users
+                WHERE lower(username)=lower(?)
+                """,
+                (requested_manager,),
+            ).fetchone()
+            if not manager or not int(manager["active"]) or not (
+                int(manager["is_admin"]) or int(manager["is_superadmin"])
+            ):
+                return redirect(url_for("admin_page", message="Choose an active administrator as the manager."))
+            if role == "admin" and not int(manager["is_superadmin"]):
+                return redirect(url_for("admin_page", message="Admin accounts must report directly to a Superadmin."))
+            manager_username = str(manager["username"])
+        elif role == "admin":
+            return redirect(url_for("admin_page", message="Admin accounts must report directly to a Superadmin."))
+
+        conn.execute(
+            "UPDATE users SET manager_username=? WHERE username=?",
+            (manager_username, user["username"]),
+        )
+        conn.commit()
+        message = (
+            f"Updated manager for {user['username']} to {manager_username}."
+            if manager_username
+            else f"Removed the manager from {user['username']}."
+        )
+        return redirect(url_for("admin_page", message=message))
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return redirect(url_for("admin_page", message="Could not update the account manager."))
+    finally:
+        conn.close()
+
+
 @app.post("/admin/users/<username>/role")
 @superadmin_required
 def change_user_role(username):
