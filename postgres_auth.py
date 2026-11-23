@@ -15,7 +15,7 @@ def load_current_user(username: str):
             SELECT u.username, u.password_hash, u.is_admin, u.role,
                    u.is_superadmin, u.active, u.created_at,
                    u.last_login_at, u.person_id, u.manager_username,
-                   p.name AS person_name
+                   p.name AS person_name, p.is_public AS collection_is_public
             FROM app.users AS u
             LEFT JOIN app.people AS p ON p.id = u.person_id
             WHERE lower(u.username) = lower(?)
