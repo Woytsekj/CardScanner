@@ -113,11 +113,6 @@
         <input name="new_username" value="{{ user.username }}" maxlength="150" required aria-label="New username for {{ user.username }}">
         <button class="button secondary" type="submit">Change username</button>
       </form>
-      <form method="post" action="{{ url_for('rename_user', username=user.username) }}" class="search-inline">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input name="new_username" value="{{ user.username }}" maxlength="150" required aria-label="New username for {{ user.username }}">
-        <button class="button secondary" type="submit">Change username</button>
-      </form>
 
       {% if admin_is_superadmin and not user.is_superadmin %}
       <form method="post" action="{{ url_for('change_user_role', username=user.username) }}" class="search-inline">
