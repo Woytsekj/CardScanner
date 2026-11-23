@@ -4589,17 +4589,21 @@ def index():
         readable_owner_names = list(editable_owners)
         if readable_owner_names:
             from_marks = ", ".join("?" for _ in readable_owner_names)
+            game_filter = " AND game_id = 'mtg'" if DATABASE_BACKEND == "postgres" else ""
             location_conn = _account_connection()
             try:
                 locations = [
                     row["location"]
                     for row in location_conn.execute(
                         f"""
-                        SELECT DISTINCT COALESCE(location, 'Free') AS location
-                        FROM {_account_table('inventory')}
-                        WHERE game_id = 'mtg'
-                          AND lower(COALESCE(owner, 'Me')) IN ({from_marks})
-                        ORDER BY lower(COALESCE(location, 'Free')), COALESCE(location, 'Free')
+                        SELECT location
+                        FROM (
+                            SELECT DISTINCT COALESCE(location, 'Free') AS location
+                            FROM {_account_table('inventory')}
+                            WHERE 1 = 1 {game_filter}
+                              AND lower(COALESCE(owner, 'Me')) IN ({from_marks})
+                        ) AS visible_locations
+                        ORDER BY lower(location), location
                         """,
                         [name.casefold() for name in readable_owner_names],
                     ).fetchall()
