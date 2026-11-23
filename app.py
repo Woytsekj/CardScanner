@@ -3006,7 +3006,7 @@ def admin_page():
                 superadmin=is_superadmin_user(current_user()),
             )
             managers = conn.execute(
-                'SELECT username FROM app.users WHERE (is_admin IS TRUE OR is_superadmin IS TRUE) AND active IS TRUE ORDER BY lower(username) COLLATE "C"'
+                'SELECT username, is_superadmin FROM app.users WHERE (is_admin IS TRUE OR is_superadmin IS TRUE) AND active IS TRUE ORDER BY lower(username) COLLATE "C"'
             ).fetchall()
         finally:
             conn.close()
@@ -3044,7 +3044,7 @@ def admin_page():
         ).fetchall()
         users = [dict(account) for account in users]
         managers = conn.execute(
-            "SELECT username FROM users WHERE (is_admin=1 OR is_superadmin=1) AND active=1 ORDER BY username COLLATE NOCASE"
+            "SELECT username, is_superadmin FROM users WHERE (is_admin=1 OR is_superadmin=1) AND active=1 ORDER BY username COLLATE NOCASE"
         ).fetchall()
         conn.close()
 
