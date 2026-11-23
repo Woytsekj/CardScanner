@@ -179,6 +179,72 @@ def handle_add_user():
     return _redirect(_run(operation, lock=True))
 
 
+
+def handle_change_user_manager(username: str):
+    """Change an existing account's manager. Only Superadmins may reassign."""
+    username = str(username)[:150]
+    requested_manager = str(request.form.get("manager_username") or "").strip()
+
+    if not bool(session.get("is_superadmin")):
+        return _redirect("Only a superadmin can change account managers.")
+
+    def operation(conn):
+        user = conn.execute(
+            """
+            SELECT username, role, is_admin, is_superadmin
+            FROM app.users
+            WHERE lower(btrim(username)) = lower(btrim(?))
+            LIMIT 1
+            FOR UPDATE
+            """,
+            (username,),
+        ).fetchone()
+        if not user:
+            return "User not found."
+
+        actual_username = str(user["username"])
+        role = str(user["role"] or "").strip().lower()
+        if bool(user["is_superadmin"]) or role == "superadmin":
+            return "Superadmin accounts do not have a manager."
+
+        manager_name = None
+        if requested_manager:
+            if requested_manager.casefold() == actual_username.casefold():
+                return "An account cannot manage itself."
+
+            manager = conn.execute(
+                """
+                SELECT username, is_admin, is_superadmin, active
+                FROM app.users
+                WHERE lower(btrim(username)) = lower(btrim(?))
+                LIMIT 1
+                """,
+                (requested_manager,),
+            ).fetchone()
+            if not manager or not bool(manager["active"]) or not (
+                bool(manager["is_admin"]) or bool(manager["is_superadmin"])
+            ):
+                return "Choose an active administrator as the manager."
+
+            if role == "admin" and not bool(manager["is_superadmin"]):
+                return "Admin accounts must report directly to a Superadmin."
+
+            manager_name = str(manager["username"])
+        elif role == "admin":
+            return "Admin accounts must report directly to a Superadmin."
+
+        conn.execute(
+            "UPDATE app.users SET manager_username = ? WHERE username = ?",
+            (manager_name, actual_username),
+        )
+        return (
+            f"Updated manager for {actual_username} to {manager_name}."
+            if manager_name
+            else f"Removed the manager from {actual_username}."
+        )
+
+    return _redirect(_run(operation, lock=True))
+
 def handle_assign_user_person(username: str):
     username = str(username)[:150]
     raw_person_id = str(request.form.get("person_id") or "").strip()
