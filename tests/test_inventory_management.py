@@ -578,6 +578,145 @@ class InventoryManagementTests(unittest.TestCase):
         self.assertIn("Only My Card", exported)
         self.assertNotIn("Other Person Card", exported)
 
+    def test_public_collections_are_opt_in_read_only_and_owner_controlled(self) -> None:
+        conn = self.connect()
+        conn.execute("INSERT OR IGNORE INTO people(name,active) VALUES('Me',1)")
+        conn.execute("INSERT OR IGNORE INTO people(name,active) VALUES('Friend',1)")
+        conn.execute("INSERT OR IGNORE INTO people(name,active) VALUES('Private Stranger',1)")
+        my_person = int(conn.execute(
+            "SELECT id FROM people WHERE name='Me'"
+        ).fetchone()[0])
+        public_person = int(conn.execute(
+            "SELECT id FROM people WHERE name='Friend'"
+        ).fetchone()[0])
+        private_person = int(conn.execute(
+            "SELECT id FROM people WHERE name='Private Stranger'"
+        ).fetchone()[0])
+        conn.execute("UPDATE people SET is_public=1 WHERE id=?", (public_person,))
+
+        password_hash = app_module.generate_password_hash("normal-public-viewer-password")
+        for username, person_id in (
+            ("normal-public-viewer", my_person),
+            ("public-owner", public_person),
+            ("private-owner", private_person),
+        ):
+            conn.execute(
+                """
+                INSERT INTO users(
+                    username,password_hash,is_admin,role,is_superadmin,active,
+                    person_id,manager_username
+                ) VALUES(?,?,0,'user',0,1,?,'ci-admin')
+                """,
+                (username, password_hash, person_id),
+            )
+        conn.commit()
+        conn.close()
+
+        own_card_id = self.add_card(
+            "My Private Card",
+            owner="Me",
+            location="My Secret Shelf",
+        )
+        public_card_id = self.add_card(
+            "Public Friend Card",
+            owner="Friend",
+            location="Friend Secret Shelf",
+            quantity=2,
+        )
+        private_card_id = self.add_card(
+            "Private Stranger Card",
+            owner="Private Stranger",
+            location="Private Stranger Shelf",
+        )
+
+        viewer = app_module.app.test_client()
+        viewer_csrf = "public-viewer-csrf-token-0123456789"
+        with viewer.session_transaction() as session:
+            session["username"] = "normal-public-viewer"
+            session["csrf_token"] = viewer_csrf
+
+        # Public collections stay hidden until the viewer opts in.
+        private_view = viewer.get("/?view=list", base_url="http://localhost")
+        self.assertEqual(private_view.status_code, 200)
+        self.assertIn("My Private Card", private_view.get_data(as_text=True))
+        self.assertNotIn("Public Friend Card", private_view.get_data(as_text=True))
+        self.assertNotIn("Private Stranger Card", private_view.get_data(as_text=True))
+
+        # Opting in adds public cards, but does not expose other private collections.
+        public_view = viewer.get(
+            "/?public=1&view=list",
+            base_url="http://localhost",
+        )
+        self.assertEqual(public_view.status_code, 200, public_view.get_data(as_text=True))
+        public_html = public_view.get_data(as_text=True)
+        self.assertIn("My Private Card", public_html)
+        self.assertIn("Public Friend Card", public_html)
+        self.assertNotIn("Private Stranger Card", public_html)
+        self.assertIn("Public", public_html)
+        self.assertIn("Not shared", public_html)
+        self.assertNotIn("Friend Secret Shelf", public_html)
+        self.assertNotIn("Private Stranger Shelf", public_html)
+        self.assertNotIn("My Secret Shelf", public_html)
+
+        # Public cards have no edit controls, and server-side writes are denied.
+        public_row_start = public_html.index(f'id="row-{public_card_id}"')
+        public_row_end = public_html.index("</tr>", public_row_start)
+        public_row = public_html[public_row_start:public_row_end]
+        self.assertNotIn("qty-input", public_row)
+        self.assertNotIn("owner-input", public_row)
+        self.assertNotIn("location-input", public_row)
+
+        denied_update = viewer.post(
+            "/update",
+            json={"id": public_card_id, "field": "quantity", "value": 99},
+            headers={"X-CSRFToken": viewer_csrf},
+            base_url="http://localhost",
+        )
+        self.assertEqual(denied_update.status_code, 403)
+
+        # Preferences let the signed-in owner change only their own collection.
+        preferences = viewer.get("/preferences", base_url="http://localhost")
+        self.assertEqual(preferences.status_code, 200)
+        self.assertIn("Make my collection public", preferences.get_data(as_text=True))
+
+        enabled = viewer.post(
+            "/account/collection-visibility",
+            data={
+                "csrf_token": viewer_csrf,
+                "is_public": "1",
+                "person_id": str(private_person),  # ignored; only the session owner's collection is changed
+            },
+            base_url="http://localhost",
+        )
+        self.assertEqual(enabled.status_code, 302)
+        conn = self.connect()
+        visibility = {
+            row["name"]: int(row["is_public"])
+            for row in conn.execute(
+                "SELECT name,is_public FROM people WHERE id IN (?,?,?)",
+                (my_person, public_person, private_person),
+            ).fetchall()
+        }
+        conn.close()
+        self.assertEqual(visibility["Me"], 1)
+        self.assertEqual(visibility["Friend"], 1)
+        self.assertEqual(visibility["Private Stranger"], 0)
+
+        # Unchecking the preference turns only the account owner's collection private again.
+        disabled = viewer.post(
+            "/account/collection-visibility",
+            data={"csrf_token": viewer_csrf},
+            base_url="http://localhost",
+        )
+        self.assertEqual(disabled.status_code, 302)
+        conn = self.connect()
+        own_visibility = conn.execute(
+            "SELECT is_public FROM people WHERE id=?",
+            (my_person,),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(int(own_visibility["is_public"]), 0)
+
     def test_regular_user_cannot_import_or_manually_add_to_another_collection(self) -> None:
         conn = self.connect()
         my_person = conn.execute("SELECT id FROM people WHERE name='Me'").fetchone()
