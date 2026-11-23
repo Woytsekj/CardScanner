@@ -5,7 +5,7 @@
   <meta name="csrf-token" content="{{ csrf_token }}">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Preferences · CardScanner</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.17.0') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='39.20.0') }}">
   <script src="{{ url_for('static', filename='security.js') }}" defer></script>
   <script src="{{ url_for('static', filename='theme.js', v='39.13.0') }}" defer></script>
 </head>
@@ -29,7 +29,19 @@
       <article class="admin-panel preference-panel">
         <div class="panel-eyebrow">Account</div>
         <h2>Profile and privacy</h2>
-        <p class="subtle">Account-linked preferences and collection-value sharing controls will be managed here. Collection values are not publicly shared by this page.</p>
+        <p class="subtle">Choose whether other signed-in CardScanner users can include the cards in your collection in their Inventory viewer. Turning this on shares the cards you own, but not your storage locations, deck assignments, or vending settings. Other users can view public cards but cannot edit your collection.</p>
+        <form method="post" action="{{ url_for('set_collection_visibility') }}" class="manual-form collection-visibility-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label class="check-row collection-visibility-toggle">
+            <input type="checkbox" name="is_public" value="1" {% if collection_is_public %}checked{% endif %}>
+            Make my collection public
+          </label>
+          <button class="button" type="submit">Save collection privacy</button>
+          <p class="subtle preference-note">
+            Current status: <strong>{{ 'Public' if collection_is_public else 'Private' }}</strong>.
+            You can change this setting at any time.
+          </p>
+        </form>
       </article>
       <article class="admin-panel preference-panel">
         <div class="panel-eyebrow">Security</div>
