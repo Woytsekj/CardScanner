@@ -658,6 +658,37 @@ class InventoryManagementTests(unittest.TestCase):
         self.assertNotIn("Private Stranger Shelf", public_html)
         self.assertIn("My Secret Shelf", public_html)  # Own collection locations remain visible.
 
+        # The public toggle remains additive even when the viewer selects one owner.
+        selected_owner_view = viewer.get(
+            "/?owner=Me&public=1&view=list",
+            base_url="http://localhost",
+        )
+        self.assertEqual(selected_owner_view.status_code, 200)
+        selected_owner_html = selected_owner_view.get_data(as_text=True)
+        self.assertIn("My Private Card", selected_owner_html)
+        self.assertIn("Public Friend Card", selected_owner_html)
+        self.assertNotIn("Private Stranger Card", selected_owner_html)
+        self.assertIn('name="public" value="1" checked', selected_owner_html)
+        self.assertIn('value="Me" selected', selected_owner_html)
+
+        # Private-data qualifiers and query filters cannot infer public storage metadata.
+        private_qualifier_view = viewer.get(
+            '/?q=loc:"Friend%20Secret%20Shelf"&public=1&view=list',
+            base_url="http://localhost",
+        )
+        self.assertEqual(private_qualifier_view.status_code, 200)
+        private_qualifier_html = private_qualifier_view.get_data(as_text=True)
+        self.assertIn("Public Friend Card", private_qualifier_html)
+        self.assertNotIn("Friend Secret Shelf", private_qualifier_html)
+        self.assertIn("Location, deck, and vending filters are paused", private_qualifier_html)
+
+        location_param_view = viewer.get(
+            "/?location=Friend%20Secret%20Shelf&public=1&view=list",
+            base_url="http://localhost",
+        )
+        self.assertEqual(location_param_view.status_code, 200)
+        self.assertIn("Public Friend Card", location_param_view.get_data(as_text=True))
+
         # Public cards have no edit controls, and server-side writes are denied.
         public_row_start = public_html.index(f'id="row-{public_card_id}"')
         public_row_end = public_html.index("</tr>", public_row_start)
