@@ -4584,11 +4584,9 @@ def index():
         conn.close()
 
     if not is_superadmin_user(user):
-        readable_owner_names = (
-            list(owner_filter)
-            if isinstance(owner_filter, (list, tuple, set))
-            else ([owner_filter] if owner_filter and owner_filter != "__no_assigned_collection__" else [])
-        )
+        # Storage locations are private metadata and are never exposed for
+        # public-only collections, even when their cards are included.
+        readable_owner_names = list(editable_owners)
         if readable_owner_names:
             from_marks = ", ".join("?" for _ in readable_owner_names)
             location_conn = _account_connection()
