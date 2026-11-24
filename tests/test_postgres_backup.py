@@ -35,6 +35,7 @@ class PostgreSQLBackupTests(unittest.TestCase):
             self.assertNotIn("secret", safe)
             self.assertEqual((database, user), ("cardscanner", "cardscanner"))
             self.assertNotIn("PGPASSWORD", env)
+            self.assertNotIn("CARD_SCANNER_POSTGRES_DSN", env)
             pgpass = Path(env["PGPASSFILE"])
             self.assertEqual(stat.S_IMODE(pgpass.stat().st_mode), 0o600)
             self.assertIn("db.example.test:5432:*:cardscanner:", pgpass.read_text())

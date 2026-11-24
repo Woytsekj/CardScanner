@@ -73,6 +73,9 @@ def _credentials(dsn: str | None = None):
         "",
     ))
     env = os.environ.copy()
+    # Client subprocesses receive only the password-free URI plus PGPASSFILE.
+    # Do not leak the original credential-bearing DSN into their environment.
+    env.pop("CARD_SCANNER_POSTGRES_DSN", None)
     env.pop("PGPASSWORD", None)
     env.setdefault("PGCONNECT_TIMEOUT", "15")
     with tempfile.TemporaryDirectory(prefix="cardscanner-pg-auth-") as tmp:
