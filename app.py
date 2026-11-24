@@ -2462,6 +2462,22 @@ def _scanner_client_file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _prune_scanner_client_postgres_art_snapshots(cache_dir: Path, keep: int = 2) -> None:
+    """Bound old revision artifacts while retaining the newest usable snapshots."""
+    candidates = sorted(
+        cache_dir.glob("mtg_art_hashes-postgres-rev-*.db"),
+        key=lambda path: path.stat().st_mtime_ns,
+        reverse=True,
+    )
+    for obsolete in candidates[max(1, int(keep)):]:
+        try:
+            obsolete.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            app.logger.warning("Could not remove obsolete scanner catalog snapshot %s", obsolete.name)
+
+
 def _scanner_client_postgres_art_snapshot() -> tuple[Path, dict[str, Any]]:
     """Build/cache the legacy MTG SQLite artifact from one PostgreSQL snapshot."""
     global _SCANNER_CLIENT_ART_SNAPSHOT_SIGNATURE
@@ -2562,6 +2578,14 @@ def _scanner_client_postgres_art_snapshot() -> tuple[Path, dict[str, Any]]:
             "source_modified_at": str(info["source_updated_at"]),
             "catalog_revision": int(info["catalog_revision"]),
         }
+        # Touch the selected revision before pruning so frequently requested
+        # snapshots remain cached. Keep one previous revision for concurrent
+        # client downloads while bounding disk consumption.
+        try:
+            os.utime(snapshot_path, None)
+        except OSError:
+            pass
+        _prune_scanner_client_postgres_art_snapshots(cache_dir, keep=2)
         _SCANNER_CLIENT_ART_SNAPSHOT_SIGNATURE = signature
         _SCANNER_CLIENT_ART_SNAPSHOT_PATH = snapshot_path
         _SCANNER_CLIENT_ART_SNAPSHOT_INFO = snapshot_info
@@ -3085,11 +3109,26 @@ def search_guide():
 @admin_required
 def server_info_page():
     """Show operational metadata to administrators without exposing secrets or hosts."""
+    postgres_scryfall_status = None
+    if DATABASE_BACKEND == "postgres":
+        try:
+            from postgres_scryfall_updater import fetch_sync_status
+            postgres_scryfall_status = fetch_sync_status()
+        except Exception:
+            app.logger.exception("Could not load PostgreSQL Scryfall sync status")
+            postgres_scryfall_status = {
+                "configured": True,
+                "last_success_at": None,
+                "source_revision": {},
+                "import_counts": {},
+                "last_error": "Unable to read PostgreSQL Scryfall sync status.",
+            }
     return render_template(
         "server_info.html",
         price_meta=get_price_meta(),
         scryfall_catalog_meta=get_scryfall_catalog_meta(),
         scryfall_bulk_meta=get_scryfall_bulk_meta(),
+        postgres_scryfall_status=postgres_scryfall_status,
         price_history_days=PRICE_HISTORY_DAYS,
         scanner_api_enabled=bool(SCANNER_API_KEY),
         postgres_mode=(DATABASE_BACKEND == "postgres"),

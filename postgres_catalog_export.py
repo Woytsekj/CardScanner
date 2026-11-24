@@ -57,7 +57,8 @@ def _json_text(value: Any) -> str:
 
 def _rows(conn, query: str, params: tuple[Any, ...] = ()):
     """Stream rows from a psycopg or PostgresAppConnection cursor."""
-    cursor = conn.execute(query, params)
+    stream = getattr(conn, "stream", None)
+    cursor = stream(query, params) if callable(stream) else conn.execute(query, params)
     try:
         while True:
             batch = cursor.fetchmany(BATCH_SIZE)

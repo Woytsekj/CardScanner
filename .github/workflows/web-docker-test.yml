@@ -39,15 +39,20 @@ jobs:
       - name: Install application dependencies for regression tests
         run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
 
-      - name: Run inventory and price-history regression tests
+      - name: Run inventory, price-history, and backup regression tests
         run: python -m unittest discover -s tests -t . -p 'test_*.py' -v
 
+      - name: Run desktop scanner server-data synchronization tests
+        run: python -m unittest discover -s scanner-client/tests -p 'test_server_data_sync.py' -v
+
       - name: Check desktop scanner Python syntax
-        run: python -m py_compile scanner-client/Scanner.py scanner-client/scanner_engine.py scanner-client/camera_probe.py
+        run: python -m py_compile scanner-client/Scanner.py scanner-client/scanner_engine.py scanner-client/camera_probe.py scripts/benchmark_postgres_catalog_export.py
 
 
-      - name: Build web Docker image
-        run: docker build --pull -t mtg-scanner-web:test .
+      - name: Build web and PostgreSQL backup Docker images
+        run: |
+          docker build --pull -t mtg-scanner-web:test .
+          docker build --pull --file Dockerfile.backup -t mtg-scanner-backup:test .
 
       - name: Scan Docker image for HIGH and CRITICAL vulnerabilities (report only)
         run: |

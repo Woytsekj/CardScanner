@@ -18,6 +18,7 @@ BACKUP_MINUTE = max(0, min(59, int(os.environ.get("BACKUP_MINUTE", "0"))))
 BACKUP_TIMEZONE = os.environ.get("BACKUP_TIMEZONE", "America/New_York").strip() or "UTC"
 BACKUP_RETENTION = max(1, int(os.environ.get("BACKUP_RETENTION", "2")))
 CHECK_INTERVAL_SECONDS = max(15, int(os.environ.get("BACKUP_CHECK_INTERVAL", "30")))
+DATABASE_BACKEND = os.environ.get("CARD_SCANNER_DATABASE_BACKEND", "sqlite").strip().lower()
 
 DATABASES = (
     "mtg_inventory.db",
@@ -48,7 +49,7 @@ def backup_sqlite(source: Path, destination: Path) -> None:
         source_conn.close()
 
 
-def create_backup() -> Path | None:
+def _create_sqlite_backup() -> Path | None:
     DB_DIR.mkdir(parents=True, exist_ok=True)
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     existing = [DB_DIR / name for name in DATABASES if (DB_DIR / name).exists()]
@@ -99,6 +100,22 @@ def create_backup() -> Path | None:
     return archive_path
 
 
+def create_backup() -> Path | None:
+    """Create a backup using the configured authoritative database backend."""
+    if DATABASE_BACKEND == "postgres":
+        from postgres_backup import create_backup as create_postgres_backup
+
+        return create_postgres_backup(
+            backup_dir=BACKUP_DIR,
+            retention=BACKUP_RETENTION,
+            timezone_name=BACKUP_TIMEZONE,
+        )
+    if DATABASE_BACKEND != "sqlite":
+        raise RuntimeError(
+            "CARD_SCANNER_DATABASE_BACKEND must be either 'sqlite' or 'postgres'"
+        )
+    return _create_sqlite_backup()
+
 def run_scheduler(run_once: bool) -> None:
     tz = get_timezone()
     if run_once:
@@ -108,19 +125,23 @@ def run_scheduler(run_once: bool) -> None:
     last_run_date = None
     print(
         f"[BACKUP] Nightly database backup scheduled for {BACKUP_HOUR:02d}:{BACKUP_MINUTE:02d} "
-        f"{BACKUP_TIMEZONE}; retaining last {BACKUP_RETENTION}",
+        f"{BACKUP_TIMEZONE}; backend={DATABASE_BACKEND}; retaining last {BACKUP_RETENTION}",
         flush=True,
     )
 
     while True:
         now = datetime.now(tz)
-        if now.hour == BACKUP_HOUR and now.minute == BACKUP_MINUTE and now.date() != last_run_date:
+        scheduled_time = now.replace(
+            hour=BACKUP_HOUR, minute=BACKUP_MINUTE, second=0, microsecond=0
+        )
+        if now >= scheduled_time and now.date() != last_run_date:
             try:
                 create_backup()
                 last_run_date = now.date()
             except Exception as exc:
-                print(f"[BACKUP] Backup failed: {exc}", flush=True)
-                last_run_date = now.date()
+                # Retry on the next scheduler tick instead of silently skipping
+                # the entire night after one transient database/NAS failure.
+                print(f"[BACKUP] Backup failed; will retry: {exc}", flush=True)
 
         time.sleep(CHECK_INTERVAL_SECONDS)
 

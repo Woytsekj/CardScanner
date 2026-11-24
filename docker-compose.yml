@@ -13,6 +13,9 @@ services:
     environment:
       DATA_DIR: /data
       DB_DIR: /db
+      CARD_SCANNER_DATABASE_BACKEND: ${CARD_SCANNER_DATABASE_BACKEND:-sqlite}
+      CARD_SCANNER_POSTGRES_DSN: ${CARD_SCANNER_POSTGRES_DSN:-}
+      CARD_SCANNER_POSTGRES_EXPECTED_DATABASE: ${CARD_SCANNER_POSTGRES_EXPECTED_DATABASE:-cardscanner_dev}
       REQUIRE_LOGIN: ${REQUIRE_LOGIN:-1}
       PUBLIC_HTTPS: ${PUBLIC_HTTPS:-1}
       PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME:-cards.stinkywar.com}
@@ -52,6 +55,9 @@ services:
     environment:
       DATA_DIR: /data
       DB_DIR: /db
+      CARD_SCANNER_DATABASE_BACKEND: ${CARD_SCANNER_DATABASE_BACKEND:-sqlite}
+      CARD_SCANNER_POSTGRES_DSN: ${CARD_SCANNER_POSTGRES_DSN:-}
+      CARD_SCANNER_POSTGRES_EXPECTED_DATABASE: ${CARD_SCANNER_POSTGRES_EXPECTED_DATABASE:-cardscanner_dev}
       TCGCSV_CATEGORY_ID: "1"
       TCGCSV_USER_AGENT: "MTGScannerInventory/1.0"
       TCGCSV_CHECK_INTERVAL: "3600"
@@ -78,6 +84,9 @@ services:
     environment:
       DATA_DIR: /data
       DB_DIR: /db
+      CARD_SCANNER_DATABASE_BACKEND: ${CARD_SCANNER_DATABASE_BACKEND:-sqlite}
+      CARD_SCANNER_POSTGRES_DSN: ${CARD_SCANNER_POSTGRES_DSN:-}
+      CARD_SCANNER_POSTGRES_EXPECTED_DATABASE: ${CARD_SCANNER_POSTGRES_EXPECTED_DATABASE:-cardscanner_dev}
       SCRYFALL_USER_AGENT: ${SCRYFALL_USER_AGENT:-CardScanner/1.0 (https://github.com/Woytsekj/CardScanner)}
       SCRYFALL_CATALOG_CHECK_INTERVAL: ${SCRYFALL_CATALOG_CHECK_INTERVAL:-86400}
       SCRYFALL_IMAGE_WORKERS: ${SCRYFALL_IMAGE_WORKERS:-4}
@@ -88,17 +97,23 @@ services:
     restart: unless-stopped
 
   backup:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.backup
     container_name: mtg-scanner-backup
     user: "${APP_UID:-0}:${APP_GID:-0}"
-    command: ["python", "backup_database.py"]
+    command: ["python3", "backup_database.py"]
     volumes:
       - ./data:/data
       - ${DB_HOST_DIR:-/var/lib/cardscanner/db}:/db
+      - ${BACKUP_HOST_DIR:-./data/backups}:/backups
     environment:
       DATA_DIR: /data
       DB_DIR: /db
-      BACKUP_DIR: /data/backups
+      CARD_SCANNER_DATABASE_BACKEND: ${CARD_SCANNER_DATABASE_BACKEND:-sqlite}
+      CARD_SCANNER_POSTGRES_DSN: ${CARD_SCANNER_POSTGRES_DSN:-}
+      CARD_SCANNER_POSTGRES_EXPECTED_DATABASE: ${CARD_SCANNER_POSTGRES_EXPECTED_DATABASE:-cardscanner_dev}
+      BACKUP_DIR: /backups
       BACKUP_HOUR: ${BACKUP_HOUR:-2}
       BACKUP_MINUTE: ${BACKUP_MINUTE:-0}
       BACKUP_TIMEZONE: ${BACKUP_TIMEZONE:-America/New_York}

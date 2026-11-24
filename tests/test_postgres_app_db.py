@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from postgres_app_db import (
     HybridRow,
+    PostgresAppCursor,
     connect_app_database,
     hybrid_row_factory,
     translate_qmark_sql,
@@ -45,6 +46,29 @@ class HybridRowTests(unittest.TestCase):
     def test_row_factory_handles_statements_without_result_columns(self):
         cursor = SimpleNamespace(description=None)
         self.assertIsNone(hybrid_row_factory(cursor))
+
+
+class CursorAdapterTests(unittest.TestCase):
+    def test_cursor_adapter_preserves_context_manager_for_copy_helpers(self):
+        class FakeCursor:
+            def __init__(self):
+                self.entered = False
+                self.exited = False
+
+            def __enter__(self):
+                self.entered = True
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                self.exited = True
+                return False
+
+        raw = FakeCursor()
+        adapter = PostgresAppCursor(raw)
+        with adapter as cursor:
+            self.assertIs(cursor, adapter)
+            self.assertTrue(raw.entered)
+        self.assertTrue(raw.exited)
 
 
 class QmarkTranslationTests(unittest.TestCase):
@@ -115,6 +139,28 @@ class PostgreSQLApplicationConnectionTests(unittest.TestCase):
 
             self.assertEqual(value["value"], 73)
             self.assertEqual(value[0], 73)
+        finally:
+            conn.close()
+
+    def test_named_server_cursor_streams_result_rows(self):
+        conn = connect_app_database(expected_database="cardscanner_dev")
+        try:
+            cursor = conn.stream(
+                "SELECT value FROM generate_series(1, 5) AS value",
+                name="cardscanner_stream_test_rows",
+            )
+            try:
+                self.assertEqual(
+                    [row["value"] for row in cursor.fetchmany(2)],
+                    [1, 2],
+                )
+                self.assertEqual(
+                    [row["value"] for row in cursor.fetchmany(10)],
+                    [3, 4, 5],
+                )
+                self.assertEqual(cursor.fetchmany(1), [])
+            finally:
+                cursor.close()
         finally:
             conn.close()
 

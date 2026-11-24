@@ -41,12 +41,32 @@
         <h2>Scryfall catalog status</h2>
         {% set catalog_stats = scryfall_catalog_meta.get('catalog', {}) %}
         <div class="settings-list">
-          <div><span>Last catalog sync</span><strong>{{ scryfall_catalog_meta.get('synced_at', 'Not yet synced')|localdt }}</strong></div>
-          <div><span>Printings with art hashes</span><strong>{{ catalog_stats.get('hashed_printings', 0) }} / {{ catalog_stats.get('printings', 0) }}</strong></div>
-          <div><span>Art tag assignments</span><strong>{{ catalog_stats.get('art_tag_assignments', 0) }}</strong></div>
-          <div><span>Oracle tag assignments</span><strong>{{ catalog_stats.get('oracle_tag_assignments', 0) }}</strong></div>
-          <div><span>Last bulk metadata refresh</span><strong>{{ scryfall_bulk_meta.get('synced_at', 'Not yet refreshed')|localdt }}</strong></div>
-          <div><span>Bulk printings updated</span><strong>{{ scryfall_bulk_meta.get('found', 0) }} / {{ scryfall_bulk_meta.get('needed', 0) }}</strong></div>
+          {% if postgres_mode and postgres_scryfall_status %}
+            {% set pg_counts = postgres_scryfall_status.get('import_counts', {}) %}
+            {% set pg_catalog = pg_counts.get('catalog', {}) %}
+            <div><span>PostgreSQL Scryfall sync</span><strong>{{ postgres_scryfall_status.get('last_success_at', 'Not yet synced')|localdt }}</strong></div>
+            <div><span>Last attempt</span><strong>{{ postgres_scryfall_status.get('last_attempt_at', 'Not yet attempted')|localdt }}</strong></div>
+            <div><span>Printings / hashed images</span><strong>{{ pg_catalog.get('printings', 0) }} / {{ pg_catalog.get('hashed_images', 0) }}</strong></div>
+            <div><span>Scryfall tags</span><strong>{{ pg_catalog.get('tags', 0) }}</strong></div>
+            <div><span>Art / Oracle assignments</span><strong>{{ pg_catalog.get('art_assignments', 0) }} / {{ pg_catalog.get('oracle_assignments', 0) }}</strong></div>
+            {% if postgres_scryfall_status.get('source_revision') %}
+              <div><span>Source revisions</span><strong>
+                {% for source, revision in postgres_scryfall_status.get('source_revision', {}).items() %}
+                  {{ source }}: {{ revision }}{% if not loop.last %}; {% endif %}
+                {% endfor %}
+              </strong></div>
+            {% endif %}
+            {% if postgres_scryfall_status.get('last_error') %}
+              <div><span>Last sync error</span><strong class="api-warning">{{ postgres_scryfall_status.get('last_error') }}</strong></div>
+            {% endif %}
+          {% else %}
+            <div><span>Last catalog sync</span><strong>{{ scryfall_catalog_meta.get('synced_at', 'Not yet synced')|localdt }}</strong></div>
+            <div><span>Printings with art hashes</span><strong>{{ catalog_stats.get('hashed_printings', 0) }} / {{ catalog_stats.get('printings', 0) }}</strong></div>
+            <div><span>Art tag assignments</span><strong>{{ catalog_stats.get('art_tag_assignments', 0) }}</strong></div>
+            <div><span>Oracle tag assignments</span><strong>{{ catalog_stats.get('oracle_tag_assignments', 0) }}</strong></div>
+            <div><span>Last bulk metadata refresh</span><strong>{{ scryfall_bulk_meta.get('synced_at', 'Not yet refreshed')|localdt }}</strong></div>
+            <div><span>Bulk printings updated</span><strong>{{ scryfall_bulk_meta.get('found', 0) }} / {{ scryfall_bulk_meta.get('needed', 0) }}</strong></div>
+          {% endif %}
         </div>
       </article>
     </section>

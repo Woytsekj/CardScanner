@@ -139,7 +139,7 @@ def _validate_downloaded_art_database(path: str, manifest_entry: dict) -> dict:
         conn.close()
 
 
-def _validate_downloaded_prices(path: str) -> dict:
+def _validate_downloaded_prices(path: str, _manifest_entry: dict | None = None) -> dict:
     try:
         with open(path, "r", encoding="utf-8") as handle:
             payload = json.load(handle)
