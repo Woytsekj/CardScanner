@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from postgres_db import close_pool, open_pool, run_migrations
@@ -23,6 +25,11 @@ class PostgreSQLScryfallWorkerTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         close_pool()
+
+    def setUp(self):
+        self.data_dir = tempfile.TemporaryDirectory(prefix="cardscanner-scryfall-test-")
+        self.addCleanup(self.data_dir.cleanup)
+        updater.DATA_DIR = Path(self.data_dir.name)
 
     def test_forced_sync_records_source_revision_and_import_counts(self):
         manifest = {

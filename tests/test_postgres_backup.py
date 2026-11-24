@@ -18,6 +18,18 @@ DSN = "postgresql://cardscanner:top%3Asecret%5Cpass@db.example.test:5432/cardsca
 
 
 class PostgreSQLBackupTests(unittest.TestCase):
+    def setUp(self):
+        self.env_patch = mock.patch.dict(
+            os.environ,
+            {
+                "CARD_SCANNER_POSTGRES_DSN": DSN,
+                "CARD_SCANNER_POSTGRES_EXPECTED_DATABASE": "cardscanner",
+            },
+            clear=False,
+        )
+        self.env_patch.start()
+        self.addCleanup(self.env_patch.stop)
+
     def test_uri_password_is_removed_and_pgpass_is_private_and_database_wildcarded(self):
         with postgres_backup._credentials(DSN) as (safe, env, database, user, password):
             self.assertNotIn("secret", safe)
@@ -116,7 +128,7 @@ class PostgreSQLBackupTests(unittest.TestCase):
                 "archive_size_bytes": 4, "sha256": hashlib.sha256(b"good").hexdigest(),
                 "database_identity": {"database": "cardscanner"},
             }))
-            archive.write_bytes(b"tampered")
+            archive.write_bytes(b"evil")
             with mock.patch.object(postgres_backup, "_run") as run:
                 with self.assertRaisesRegex(RuntimeError, "SHA-256"):
                     postgres_backup.verify_backup(archive)
@@ -154,7 +166,7 @@ class PostgreSQLBackupTests(unittest.TestCase):
             self.assertEqual(result["target_database"], "cardscanner_recovered")
             self.assertEqual(
                 [command[0] for command in commands],
-                ["psql", "createdb", "pg_restore", "psql"],
+                ["createdb", "pg_restore", "psql"],
             )
 
     @mock.patch.dict(os.environ, {"CARD_SCANNER_POSTGRES_DSN": DSN}, clear=False)
