@@ -69,17 +69,18 @@ The recovery tool only restores to a *different* database. It refuses to target 
    docker compose exec backup python3 verify_postgres_backup.py
    ```
 
-3. Restore the newest archive into a new database. The command creates the target when requested, restores it, verifies the expected schemas/tables, and removes a newly created target if the restore fails:
+3. Point the backup service's `CARD_SCANNER_POSTGRES_DSN` at an existing maintenance database (commonly `postgres`) on the recovery server, and set `CARD_SCANNER_POSTGRES_EXPECTED_DATABASE` to that maintenance database. This is required when the original CardScanner database no longer exists. Update the deployment `.env`, but do not expose the password in a terminal command or log.
+4. Restore the newest archive into a new database. The command creates the target when requested, restores it, verifies the expected schemas/tables, and removes a newly created target if the restore fails:
 
    ```bash
-   docker compose exec backup python3 restore_postgres_backup.py --target-database cardscanner_recovered --create-database
+   docker compose run --rm --no-deps backup python3 restore_postgres_backup.py --target-database cardscanner_recovered --create-database
    ```
 
-   To choose an archive explicitly, add `--backup /backups/archive-name.dump`.
+   To choose an archive explicitly, add `--backup /backups/archive-name.dump`. The restore result reports both the archive's source database name and the new target database name.
 
-4. Review the restore result, then change `CARD_SCANNER_POSTGRES_DSN` to point to `cardscanner_recovered`. Make sure `CARD_SCANNER_POSTGRES_EXPECTED_DATABASE` matches the new database name.
-5. Start the app and workers and perform login, inventory, deck, pricing, Scryfall catalog, and scanner smoke tests.
-6. Keep the original database and backup archive untouched until the replacement has been checked. Do not remove the old database as part of the restore command.
+5. Review the restore result, then change `CARD_SCANNER_POSTGRES_DSN` to point to `cardscanner_recovered`. Make sure `CARD_SCANNER_POSTGRES_EXPECTED_DATABASE` also matches `cardscanner_recovered`.
+6. Start the app and workers and perform login, inventory, deck, pricing, Scryfall catalog, and scanner smoke tests.
+7. Keep the original database (when it still exists) and backup archive untouched until the replacement has been checked. Do not remove the old database as part of the restore command.
 
 Restores use `--no-owner --no-privileges`: restored objects are owned by the role used in the configured DSN, without requiring every original role/ACL on the recovery cluster. The source archive still contains the original ownership and privilege records.
 

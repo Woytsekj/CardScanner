@@ -295,9 +295,11 @@ def restore_backup(archive_path: str | Path | None, target_database: str, *, bac
             )
         if target_name == current_database:
             raise RuntimeError("Refusing to restore over the database configured in CARD_SCANNER_POSTGRES_DSN")
+        # The DSN may intentionally point at a maintenance database during
+        # disaster recovery when the original source database no longer exists.
+        # The archive identity is recorded in the result, but is not required
+        # to match the maintenance connection's database name.
         backup_identity = metadata.get("database_identity") or {}
-        if backup_identity.get("database") != current_database:
-            raise RuntimeError("Backup belongs to a different configured source database")
         maintenance = _database_dsn(dsn, "postgres")
         target = _database_dsn(dsn, target_name)
         created = False
@@ -316,6 +318,7 @@ def restore_backup(archive_path: str | Path | None, target_database: str, *, bac
         "restored": True,
         "archive": archive.name,
         "target_database": target_name,
+        "source_database": str((metadata.get("database_identity") or {}).get("database") or ""),
         "archive_size_bytes": archive.stat().st_size,
         "sha256": str(metadata["sha256"]),
         "required_schemas": list(REQUIRED_SCHEMAS),

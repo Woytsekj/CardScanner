@@ -44,7 +44,7 @@ class PostgreSQLBackupTests(unittest.TestCase):
             postgres_backup,
             "_run",
             side_effect=lambda args, env, password="": (
-                CompletedProcess(args, 0, "cardscanner|cardscanner|17.5\\n", "")
+                CompletedProcess(args, 0, "cardscanner|cardscanner|17.5\n", "")
                 if args[0] == "psql"
                 else (_ for _ in ()).throw(AssertionError("pg_dump must not run"))
             ),
@@ -121,6 +121,41 @@ class PostgreSQLBackupTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "SHA-256"):
                     postgres_backup.verify_backup(archive)
             run.assert_not_called()
+
+    @mock.patch.dict(os.environ, {
+        "CARD_SCANNER_POSTGRES_DSN": "postgresql://cardscanner:top%3Asecret%5Cpass@db.example.test:5432/postgres",
+        "CARD_SCANNER_POSTGRES_EXPECTED_DATABASE": "postgres",
+    }, clear=False)
+    def test_restore_recovers_source_database_into_new_database_via_maintenance_connection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            archive = Path(temp) / "fixture.dump"
+            archive.write_bytes(b"archive")
+            archive.with_suffix(".dump.json").write_text(json.dumps({
+                "archive_size_bytes": 7,
+                "sha256": hashlib.sha256(b"archive").hexdigest(),
+                "database_identity": {"database": "cardscanner"},
+            }))
+            commands = []
+
+            def fake_run(args, env, password=""):
+                commands.append(list(args))
+                if args[0] == "psql" and "current_database()" in args[-1]:
+                    return CompletedProcess(args, 0, "postgres|cardscanner|17.5\n", "")
+                return CompletedProcess(args, 0, "|\n", "")
+
+            with mock.patch.object(postgres_backup, "_run", side_effect=fake_run):
+                result = postgres_backup.restore_backup(
+                    archive,
+                    "cardscanner_recovered",
+                    create_database=True,
+                )
+            self.assertTrue(result["restored"])
+            self.assertEqual(result["source_database"], "cardscanner")
+            self.assertEqual(result["target_database"], "cardscanner_recovered")
+            self.assertEqual(
+                [command[0] for command in commands],
+                ["psql", "createdb", "pg_restore", "psql"],
+            )
 
     @mock.patch.dict(os.environ, {"CARD_SCANNER_POSTGRES_DSN": DSN}, clear=False)
     def test_restore_refuses_live_database_target(self):

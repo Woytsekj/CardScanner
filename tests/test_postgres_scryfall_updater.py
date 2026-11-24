@@ -106,7 +106,7 @@ class PostgreSQLScryfallWorkerTests(unittest.TestCase):
                          last_success_at=EXCLUDED.last_success_at,
                          source_revision=EXCLUDED.source_revision,
                          import_counts=EXCLUDED.import_counts""",
-                    ("mtg", "scryfall", '{"prior":"revision"}', '{"prior":1}"),
+                    ("mtg", "scryfall", '{"prior":"revision"}', '{"prior":1}'),
                 )
         finally:
             conn.close()

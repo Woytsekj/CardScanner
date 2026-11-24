@@ -71,29 +71,6 @@ class CursorAdapterTests(unittest.TestCase):
         self.assertTrue(raw.exited)
 
 
-class CursorAdapterTests(unittest.TestCase):
-    def test_cursor_adapter_preserves_context_manager_for_copy_helpers(self):
-        class FakeCursor:
-            def __init__(self):
-                self.entered = False
-                self.exited = False
-
-            def __enter__(self):
-                self.entered = True
-                return self
-
-            def __exit__(self, exc_type, exc_value, traceback):
-                self.exited = True
-                return False
-
-        raw = FakeCursor()
-        adapter = PostgresAppCursor(raw)
-        with adapter as cursor:
-            self.assertIs(cursor, adapter)
-            self.assertTrue(raw.entered)
-        self.assertTrue(raw.exited)
-
-
 class QmarkTranslationTests(unittest.TestCase):
     def test_translates_placeholders_but_preserves_literals_and_comments(self):
         source = (
