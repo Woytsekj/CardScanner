@@ -13,7 +13,10 @@ Repository: <https://github.com/Woytsekj/CardScanner>
 - `app.py` — Flask web application and API.
 - `templates/`, `static/` — web interface and styles.
 - `price_updater.py` — TCGCSV price updates and optional Discord price alerts.
-- `backup_database.py` — scheduled SQLite backups.
+- `backup_database.py` — scheduled SQLite or PostgreSQL backups.
+- `postgres_backup.py`, `verify_postgres_backup.py`, and `restore_postgres_backup.py` — PostgreSQL backup, restore verification, and recovery tooling.
+- `postgres_scryfall_updater.py` — PostgreSQL-native Scryfall bulk synchronization and durable worker status.
+- `docs/POSTGRES_BACKUPS.md` and `docs/POSTGRES_SCANNER_SYNC.md` — PostgreSQL operations and scanner synchronization procedures.
 - `migrate_storage.py` — guarded migration of SQLite databases from the data volume to local database storage.
 - `update_scryfall_metadata.py` — refreshes cached card metadata from Scryfall bulk data.
 - `scanner-client/` — standalone desktop scanning application, camera helpers, and installable Android-friendly PWA.
@@ -100,10 +103,10 @@ Compose defines four services:
 
 - **web** — Flask application served by Gunicorn.
 - **updater** — periodically checks TCGCSV data and updates prices/history.
-- **backup** — creates SQLite backups on the configured schedule and prunes older archives according to retention settings.
+- **backup** — creates scheduled SQLite snapshots or PostgreSQL custom-format dumps, records checksums/metadata, and prunes older archives according to retention settings.
 - **scryfall** — checks Scryfall's `default_cards`, `art_tags`, and `oracle_tags` bulk feeds daily, incrementally builds pHashes for new/changed printing images, and refreshes local tag indexes.
 
-Large application data, Scryfall bulk snapshots, price JSON files, and backup archives remain under `./data/` on the host (which can be an NFS share). Active SQLite databases are mounted separately from `DB_HOST_DIR`, defaulting to `/var/lib/cardscanner/db` on the Docker host's local filesystem. Inside every service, this location is available as `/db` through `DB_DIR`. Keep `DB_HOST_DIR` on local storage: SQLite WAL databases must not be placed on network filesystems. The backup service snapshots the local databases and writes the resulting archives to `./data/backups/` on the NAS. The default backup settings keep the newest two archives and schedule backups for 02:00 in `America/New_York`; see `.env.example` to customize them.
+Large application data, Scryfall bulk snapshots, price JSON files, and backup archives remain under `./data/` on the host (which can be an NFS share). SQLite databases are mounted separately from `DB_HOST_DIR`, defaulting to `/var/lib/cardscanner/db` on the Docker host's local filesystem. Keep SQLite WAL databases off network filesystems. In SQLite mode, the backup worker snapshots those local database files and writes archives to `BACKUP_HOST_DIR` (default `./data/backups/`). In PostgreSQL mode, it instead runs `pg_dump` against `CARD_SCANNER_POSTGRES_DSN` and writes custom-format archives to the same separate backup destination; it does not copy the PostgreSQL data volume. Both modes retain the newest two successful backups by default and schedule them for 02:00 in `America/New_York`.
 
 Useful commands:
 
@@ -112,6 +115,8 @@ docker compose ps
 docker compose logs -f web
 docker compose logs -f updater
 docker compose logs -f backup
+
+For PostgreSQL deployments, set `CARD_SCANNER_DATABASE_BACKEND=postgres`, `CARD_SCANNER_POSTGRES_DSN`, and `CARD_SCANNER_POSTGRES_EXPECTED_DATABASE` in `.env`. The Scryfall service then runs the PostgreSQL-native updater rather than writing the legacy SQLite catalog. See [PostgreSQL scanner synchronization](docs/POSTGRES_SCANNER_SYNC.md) for the desktop/PWA artifact path.
 docker compose restart web
 docker compose down
 ```
@@ -127,7 +132,7 @@ For an existing installation whose two SQLite files are still in `./data/`, migr
 1. While the old containers are still running, create a fresh backup on the NAS:
 
    ```bash
-   docker compose exec backup python backup_database.py --once
+   docker compose exec backup python3 backup_database.py --once
    ```
 
 2. Pull the updated code, create `DB_HOST_DIR` on the local disk, and ensure it is writable by the container's configured `APP_UID:APP_GID`. Build the updated images, but do not start/recreate the services yet:

@@ -174,6 +174,13 @@ class PostgresAppCursor:
     def __iter__(self):
         return iter(self._cursor)
 
+    def __enter__(self):
+        self._cursor.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return self._cursor.__exit__(exc_type, exc_value, traceback)
+
 
 class PostgresAppConnection:
     """Pooled connection facade with explicit close/return semantics."""
@@ -191,6 +198,18 @@ class PostgresAppConnection:
     def executemany(self, query, params_seq):
         cursor = self._raw.cursor(row_factory=hybrid_row_factory)
         return PostgresAppCursor(cursor).executemany(query, params_seq)
+
+    def stream(self, query, params=None, *, name=None):
+        """Open a named server-side cursor for bounded result streaming."""
+        import uuid
+
+        cursor_name = name or f"cardscanner_stream_{uuid.uuid4().hex}"
+        cursor = self._raw.cursor(
+            name=cursor_name,
+            row_factory=hybrid_row_factory,
+        )
+        cursor.execute(translate_qmark_sql(query), params)
+        return PostgresAppCursor(cursor)
 
     def cursor(self):
         return PostgresAppCursor(

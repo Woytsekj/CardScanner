@@ -1,0 +1,13 @@
+FROM postgres:17-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY backup_database.py postgres_backup.py verify_postgres_backup.py restore_postgres_backup.py ./
+
+CMD ["python3", "backup_database.py"]

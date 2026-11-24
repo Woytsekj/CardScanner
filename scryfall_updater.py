@@ -613,6 +613,17 @@ def run_daemon() -> None:
 
 
 def main() -> int:
+    backend = os.environ.get("CARD_SCANNER_DATABASE_BACKEND", "sqlite").strip().lower()
+    if backend == "postgres":
+        # The SQLite updater must never write its legacy artifact while
+        # PostgreSQL is authoritative. Delegate all work to the PG-native
+        # orchestrator, which reuses only the HTTP/bulk download helpers here.
+        from postgres_scryfall_updater import main as postgres_main
+        return postgres_main()
+    if backend != "sqlite":
+        print("[scryfall] CARD_SCANNER_DATABASE_BACKEND must be sqlite or postgres")
+        return 2
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--once", action="store_true", help="Run one update and exit.")
     parser.add_argument("--force", action="store_true", help="Redownload the current bulk snapshots.")
